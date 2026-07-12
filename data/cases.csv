@@ -1,0 +1,16 @@
+case_id,pathogen_id,species,resistance_mechanism,resistance_genes,infection_type,infection_site,specimen_type,verification_status,patient_age_group,comorbidities,prior_antibiotics,phage_treatment,clinical_outcome,microbiological_outcome,curated_by,curation_date
+CASE-001,PATH-001,Escherichia coli,MDR,"blaCTX-M,blaTEM,gyrA",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,65-75,"Bladder stones,BPH,Rectal cancer post-op,Hypertension,Varicose veins","Levofloxacin,Minocycline,Meropenem","CP-p-BC-23086, CP-p-BC-23062","Clinical improvement at Day 7","Bacteria decreased from >99999 to 14089 CFU/μL, urine culture negative at Day 5",FDE-01,2026-05-20
+CASE-002,PATH-002,Acinetobacter baumannii,CR,"OXA-23,OXA-51",VAP,Lung,BALF,MICROBIOLOGY_LAB_VERIFIED,65-75,"COPD,DM","Meropenem,Colistin","vB_AbaM_001","Not improved","Persistent",FDE-01,2026-04-10
+CASE-003,PATH-001,Escherichia coli,MDR,"blaCTX-M",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,55-65,"DM","Ciprofloxacin","","Improved","Clearance",,2026-03-15
+CASE-004,PATH-002,Acinetobacter baumannii,CR,"OXA-23",Bloodstream,Blood,Blood,MICROBIOLOGY_LAB_VERIFIED,45-55,"None","Meropenem","vB_AbaM_003, vB_AbaM_005","Improved","Clearance",FDE-02,2026-06-01
+CASE-005,PATH-003,Klebsiella pneumoniae,KPC,"blaKPC-2,blaSHV",Pneumonia,Lung,Sputum,MICROBIOLOGY_LAB_VERIFIED,75-85,"COPD,CHF","Piperacillin-Tazobactam","vB_Kpn_001","Improved","Clearance",FDE-01,2026-05-25
+CASE-006,PATH-001,Escherichia coli,MDR,"blaTEM,gyrA",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,35-45,"None","Levofloxacin","","Not improved","Persistent",,2026-04-20
+CASE-007,PATH-002,Acinetobacter baumannii,CR,"OXA-24",Wound,Skin,Wound,MICROBIOLOGY_LAB_VERIFIED,55-65,"DM,Obesity","Colistin","vB_AbaM_002","Improved","Clearance",FDE-02,2026-05-10
+CASE-008,PATH-004,Pseudomonas aeruginosa,MDR,"blaVIM,oprD",Pneumonia,Lung,BALF,MICROBIOLOGY_LAB_VERIFIED,65-75,"COPD,CKD","Meropenem,Amikacin","vB_Pae_001","Improved","Clearance",FDE-01,2026-05-30
+CASE-009,PATH-002,Acinetobacter baumannii,CR,"OXA-23,OXA-58",VAP,Lung,BALF,MICROBIOLOGY_LAB_VERIFIED,55-65,"DM","Meropenem,Colistin","","Not improved","Persistent",FDE-01,2026-06-05
+CASE-010,PATH-003,Klebsiella pneumoniae,KPC,"blaKPC-3",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,25-35,"None","Ceftazidime-Avibactam","","Improved","Clearance",,2026-05-12
+CASE-011,PATH-004,Pseudomonas aeruginosa,MDR,"blaIMP,oprD",Wound,Skin,Wound,MICROBIOLOGY_LAB_VERIFIED,45-55,"None","Ciprofloxacin,Piperacillin","","Not improved","Persistent",,2026-04-28
+CASE-012,PATH-001,Escherichia coli,MDR,"blaCTX-M,blaOXA-1",Bloodstream,Blood,Blood,MICROBIOLOGY_LAB_VERIFIED,35-45,"None","Ceftriaxone","","Improved","Clearance",,2026-06-10
+CASE-013,PATH-002,Acinetobacter baumannii,CR,"OXA-23,OXA-24",Wound,Skin,Wound,MICROBIOLOGY_LAB_VERIFIED,65-75,"DM,Obesity","Colistin,Tigecycline","vB_AbaM_007","Improved","Clearance",FDE-02,2026-06-15
+CASE-014,PATH-003,Klebsiella pneumoniae,KPC,"blaKPC-2,blaTEM",Pneumonia,Lung,Sputum,MICROBIOLOGY_LAB_VERIFIED,55-65,"CHF","Meropenem","","Not improved","Persistent",,2026-05-20
+CASE-015,PATH-004,Pseudomonas aeruginosa,MDR,"blaVIM",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,75-85,"CKD","Amikacin,Colistin","vB_Pae_002","Improved","Bacteria decreased from >100000 to <1000",FDE-01,2026-06-18

@@ -1,6 +1,45 @@
-# 三、数据模型（Ontology）
+# 一、数据文件格式
 
-## 3.1 实体定义（4个节点标签）
+## 1.1 cases.csv
+
+| 字段名 | 类型 | 必填 | 示例 |
+|--------|------|------|------|
+| case_id | string | ✅ | CASE-001 |
+| pathogen_id | string | ✅ | PATH-001 |
+| species | string | ✅ | Acinetobacter baumannii |
+| resistance_mechanism | string | ✅ | Carbapenem-resistant |
+| resistance_genes | string（逗号分隔） | ✅ | OXA-23,TEM-1 |
+| infection_type | string | ✅ | VAP |
+| infection_site | string | ✅ | Lung |
+| specimen_type | string | ✅ | BALF |
+| verification_status | string | ✅ | MICROBIOLOGY_LAB_VERIFIED |
+| patient_age_group | string | 否 | 55-65 |
+| comorbidities | string（逗号分隔） | 否 | COPD,DM |
+| prior_antibiotics | string（逗号分隔） | 否 | Meropenem,Colistin |
+| phage_treatment | string | 否 | Cocktail: φA+φB, 雾化吸入 |
+| clinical_outcome | string | 否 | Clinical improvement at Day 7 |
+| microbiological_outcome | string | 否 | 菌量下降3log |
+| curated_by | string | 否 | FDE-01 |
+| curation_date | string | 否 | 2026-08-15 |
+
+## 1.2 phage_interactions.csv
+
+| 字段名 | 类型 | 必填 | 示例 |
+|--------|------|------|------|
+| phage_id | string | ✅ | PHAGE-001 |
+| phage_name | string | ✅ | vB_AbaM_AbTZI |
+| family | string | 否 | Myoviridae |
+| receptor_target | string | 否 | Capsular polysaccharide |
+| pathogen_id | string | ✅ | PATH-001 |
+| infection_result | string | 否 | Lytic |
+| infection_probability | float | 否 | 0.94 |
+| evidence_level | enum | ✅ | L1 |
+| evidence_ref | string（逗号分隔） | 否 | PMID:12345678 |
+| notes | string | 否 | — |
+
+# 二、数据模型（Ontology）
+
+## 2.1 实体定义（4个节点标签）
 
 ### Pathogen（病原菌）
 
@@ -64,7 +103,7 @@
 
 ---
 
-## 3.2 关系类型（4种）
+## 2.2 关系类型（4种）
 
 | 关系              | 方向                            | 含义                   |
 | ----------------- | ------------------------------- | ---------------------- |
@@ -75,7 +114,7 @@
 
 ---
 
-## 3.3 Cypher DDL（建约束和索引）
+## 2.3 Cypher DDL（建约束和索引）
 
 ```cypher
 // 约束
@@ -91,7 +130,7 @@ CREATE INDEX IF NOT EXISTS FOR (c:ClinicalCase) ON (c.infection_type);
 CREATE INDEX IF NOT EXISTS FOR (phi:PhageHostInteraction) ON (phi.evidence_level);
 ```
 
-## 3.4 常用 Cypher 查询
+## 2.4 常用 Cypher 查询
 
 ### 1. 查询匹配的噬菌体
 
