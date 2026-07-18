@@ -16,17 +16,12 @@
 
 ### **✨ 核心功能**
 
-**知识图谱构建**：基于 Neo4j 存储病原菌、噬菌体、互作关系、临床病例
-
-**黄金规则管理**：支持导入临床验证的配型规则（如 CRAB KL2 → ΦK2-v3）
-
-**双引擎推荐**：规则引擎：确定性逻辑，0 成本，0 幻觉
-
-LLM 引擎：基于 DeepSeek 的 RAG，生成自然语言证据包
-
-**知识策展闭环**：病例结局回写 → 证据等级自动升级（L1/L2 → L3）
-
-**跨病例复用检测**：自动识别相似病例，推荐复用历史经验
+**知识图谱构建**：基于 Neo4j 存储病原菌、噬菌体、互作关系、临床病例  
+**黄金规则管理**：支持导入临床验证的配型规则（如 CRAB KL2 → ΦK2-v3）  
+**双引擎推荐**：规则引擎：确定性逻辑，0 成本，0 幻觉  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LLM 引擎：基于 DeepSeek 的 RAG，生成自然语言证据包  
+**知识策展闭环**：病例结局回写 → 证据等级自动升级（L1/L2 → L3）  
+**跨病例复用检测**：自动识别相似病例，推荐复用历史经验  
 
 ## **📦 数据模型**
 
@@ -64,28 +59,28 @@ text
 
 ## **🏗️ 项目结构**
 
-text
-phage-workspace-mvp/
-├── README.md                     # 项目说明
-├── requirements.txt              # Python 依赖
-├── .env                          # 环境变量（DS_API_KEY 等）
-├── config.py                     # Neo4j + DeepSeek 配置
-├── data/                         # 数据文件
-│   ├── cases.csv                 # 临床病例
-│   └── phage_interactions.csv    # 30 条噬菌体互作记录
-├── src/
-│   ├── data_loader.py            # CSV → Neo4j 数据导入
-│   ├── retriever.py              # Cypher 查询（匹配噬菌体 + 相似病例）
-│   ├── package_builder.py        # Evidence Package 生成（LLM + 规则引擎）
-│   ├── curation.py               # 知识策展（结局回写 + 证据升级）
-│   ├── schema.py                 # 数据库约束和索引创建
-│   └── utils.py                  # 公共工具函数
-├── notebooks/                    # Jupyter Notebook 演示
-│   ├── 01_data_import.ipynb      # 数据导入 + V1 验证
-│   ├── 02_evidence_package.ipynb # Evidence Package 展示
-│   └── 03_cross_case_reuse.ipynb # 跨病例复用 + LLM 验证 ⭐核心
-└── tests/
-    └── manual_checks.md          # 手动验证记录
+text  
+phage-workspace-mvp/  
+├── README.md                     # 项目说明  
+├── requirements.txt              # Python 依赖  
+├── .env                          # 环境变量（DS_API_KEY 等）  
+├── config.py                     # Neo4j + DeepSeek 配置  
+├── data/                         # 数据文件  
+│   ├── cases.csv                 # 临床病例  
+│   └── phage_interactions.csv    # 30 条噬菌体互作记录  
+├── src/  
+│   ├── data_loader.py            # CSV → Neo4j 数据导入  
+│   ├── retriever.py              # Cypher 查询（匹配噬菌体 + 相似病例）  
+│   ├── package_builder.py        # Evidence Package 生成（LLM + 规则引擎）  
+│   ├── curation.py               # 知识策展（结局回写 + 证据升级）  
+│   ├── schema.py                 # 数据库约束和索引创建  
+│   └── utils.py                  # 公共工具函数  
+├── notebooks/                    # Jupyter Notebook 演示  
+│   ├── 01_data_import.ipynb      # 数据导入 + V1 验证  
+│   ├── 02_evidence_package.ipynb # Evidence Package 展示  
+│   └── 03_cross_case_reuse.ipynb # 跨病例复用 + LLM 验证 ⭐核心  
+└── tests/  
+    └── manual_checks.md          # 手动验证记录  
 
 
 ## **🚀 快速开始**
@@ -225,7 +220,7 @@ load_cases_from_csv("../data/cases.csv")
 
 **规则引擎推荐**：运行 Cell 4展示黄金规则推荐的噬菌体排首位
 
-**LLM 验证**：运行 Cell 5输出完整三部分 Evidence Package每个噬菌体都标注了证据来源（CASE-XXX / PMID / 黄金规则）
+**LLM验证**：运行 Cell 5输出三部分 Evidence Package每个噬菌体都标注了证据来源（CASE-XXX / PMID / 黄金规则）
 
 **跨病例复用**：运行 Cell 6展示 reuse_type: "direct_reuse", is_reuse_valid: true
 
@@ -243,15 +238,11 @@ load_cases_from_csv("../data/cases.csv")
 
 本项目为 MVP 验证版本，主要面向内部演示和概念验证。如需扩展或生产部署，请联系项目团队。
 
-## **📄 开源协议**
-
-本项目采用 MIT 协议，详情请参见 [LICENSE](https://license/"%20\t%20"https://chat.deepseek.com/a/chat/s/_blank) 文件。
-
 ## **🔗 相关资源**
 
-- [Neo4j 官方文档](https://neo4j.com/docs/"%20\t%20"https://chat.deepseek.com/a/chat/s/_blank)：https://neo4j.com/docs/
-- [DeepSeek API 文档](https://platform.deepseek.com/api-docs/"%20\t%20"https://chat.deepseek.com/a/chat/s/_blank)：https://api-docs.deepseek.com/
+- [Neo4j 官方文档](https://neo4j.com/docs/)
+- [DeepSeek API 文档](https://api-docs.deepseek.com/)
 
-- [PHIAF 数据集](https://github.com/mengluli-web/PHIAF"%20\t%20"https://chat.deepseek.com/a/chat/s/_blank)：https://github.com/mengluli-web/PHIAF
+- [PHIAF 数据集](https://github.com/mengluli-web/PHIAF)
 
 **Phage Intelligence Workspace — 让上一个病例的经验，成为下一个病例的起点。**
