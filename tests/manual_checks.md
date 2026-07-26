@@ -11,3 +11,8 @@ SET c.phage_treatment = 'CP-p-BC-23086, CP-p-BC-23062'
 
 // 3. 验证是否成功
 RETURN c.case_id, c.phage_treatment, [(c)-[:TREATED_WITH]->(ph) | ph.name] AS phages_used
+
+# 查询拥有互作关系
+MATCH (phi:PhageHostInteraction)
+WHERE NOT (phi)-[:HAS_INTERACTION]->()
+RETURN phi.evidence_ref, count(phi)

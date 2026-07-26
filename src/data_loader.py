@@ -123,7 +123,6 @@ def load_cases_from_csv(csv_path):
                 
                 try:
                     case_id = session.execute_write(insert_clinical_case, row_dict)
-                    print(f"✅ 导入成功: {case_id}")
                     success_count += 1
                 except Exception as e:
                     print(f"❌ 导入失败 (Case: {row_dict.get('case_id')}): {e}")
@@ -199,12 +198,115 @@ def load_phages_from_csv(csv_path):
 
                     created = result.single()['created']
                     success_count += 1
-                    print(f"   ✅ 导入互作: {interaction_id} (创建关系数: {created})")
                 except Exception as e:
                     print(f"   ❌ 导入失败 (第 {index+2} 行): {e}")
 
         print(f"\n🎯 噬菌体互作导入完成！成功 {success_count} 条记录。")
 
+# ========== 从裂解谱 CSV 导入 ==========
+# ========== 从裂解谱 CSV 导入（直接插入，不通过临时文件）==========
+def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> dict:
+    """
+    从裂解谱 CSV 文件读取数据，直接插入 Neo4j（不依赖临时文件和 load_phages_from_csv）。
+    每条互作记录生成唯一的 interaction_id（包含宿主菌株），确保全部插入。
+    """
+    if not os.path.exists(csv_path):
+        alt_path = os.path.join("data", os.path.basename(csv_path))
+        if os.path.exists(alt_path):
+            csv_path = alt_path
+        else:
+            print(f"❌ 文件不存在: {csv_path}")
+            return {"error": "文件不存在"}
+
+    df = pd.read_csv(csv_path, encoding="utf-8")
+    print(f"📂 读取到 {len(df)} 个噬菌体，{len(df.columns)-2} 个宿主菌株")
+
+    phage_col = df.columns[0]
+    host_cols = df.columns[1:-1]
+
+    from config import get_driver
+
+    # 确保 Pathogen 节点存在
+    with get_driver() as driver:
+        with driver.session() as session:
+            session.run("""
+                MERGE (p:Pathogen {pathogen_id: $pathogen_id})
+                SET p.species = 'Klebsiella pneumoniae',
+                    p.resistance_mechanism = 'Unknown',
+                    p.verification_status = 'MICROBIOLOGY_LAB_VERIFIED'
+            """, pathogen_id=pathogen_id)
+            print(f"✅ Pathogen {pathogen_id} 已就绪")
+
+    success_count = 0
+    total_positive = 0
+    phages_set = set()
+
+    with get_driver() as driver:
+        with driver.session() as session:
+            for idx, row in df.iterrows():
+                phage_name = row[phage_col]
+                phage_id = f"PHAGE-{phage_name}"
+                phages_set.add(phage_id)
+
+                # 确保 Phage 节点存在
+                session.run("""
+                    MERGE (ph:Phage {phage_id: $phage_id})
+                    SET ph.name = $phage_name
+                """, phage_id=phage_id, phage_name=phage_name)
+
+                for host in host_cols:
+                    if row[host] == 1:
+                        total_positive += 1
+                        host_strain = host.strip()
+                        interaction_id = f"{phage_id}_{pathogen_id}_{host_strain.replace('-', '_')}"
+
+                        try:
+                            session.run("""
+                                MERGE (phi:PhageHostInteraction {interaction_id: $interaction_id})
+                                SET phi.phage_id = $phage_id,
+                                    phi.pathogen_id = $pathogen_id,
+                                    phi.infection_result = 'Lytic',
+                                    phi.infection_probability = 1.0,
+                                    phi.evidence_level = 'L2',
+                                    phi.evidence_ref = '合作方裂解谱数据',
+                                    phi.notes = $notes
+                                WITH phi
+                                MATCH (ph:Phage {phage_id: $phage_id})
+                                MATCH (p:Pathogen {pathogen_id: $pathogen_id})
+                                MERGE (ph)-[:HAS_INTERACTION]->(phi)
+                                MERGE (phi)-[:TARGETS]->(p)
+                            """,
+                            interaction_id=interaction_id,
+                            phage_id=phage_id,
+                            pathogen_id=pathogen_id,
+                            notes=f"宿主菌株: {host_strain}"
+                            )
+                            success_count += 1
+                            if success_count % 100 == 0:
+                                print(f"   已处理 {success_count} 条互作...")
+                        except Exception as e:
+                            print(f"   ❌ 导入失败 (phage: {phage_name}, host: {host_strain}): {e}")
+
+    print(f"\n🎯 导入完成：")
+    print(f"   - 噬菌体数: {len(phages_set)} 个")
+    print(f"   - 阳性互作记录: {total_positive} 条")
+    print(f"   - 成功插入: {success_count} 条")
+
+    with get_driver() as driver:
+        with driver.session() as session:
+            result = session.run("MATCH (phi:PhageHostInteraction) RETURN count(phi) AS total")
+            total = result.single()["total"]
+
+    return {
+        "total_phages": len(phages_set),
+        "positive_interactions": total_positive,
+        "total_in_db": total
+    }
+
+
+def load_phages_from_lysis_csv_simple(csv_path: str = "../data/肺克数据脱敏.csv") -> dict:
+    """简化版本，使用默认参数"""
+    return load_phages_from_lysis_csv(csv_path, pathogen_id="PATH-003")
 
 # ========== 清空数据库函数 ==========
 def clear_database():

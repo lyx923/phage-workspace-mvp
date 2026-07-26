@@ -3,7 +3,7 @@ from config import config, get_driver   # ← 导入 get_driver
 from neo4j import GraphDatabase
 
 def create_schema(driver):
-    """执行 Cypher 语句，创建约束和索引"""
+    """创建约束和索引"""
     with driver.session() as session:
         # 1. Pathogen 唯一约束
         session.run("CREATE CONSTRAINT pathogen_id_unique IF NOT EXISTS FOR (p:Pathogen) REQUIRE p.pathogen_id IS UNIQUE;")
