@@ -214,6 +214,8 @@ load_cases_from_csv("../data/cases.csv")
 
 ## **📋 演示脚本**
 
+**启动**：streamlit run app.py --no-email
+
 **展示数据库**：MATCH (n) RETURN labels(n), count(\*)4 Pathogen, 33 Phage, 30 PhageHostInteraction, 17 ClinicalCase, 3 KnowledgeRule
 
 **展示黄金规则**：运行 Cell 2（03_cross_case_reuse.ipynb）3 条规则：CRAB KL2 → ΦK2-v3, CRKP KL47 → ΦK47-w7, E. coli O25 → CP-p-EC-23086
