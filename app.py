@@ -13,6 +13,7 @@ from src.validator import (
     batch_validate_hosts,
     query_l3_evidence,
     query_hosts_for_phage,
+    validate_without_sequencing,
 )
 from src.package_builder import (
     build_evidence_package_from_db,
@@ -96,7 +97,7 @@ with st.sidebar:
     st.subheader("📄 数据管理")
     
     # ===== 裂解谱最广的噬菌体（折叠） =====
-    with st.expander("🔬 裂解谱最广的噬菌体（Top 5）"):
+    with st.expander("📄 裂解谱最广的噬菌体（Top 5）"):
         with driver.session() as session:
             result = session.run("""
                 MATCH (phi:PhageHostInteraction)
@@ -110,7 +111,7 @@ with st.sidebar:
                 st.write(f"   - {record['phage_id']}: {record['host_count']} 个菌株")
     
     # ===== V1 验证（折叠，无按钮，自动显示） =====
-    with st.expander("📄 V1 数据完整性验证"):
+    with st.expander("📄 数据完整性验证"):
         @st.cache_data(ttl=600)  # 缓存 10 分钟
         def get_v1_validation():
             with driver.session() as session:
@@ -196,6 +197,8 @@ with tab1:
     
     if "primary_result" in st.session_state and st.session_state.primary_result:
         result = st.session_state.primary_result
+        summary = validate_without_sequencing(host_input)
+        st.success(summary["conclusion"])
         
         l5_count = sum(1 for p in result if p['evidence_level'] == 'L5')
         l4_count = sum(1 for p in result if p['evidence_level'] == 'L4')
@@ -259,7 +262,7 @@ with tab1:
                 st.write(f"   - {c['case_id']}: 结局 {c['clinical_outcome']}, 噬菌体: {c.get('phages_used', [])}")
     
     # ===== 噬菌体宿主谱查询（反向查询） =====
-    with st.expander("🔄 噬菌体宿主谱查询（反向查询）"):
+    with st.expander("🔬 噬菌体宿主谱查询（反向查询）"):
         st.caption("输入噬菌体名称，查看它能裂解哪些宿主菌株")
         
         col_phage1, col_phage2 = st.columns([3, 1])
@@ -347,6 +350,7 @@ with tab5:
     
     n_clusters = st.slider("聚类数", min_value=2, max_value=15, value=8)
     
+    # ---- 运行聚类 ----
     if st.button("运行聚类"):
         with st.spinner("聚类中..."):
             with driver.session() as session:
@@ -361,6 +365,7 @@ with tab5:
             
             if not records:
                 st.warning("⚠️ 数据库中无裂解谱数据，请先导入数据")
+                st.session_state.clusters = None
             else:
                 phages = sorted(set(r['phage'] for r in records))
                 hosts = sorted(set(r['host'] for r in records))
@@ -382,97 +387,102 @@ with tab5:
                 for host, label in zip(hosts, labels):
                     clusters.setdefault(label, []).append(host)
                 
+                st.session_state.clusters = clusters
                 st.write(f"📊 共分为 **{len(clusters)}** 个簇")
                 for label, strains in sorted(clusters.items()):
                     st.write(f"**簇 {label+1}**：{len(strains)} 个菌株，示例 {strains[:5]}")
-                
-                cluster_label = st.number_input(
-                    "输入簇编号（从 1 开始）", 
-                    min_value=1, 
-                    max_value=len(clusters), 
-                    value=1
-                )
-                
-                if st.button("推荐该簇的噬菌体"):
-                    target_label = cluster_label - 1
-                    if target_label in clusters:
-                        strains_in_cluster = clusters[target_label]
-                        st.write(f"🔍 簇 {cluster_label} 包含 {len(strains_in_cluster)} 个菌株")
-                        
-                        with driver.session() as session:
-                            result = session.run("""
-                                MATCH (phi:PhageHostInteraction)<-[:HAS_INTERACTION]-(ph:Phage)
-                                WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                                WITH ph, phi, $strains AS strains
-                                WITH ph, phi, 
-                                     REDUCE(s = 0, strain IN strains | 
-                                         s + CASE WHEN phi.notes CONTAINS strain THEN 1 ELSE 0 END
-                                     ) AS host_count
-                                WHERE host_count >= $min_host_count
-                                RETURN ph.name AS phage_name,
-                                       ph.phage_id AS phage_id,
-                                       phi.evidence_level AS evidence_level,
-                                       host_count
-                                ORDER BY host_count DESC
-                                LIMIT 10
-                            """, strains=strains_in_cluster, min_host_count=2)
-                            phages = [dict(r) for r in result]
-                        
-                        if phages:
-                            df = pd.DataFrame(phages)
-                            st.dataframe(df[["phage_name", "host_count", "evidence_level"]], use_container_width=True)
-                        else:
-                            st.warning("该簇中无满足条件的噬菌体")
     
-    # ===== 单个菌株型别级推荐 =====
+    # ---- 推荐该簇的噬菌体（独立于“运行聚类”按钮） ----
+    if "clusters" in st.session_state and st.session_state.clusters:
+        clusters = st.session_state.clusters
+        
+        st.markdown("---")
+        st.subheader("推荐簇内广谱噬菌体")
+        
+        cluster_label = st.number_input(
+            "输入簇编号（从 1 开始）", 
+            min_value=1, 
+            max_value=len(clusters), 
+            value=1,
+            key="cluster_select"
+        )
+        
+        # 阈值调节
+        min_host_count_cluster = st.number_input(
+            "最小覆盖菌株数", 
+            min_value=1, 
+            max_value=20, 
+            value=2,
+            key="cluster_min_host"
+        )
+        
+        if st.button("推荐该簇的噬菌体", key="recommend_cluster_phages"):
+            target_label = cluster_label - 1
+            if target_label in clusters:
+                strains_in_cluster = clusters[target_label]
+                st.write(f"🔍 簇 {cluster_label} 包含 {len(strains_in_cluster)} 个菌株")
+                
+                with driver.session() as session:
+                    result = session.run("""
+                        MATCH (phi:PhageHostInteraction)<-[:HAS_INTERACTION]-(ph:Phage)
+                        WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
+                        WITH ph, phi, $strains AS strains
+                        WITH ph, phi, 
+                             REDUCE(s = 0, strain IN strains | 
+                                 s + CASE WHEN phi.notes CONTAINS strain THEN 1 ELSE 0 END
+                             ) AS host_count
+                        WHERE host_count >= $min_host_count
+                        RETURN ph.name AS phage_name,
+                               ph.phage_id AS phage_id,
+                               phi.evidence_level AS evidence_level,
+                               host_count
+                        ORDER BY host_count DESC
+                        LIMIT 10
+                    """, strains=strains_in_cluster, min_host_count=min_host_count_cluster)
+                    phages = [dict(r) for r in result]
+                
+                if phages:
+                    df = pd.DataFrame(phages)
+                    st.dataframe(df[["phage_name", "host_count", "evidence_level"]], use_container_width=True)
+                else:
+                    st.warning(f"该簇中无噬菌体同时覆盖 {min_host_count_cluster} 个以上菌株，请尝试降低阈值。")
+            else:
+                st.error("无效的簇编号，请重新运行聚类。")
+    
+    # ---- 单个菌株型别级推荐（保留原有功能） ----
     st.markdown("---")
     st.subheader("🔍 单个菌株型别级推荐")
     st.caption("输入菌株编号，系统自动定位所属簇，推荐该簇内覆盖多菌株的噬菌体")
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        strain_input = st.text_input("输入菌株编号", value="B-KP11")
+        strain_input = st.text_input("输入菌株编号", value="B-KP11", key="strain_input_individual")
     with col2:
-        min_host_count = st.number_input("最小覆盖菌株数", min_value=2, max_value=20, value=2)
+        min_host_count_individual = st.number_input(
+            "最小覆盖菌株数", 
+            min_value=2, 
+            max_value=20, 
+            value=2,
+            key="individual_min_host"
+        )
     
-    if st.button("🔍 针对该菌株进行型别级推荐", type="primary"):
+    if st.button("🔍 针对该菌株进行型别级推荐", type="primary", key="individual_recommend"):
         with st.spinner("分析中..."):
-            with driver.session() as session:
-                result = session.run("""
-                    MATCH (phi:PhageHostInteraction)
-                    WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                    RETURN phi.phage_id AS phage,
-                           split(phi.notes, ': ')[1] AS host,
-                           1 AS value
-                """)
-                records = [dict(r) for r in result]
-            
-            if not records:
-                st.warning("⚠️ 数据库中无裂解谱数据，请先导入数据")
-            else:
-                phages = sorted(set(r['phage'] for r in records))
-                hosts = sorted(set(r['host'] for r in records))
-                
-                host_to_idx = {h: i for i, h in enumerate(hosts)}
-                phage_to_idx = {p: j for j, p in enumerate(phages)}
-                
-                matrix = np.zeros((len(hosts), len(phages)), dtype=int)
-                for r in records:
-                    if r['host'] in host_to_idx and r['phage'] in phage_to_idx:
-                        matrix[host_to_idx[r['host']], phage_to_idx[r['phage']]] = 1
-                
-                scaler = StandardScaler()
-                matrix_scaled = scaler.fit_transform(matrix)
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                labels = kmeans.fit_predict(matrix_scaled)
-                
-                strain_to_cluster = {host: label for host, label in zip(hosts, labels)}
+            # 需要重新聚类获取 strain_to_cluster，但这里复用 clusters 或重新计算
+            # 为简化，直接复用 st.session_state.clusters 反向映射
+            if "clusters" in st.session_state and st.session_state.clusters:
+                clusters = st.session_state.clusters
+                # 反向映射
+                strain_to_cluster = {}
+                for label, strains in clusters.items():
+                    for s in strains:
+                        strain_to_cluster[s] = label
                 
                 if strain_input not in strain_to_cluster:
                     st.warning(f"⚠️ 未找到菌株 {strain_input}，请检查编号是否正确")
                 else:
                     target_label = strain_to_cluster[strain_input]
-                    strains_in_cluster = [h for h, label in strain_to_cluster.items() if label == target_label]
+                    strains_in_cluster = clusters[target_label]
                     
                     st.success(f"✅ 菌株 **{strain_input}** 属于簇 {target_label+1}（共 {len(strains_in_cluster)} 个菌株）")
                     st.write(f"同簇菌株示例：{strains_in_cluster[:10]}{'...' if len(strains_in_cluster) > 10 else ''}")
@@ -493,7 +503,7 @@ with tab5:
                                    host_count
                             ORDER BY host_count DESC
                             LIMIT 10
-                        """, strains=strains_in_cluster, min_host_count=min_host_count)
+                        """, strains=strains_in_cluster, min_host_count=min_host_count_individual)
                         recommended_phages = [dict(r) for r in result]
                     
                     if recommended_phages:
@@ -510,7 +520,9 @@ with tab5:
                         )
                         st.caption("💡 这些噬菌体在该菌株所属的伪型别（簇）中具有广谱裂解能力")
                     else:
-                        st.warning(f"该簇中无噬菌体同时覆盖 {min_host_count} 个以上菌株")
+                        st.warning(f"该簇中无噬菌体同时覆盖 {min_host_count_individual} 个以上菌株")
+            else:
+                st.warning("请先运行聚类，生成簇分布。")
 
 # ================== 标签页 6：知识策展（五级完整支持） ==================
 with tab6:
@@ -624,7 +636,6 @@ with tab6:
                 records = [dict(r) for r in result]
         
         if records:
-            st.success(f"✅ 找到 {len(records)} 条互作记录")
             df = pd.DataFrame(records)
             st.dataframe(df, use_container_width=True)
             
