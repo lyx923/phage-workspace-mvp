@@ -198,7 +198,6 @@ def validate_without_sequencing(host_strain: str) -> Dict:
 
 
 # ==================== 基于裂解谱聚类的伪型别推荐（不持久化，Python 动态计算） ====================
-# ==================== 基于裂解谱聚类的伪型别推荐（Python 动态计算，不持久化到图） ====================
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler

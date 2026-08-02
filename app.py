@@ -4,6 +4,7 @@ import pandas as pd
 import random
 import json
 import numpy as np
+import os
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from config import get_driver
@@ -12,8 +13,6 @@ from src.validator import (
     batch_validate_hosts,
     query_l3_evidence,
     query_hosts_for_phage,
-    cluster_strains_from_csv,
-    query_phages_by_pseudo_type_from_mapping
 )
 from src.package_builder import (
     build_evidence_package_from_db,
@@ -21,11 +20,17 @@ from src.package_builder import (
 )
 from src.retriever import analyze_cross_case_reuse_simple, find_matching_phages, find_similar_cases
 from src.curation import curate_case_by_id
-from src.data_loader import load_phages_from_lysis_csv_simple
+from src.data_loader import (
+    load_phages_from_lysis_csv_simple,
+    import_golden_rules
+)
+
+# ---------- 获取项目根目录 ----------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="噬菌体配型系统", layout="wide")
-st.title(" 噬菌体配型智能助手")
+st.title("噬菌体配型智能助手")
 st.markdown("基于知识图谱的循证噬菌体推荐，支持裂解谱数据 + 临床验证")
 
 # ---------- 缓存数据库连接 ----------
@@ -52,12 +57,7 @@ with st.sidebar:
         col2.metric("宿主菌株", stats["host_count"])
         col3.metric("互作关系", stats["interaction_count"])
     
-    st.markdown("---")
-    
-    # ===== 数据管理区域 =====
-    st.subheader("🔄 数据管理")
-    
-    if st.button("🗑️ 清空并重新导入全部数据", type="secondary"):
+    if st.button("🔄 清空并重新导入全部数据", type="secondary"):
         with st.status("执行数据导入...", expanded=True) as status:
             from src.data_loader import clear_database, load_cases_from_csv, load_phages_from_csv
             from src.schema import create_schema
@@ -71,175 +71,48 @@ with st.sidebar:
             st.write("✅ 约束和索引已创建")
 
             status.update(label="导入噬菌体互作...")
-            load_phages_from_csv("../data/phage_interactions.csv")
+            load_phages_from_csv(os.path.join(BASE_DIR, "data", "phage_interactions.csv"))
             st.write("✅ 噬菌体互作导入完成")
 
             status.update(label="导入临床病例...")
-            load_cases_from_csv("../data/cases.csv")
+            load_cases_from_csv(os.path.join(BASE_DIR, "data", "cases.csv"))
             st.write("✅ 病例导入完成")
 
             status.update(label="导入裂解谱数据...")
-            result = load_phages_from_lysis_csv_simple("../data/肺克数据脱敏.csv")
+            result = load_phages_from_lysis_csv_simple(os.path.join(BASE_DIR, "data", "肺克数据脱敏.csv"))
             st.write(f"✅ 裂解谱导入完成，新增 {result['positive_interactions']} 条记录")
+
+            status.update(label="导入黄金配型知识库...")
+            result = import_golden_rules()
+            st.write(f"✅ 黄金配型知识库导入完成")
 
             status.update(label="全部完成！", state="complete")
         st.success("🎉 所有数据已重新导入！")
         st.rerun()
     
-    if st.button("🔄 重新导入裂解谱数据"):
-        with st.spinner("导入中..."):
-            result = load_phages_from_lysis_csv_simple()
-        st.success(f"✅ 新增 {result['positive_interactions']} 条记录")
-        st.rerun()
-    
-    # 新增：独立导入互作数据（FR-2）
-    if st.button("📄 重新导入互作数据"):
-        with st.spinner("导入中..."):
-            from src.data_loader import load_phages_from_csv
-            load_phages_from_csv("../data/phage_interactions.csv")
-        st.success("✅ 互作数据导入完成！")
-        st.rerun()
-    
-    # ===== 黄金配型管理 =====
-    if st.button("📄 导入黄金配型知识库"):
-        with st.status("导入黄金配型...", expanded=True) as status:
-            from src.data_loader import get_driver as get_driver_dl
-            
-            validated_rules = [
-                {
-                    "rule_id": "RULE_CRAB_KL2",
-                    "pathogen_species": "Acinetobacter baumannii",
-                    "strain_type": "KL2",
-                    "phage_name": "ΦK2-v3",
-                    "treatment": "ΦK2-v3 单用",
-                    "outcome": "第14天微生物清除，第6个月未复发",
-                    "evidence_from": "肖易倍团队第N次配型"
-                },
-                {
-                    "rule_id": "RULE_CRKP_KL47",
-                    "pathogen_species": "Klebsiella pneumoniae",
-                    "strain_type": "KL47",
-                    "phage_name": "ΦK47-w7",
-                    "treatment": "ΦK47-w7 + 碳青霉烯类",
-                    "outcome": "第3个月未复发",
-                    "evidence_from": "肖易倍团队第N次配型"
-                },
-                {
-                    "rule_id": "RULE_ECOLI_O25",
-                    "pathogen_species": "Escherichia coli",
-                    "strain_type": "O25",
-                    "phage_name": "CP-p-EC-23086",
-                    "treatment": "膀胱灌注（局部递送）",
-                    "outcome": "48小时内细菌计数断崖式下降",
-                    "evidence_from": "临床验证（结合CASE-001及既往数据）"
-                }
-            ]
-            
-            with get_driver_dl() as d:
-                with d.session() as s:
-                    for rule in validated_rules:
-                        result = s.run("""
-                            MERGE (r:KnowledgeRule {rule_id: $rule_id})
-                            SET r.strain_type = $strain_type,
-                                r.treatment = $treatment,
-                                r.outcome = $outcome,
-                                r.evidence_from = $evidence_from
-                            WITH r
-                            MERGE (p:Pathogen {species: $pathogen_species})
-                            ON CREATE SET p.resistance_mechanism = 'Unknown'
-                            MERGE (p)-[:HAS_VALIDATED_RULE]->(r)
-                            WITH r
-                            MERGE (ph:Phage {name: $phage_name})
-                            ON CREATE SET ph.family = 'Unknown'
-                            MERGE (r)-[:RECOMMENDS_PHAGE]->(ph)
-                            RETURN r.rule_id AS id
-                        """,
-                        rule_id=rule["rule_id"],
-                        pathogen_species=rule["pathogen_species"],
-                        strain_type=rule["strain_type"],
-                        phage_name=rule["phage_name"],
-                        treatment=rule["treatment"],
-                        outcome=rule["outcome"],
-                        evidence_from=rule["evidence_from"])
-                        st.write(f"✅ {result.single()['id']}")
-            status.update(label="全部完成！", state="complete")
-        st.success("🎉 黄金配型知识库导入完成！")
-        st.rerun()
-
-    # ===== 测试用例管理 =====
-    if st.button("📄 创建测试病例 CASE-998/999"):
-        with st.status("创建测试病例...", expanded=True) as status:
-            from src.data_loader import get_driver as get_driver_dl
-            
-            with get_driver_dl() as d:
-                with d.session() as s:
-                    # 创建 CASE-999 (CRAB KL2)
-                    s.run("""
-                        MERGE (p:Pathogen {species: "Acinetobacter baumannii"})
-                        SET p.resistance_mechanism = "Carbapenem-resistant",
-                            p.strain_type = "KL2",
-                            p.verification_status = "MICROBIOLOGY_LAB_VERIFIED"
-                        WITH p
-                        CREATE (c:ClinicalCase {
-                            case_id: "CASE-999",
-                            infection_type: "Pneumonia",
-                            infection_site: "Lung",
-                            specimen_type: "Sputum",
-                            patient_age_group: "65-75",
-                            comorbidities: ["COPD", "Diabetes"],
-                            prior_antibiotics: ["Meropenem", "Colistin"],
-                            phage_treatment: null,
-                            clinical_outcome: null,
-                            microbiological_outcome: null,
-                            curated_by: "FDE-TEST",
-                            curation_date: date()
-                        })
-                        WITH c, p
-                        MERGE (c)-[:INVOLVES_PATHOGEN]->(p)
-                        MATCH (r:KnowledgeRule {rule_id: "RULE_CRAB_KL2"})
-                        MERGE (p)-[:HAS_VALIDATED_RULE]->(r)
-                        RETURN "CASE-999" AS case_id
-                    """)
-                    st.write("✅ CASE-999 (CRAB KL2) 创建成功")
-                    
-                    # 创建 CASE-998 (CRKP KL47)
-                    s.run("""
-                        MERGE (p:Pathogen {species: "Klebsiella pneumoniae"})
-                        SET p.resistance_mechanism = "Carbapenem-resistant",
-                            p.strain_type = "KL47",
-                            p.verification_status = "MICROBIOLOGY_LAB_VERIFIED"
-                        WITH p
-                        CREATE (c:ClinicalCase {
-                            case_id: "CASE-998",
-                            infection_type: "VAP",
-                            infection_site: "Lung",
-                            specimen_type: "BALF",
-                            patient_age_group: "55-65",
-                            comorbidities: ["Diabetes", "Immunosuppression"],
-                            prior_antibiotics: ["Meropenem"],
-                            phage_treatment: null,
-                            clinical_outcome: null,
-                            microbiological_outcome: null,
-                            curated_by: "FDE-TEST",
-                            curation_date: date()
-                        })
-                        WITH c, p
-                        MERGE (c)-[:INVOLVES_PATHOGEN]->(p)
-                        MATCH (r:KnowledgeRule {rule_id: "RULE_CRKP_KL47"})
-                        MERGE (p)-[:HAS_VALIDATED_RULE]->(r)
-                        RETURN "CASE-998" AS case_id
-                    """)
-                    st.write("✅ CASE-998 (CRKP KL47) 创建成功")
-            status.update(label="全部完成！", state="complete")
-        st.success("🎉 测试病例创建完成！")
-        st.rerun()
-
     st.markdown("---")
     
-    # ===== V1 验证 =====
-    st.subheader("📋 V1 数据完整性验证")
-    if st.button("运行 V1 验证（必填字段填充率）"):
-        with st.spinner("验证中..."):
+    # ===== 数据管理区域 =====
+    st.subheader("📄 数据管理")
+    
+    # ===== 裂解谱最广的噬菌体（折叠） =====
+    with st.expander("🔬 裂解谱最广的噬菌体（Top 5）"):
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (phi:PhageHostInteraction)
+                WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
+                WITH phi.phage_id AS phage_id, count(phi) AS host_count
+                RETURN phage_id, host_count
+                ORDER BY host_count DESC
+                LIMIT 5
+            """)
+            for record in result:
+                st.write(f"   - {record['phage_id']}: {record['host_count']} 个菌株")
+    
+    # ===== V1 验证（折叠，无按钮，自动显示） =====
+    with st.expander("📄 V1 数据完整性验证"):
+        @st.cache_data(ttl=600)  # 缓存 10 分钟
+        def get_v1_validation():
             with driver.session() as session:
                 result = session.run("""
                     MATCH (c:ClinicalCase)-[:INVOLVES_PATHOGEN]->(p:Pathogen)
@@ -269,49 +142,26 @@ with st.sidebar:
                     total_fields = len(filled) * total
                     total_filled = sum(filled.values())
                     rate = (total_filled / total_fields) * 100
-                    
-                    st.metric("必填字段填充率", f"{rate:.1f}%")
-                    for field, count in filled.items():
-                        st.write(f"   - {field}: {count}/{total} ({count/total*100:.0f}%)")
-                    if rate >= 90:
-                        st.success("🎉 V1 验证通过！填充率 ≥ 90%")
-                    else:
-                        st.warning(f"⚠️ V1 验证未通过（{rate:.1f}% < 90%）")
+                    return {"total": total, "filled": filled, "rate": rate}
                 else:
-                    st.warning("数据库中无病例数据")
-    
-    # ===== 知识网络分析（折叠） =====
-    with st.expander("📊 知识网络分析"):
-        st.markdown("**网络规模**")
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (phi:PhageHostInteraction)
-                WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                RETURN count(DISTINCT phi.phage_id) AS phage_count,
-                       count(DISTINCT phi.notes) AS host_count,
-                       count(phi) AS interaction_count
-            """)
-            stats = result.single()
-            col1, col2, col3 = st.columns(3)
-            col1.metric("噬菌体", stats["phage_count"])
-            col2.metric("菌株", stats["host_count"])
-            col3.metric("互作", stats["interaction_count"])
+                    return {"error": "数据库中无病例数据"}
         
-        st.markdown("裂解谱最广的噬菌体（Top5）")
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (phi:PhageHostInteraction)
-                WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                WITH phi.phage_id AS phage_id, count(phi) AS host_count
-                RETURN phage_id, host_count
-                ORDER BY host_count DESC
-                LIMIT 5
-            """)
-            for record in result:
-                st.write(f"   - {record['phage_id']}: {record['host_count']} 个菌株")
-
+        v1_data = get_v1_validation()
+        if "error" in v1_data:
+            st.warning(v1_data["error"])
+        else:
+            st.metric("必填字段填充率", f"{v1_data['rate']:.1f}%")
+            for field, count in v1_data['filled'].items():
+                st.write(f"   - {field}: {count}/{v1_data['total']} ({count/v1_data['total']*100:.0f}%)")
+            if v1_data['rate'] >= 90:
+                st.success("🎉 V1 验证通过！填充率 ≥ 90%")
+            else:
+                st.warning(f"⚠️ V1 验证未通过（{v1_data['rate']:.1f}% < 90%）")
+    
     st.markdown("---")
-
+    
+    # ===== 系统状态 =====
+    st.subheader("⚙️ 系统状态")
     try:
         from config import Config
         if Config.DS_API_KEY and Config.DS_API_KEY != "your_api_key_here":
@@ -321,7 +171,7 @@ with st.sidebar:
     except:
         st.caption("⚠️ 无法读取配置")
 
-# ---------- 主界面：多标签页（已调整标题） ----------
+# ---------- 主界面：多标签页 ----------
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔍 菌株配型查询",
     "📊 批量菌株配型",
@@ -331,7 +181,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📝 知识策展"
 ])
 
-# ================== 标签页 1：菌株配型查询（反向查询） ==================
+# ================== 标签页 1：菌株配型查询 ==================
 with tab1:
     st.subheader("单个菌株配型查询")
     col1, col2 = st.columns([3, 1])
@@ -342,121 +192,106 @@ with tab1:
     
     if st.button("查询配型", type="primary"):
         with st.spinner("查询中..."):
-            result = query_phages_for_host(host_input, limit)
-        if result:
-            # 显示详细列表
-            df = pd.DataFrame(result)
-            st.success(f"✅ 找到 {len(result)} 个候选噬菌体")
-            st.dataframe(df[["phage_name", "evidence_level", "evidence_ref"]],
-                         use_container_width=True)
-            st.markdown("**详细列表**")
-            for p in result:
-                st.markdown(f"- **{p['phage_name']}** (L{p['evidence_level']}) 来源: {p['evidence_ref']}")
-            
-            # ===== 五级配型总结 =====
-            st.markdown("---")
-            st.subheader("🧬 配型总结（不依赖测序数据）")
-            
-            l5_count = sum(1 for p in result if p['evidence_level'] == 'L5')
-            l4_count = sum(1 for p in result if p['evidence_level'] == 'L4')
-            l3_count = sum(1 for p in result if p['evidence_level'] == 'L3')
-            l2_count = sum(1 for p in result if p['evidence_level'] == 'L2')
-            l1_count = sum(1 for p in result if p['evidence_level'] == 'L1')
-            total = len(result)
-            
-            conclusion = f"✅ 不依赖测序数据，仅凭菌株编号即可推荐 {total} 个候选噬菌体"
-            if l2_count > 0:
-                conclusion += f"（其中 {l2_count} 个来自裂解谱证据 L2）"
-            elif l3_count > 0:
-                conclusion += f"（其中 {l3_count} 个来自临床验证 L3）"
-            st.success(conclusion)
-            
-            # 五级证据等级展示
-            col_a, col_b, col_c, col_d, col_e = st.columns(5)
-            col_a.metric("L1 文献", l1_count)
-            col_b.metric("L2 体外", l2_count)
-            col_c.metric("L3 临床", l3_count)
-            col_d.metric("L4 多中心", l4_count)
-            col_e.metric("L5 闭环", l5_count)
-            
-            # 各等级详细列表（仅显示有数据的等级）
-            if l5_count > 0:
-                l5_phages = [p['phage_name'] for p in result if p['evidence_level'] == 'L5']
-                st.write(f"**L5 组织学习闭环噬菌体**：{', '.join(l5_phages)}")
-            if l4_count > 0:
-                l4_phages = [p['phage_name'] for p in result if p['evidence_level'] == 'L4']
-                st.write(f"**L4 多中心临床验证噬菌体**：{', '.join(l4_phages)}")
-            if l3_count > 0:
-                l3_phages = [p['phage_name'] for p in result if p['evidence_level'] == 'L3']
-                st.write(f"**L3 单例临床验证噬菌体**：{', '.join(l3_phages)}")
-            if l2_count > 0:
-                l2_phages = [p['phage_name'] for p in result if p['evidence_level'] == 'L2']
-                st.write(f"**L2 体外验证噬菌体**：{', '.join(l2_phages[:5])}{' ...' if len(l2_phages) > 5 else ''}")
-            if l1_count > 0:
-                l1_phages = [p['phage_name'] for p in result if p['evidence_level'] == 'L1']
-                st.write(f"**L1 文献报道噬菌体**：{', '.join(l1_phages[:5])}{' ...' if len(l1_phages) > 5 else ''}")
-            
-            st.caption("💡 证据等级说明：L1(文献) → L2(体外) → L3(单例临床) → L4(多中心) → L5(组织学习闭环)")
-            
-            # ===== 底层检索函数展示（折叠） =====
-            with st.expander("🔬 查看原始检索结果（find_matching_phages / find_similar_cases）"):
-                col_ret1, col_ret2 = st.columns(2)
-                with col_ret1:
-                    st.markdown("**匹配噬菌体（E. coli MDR）**")
-                    with st.spinner("查询中..."):
-                        phages_raw = find_matching_phages(driver, "Escherichia coli", "MDR", limit=10)
-                    st.write(f"找到 {len(phages_raw)} 个匹配噬菌体：")
-                    for p in phages_raw[:5]:
-                        st.write(f"   - {p['name']} (L{p['evidence_level']}) 概率: {p['infection_probability']}")
-                    if len(phages_raw) > 5:
-                        st.write(f"   ... 还有 {len(phages_raw)-5} 个")
-                
-                with col_ret2:
-                    st.markdown("**相似病例（E. coli UTI）**")
-                    with st.spinner("查询中..."):
-                        cases_raw = find_similar_cases(driver, "Escherichia coli", "UTI", limit=5)
-                    st.write(f"找到 {len(cases_raw)} 个相似病例：")
-                    for c in cases_raw:
-                        st.write(f"   - {c['case_id']}: 结局 {c['clinical_outcome']}, 噬菌体: {c.get('phages_used', [])}")
-            
-            # ===== 噬菌体宿主谱查询（反向查询） =====
-            with st.expander("🔄 噬菌体宿主谱查询（反向查询）"):
-                st.caption("输入噬菌体名称，查看它能裂解哪些宿主菌株")
-                
-                col_phage1, col_phage2 = st.columns([3, 1])
-                with col_phage1:
-                    phage_input = st.text_input("输入噬菌体名称（如 PKP014 或 PHAGE-PKP014）", value="PKP014")
-                with col_phage2:
-                    phage_limit = st.number_input("返回数量", min_value=1, max_value=200, value=20, key="phage_limit")
-                
-                if st.button("🔍 查询噬菌体宿主谱", key="query_phage_hosts"):
-                    with st.spinner("查询中..."):
-                        from src.validator import query_hosts_for_phage
-                        result = query_hosts_for_phage(phage_input, limit=phage_limit)
-                    
-                    if result:
-                        df_hosts = pd.DataFrame(result)
-                        st.success(f"✅ 噬菌体 **{phage_input}** 能裂解 {len(result)} 个宿主菌株")
-                        
-                        st.dataframe(
-                            df_hosts[["host_strain", "evidence_level"]],
-                            column_config={
-                                "host_strain": "宿主菌株",
-                                "evidence_level": "证据等级"
-                            },
-                            use_container_width=True
-                        )
-                        
-                        # 统计各证据等级数量
-                        level_counts = df_hosts['evidence_level'].value_counts().to_dict()
-                        st.write("**📊 证据等级分布**")
-                        cols = st.columns(len(level_counts))
-                        for idx, (level, count) in enumerate(level_counts.items()):
-                            cols[idx].metric(f"L{level}", count)
-                    else:
-                        st.warning(f"未找到噬菌体 **{phage_input}** 的宿主记录，请确认名称是否正确")
-        else:
+            st.session_state.primary_result = query_phages_for_host(host_input, limit)
+    
+    if "primary_result" in st.session_state and st.session_state.primary_result:
+        result = st.session_state.primary_result
+        
+        l5_count = sum(1 for p in result if p['evidence_level'] == 'L5')
+        l4_count = sum(1 for p in result if p['evidence_level'] == 'L4')
+        l3_count = sum(1 for p in result if p['evidence_level'] == 'L3')
+        l2_count = sum(1 for p in result if p['evidence_level'] == 'L2')
+        l1_count = sum(1 for p in result if p['evidence_level'] == 'L1')
+        
+        col_a, col_b, col_c, col_d, col_e = st.columns(5)
+        col_a.metric("L1 文献", l1_count)
+        col_b.metric("L2 体外", l2_count)
+        col_c.metric("L3 临床", l3_count)
+        col_d.metric("L4 多中心", l4_count)
+        col_e.metric("L5 闭环", l5_count)
+        df = pd.DataFrame(result)
+        st.dataframe(df[["phage_name", "evidence_level", "evidence_ref"]],
+                     use_container_width=True)
+        
+        st.caption("💡 证据等级说明：L1(文献) → L2(体外) → L3(单例临床) → L4(多中心) → L5(组织学习闭环)")
+    else:
+        if "primary_result" in st.session_state:
             st.warning("未找到匹配噬菌体")
+    
+    st.markdown("---")
+    
+    # ===== 匹配噬菌体查询（独立折叠） =====
+    with st.expander("🔬 匹配噬菌体查询"):
+        st.markdown("#### 匹配噬菌体查询")
+        col_species, col_resistance = st.columns(2)
+        with col_species:
+            search_species = st.text_input("菌种 (species)", value="Escherichia coli", key="ret_species")
+        with col_resistance:
+            search_resistance = st.text_input("耐药机制 (resistance)", value="MDR", key="ret_resistance")
+        search_phage_limit = st.number_input("返回数量", min_value=1, max_value=100, value=10, key="ret_phage_limit")
+        if st.button("查询匹配噬菌体", key="ret_phage_btn"):
+            with st.spinner("查询中..."):
+                st.session_state.ret_phage_result = find_matching_phages(driver, search_species, search_resistance, limit=search_phage_limit)
+        if "ret_phage_result" in st.session_state and st.session_state.ret_phage_result is not None:
+            phages_raw = st.session_state.ret_phage_result
+            st.write(f"找到 {len(phages_raw)} 个匹配噬菌体：")
+            for p in phages_raw[:5]:
+                st.write(f"   - {p['name']} (L{p['evidence_level']}) 概率: {p['infection_probability']}")
+            if len(phages_raw) > 5:
+                st.write(f"   ... 还有 {len(phages_raw)-5} 个")
+    
+    # ===== 相似病例查询（独立折叠） =====
+    with st.expander("🔬 相似病例查询"):
+        st.markdown("#### 相似病例查询")
+        col_sim_species, col_sim_type = st.columns(2)
+        with col_sim_species:
+            sim_species = st.text_input("菌种 (species)", value="Escherichia coli", key="sim_species")
+        with col_sim_type:
+            sim_infection_type = st.text_input("感染类型 (infection_type)", value="UTI", key="sim_infection_type")
+        sim_limit = st.number_input("返回数量", min_value=1, max_value=100, value=5, key="sim_limit")
+        if st.button("查询相似病例", key="sim_btn"):
+            with st.spinner("查询中..."):
+                st.session_state.sim_result = find_similar_cases(driver, sim_species, sim_infection_type, limit=sim_limit)
+        if "sim_result" in st.session_state and st.session_state.sim_result is not None:
+            cases_raw = st.session_state.sim_result
+            st.write(f"找到 {len(cases_raw)} 个相似病例：")
+            for c in cases_raw:
+                st.write(f"   - {c['case_id']}: 结局 {c['clinical_outcome']}, 噬菌体: {c.get('phages_used', [])}")
+    
+    # ===== 噬菌体宿主谱查询（反向查询） =====
+    with st.expander("🔄 噬菌体宿主谱查询（反向查询）"):
+        st.caption("输入噬菌体名称，查看它能裂解哪些宿主菌株")
+        
+        col_phage1, col_phage2 = st.columns([3, 1])
+        with col_phage1:
+            phage_input = st.text_input("输入噬菌体名称（如 PKP014 或 PHAGE-PKP014）", value="PKP014", key="phage_input_reverse")
+        with col_phage2:
+            phage_limit = st.number_input("返回数量", min_value=1, max_value=200, value=20, key="phage_limit_reverse")
+        
+        if st.button("🔍 查询噬菌体宿主谱", key="query_phage_hosts"):
+            with st.spinner("查询中..."):
+                st.session_state.reverse_result = query_hosts_for_phage(phage_input, limit=phage_limit)
+        
+        if "reverse_result" in st.session_state and st.session_state.reverse_result:
+            result = st.session_state.reverse_result
+            if result:
+                df_hosts = pd.DataFrame(result)
+                st.success(f"✅ 噬菌体 **{phage_input}** 能裂解 {len(result)} 个宿主菌株")
+                st.dataframe(
+                    df_hosts[["host_strain", "evidence_level"]],
+                    column_config={
+                        "host_strain": "宿主菌株",
+                        "evidence_level": "证据等级"
+                    },
+                    use_container_width=True
+                )
+                level_counts = df_hosts['evidence_level'].value_counts().to_dict()
+                st.write("**📊 证据等级分布**")
+                cols = st.columns(len(level_counts))
+                for idx, (level, count) in enumerate(level_counts.items()):
+                    cols[idx].metric(f"L{level}", count)
+            else:
+                st.warning(f"未找到噬菌体 **{phage_input}** 的宿主记录，请确认名称是否正确")
 
 # ================== 标签页 2：批量菌株配型 ==================
 with tab2:
@@ -465,8 +300,10 @@ with tab2:
         strains = random.sample([f"B-KP{i}" for i in range(1, 244)], 15)
         with st.spinner("验证中..."):
             df = batch_validate_hosts(strains)
-        st.dataframe(df, use_container_width=True)
-        st.metric("平均匹配数", f"{df['总匹配'].mean():.1f}")
+            st.session_state.batch_result = df
+    if "batch_result" in st.session_state:
+        st.dataframe(st.session_state.batch_result, use_container_width=True)
+        st.metric("平均匹配数", f"{st.session_state.batch_result['总匹配'].mean():.1f}")
 
 # ================== 标签页 3：证据包生成 ==================
 with tab3:
@@ -482,10 +319,12 @@ with tab3:
         with st.spinner("生成中..."):
             if use_llm:
                 result = build_evidence_package_from_db(species, resistance, infection_type)
-                st.json(result)
+                st.session_state.ep_result = result
             else:
                 result = rule_based_evidence_package(species, resistance, infection_type)
-                st.json(result)
+                st.session_state.ep_result = result
+    if "ep_result" in st.session_state:
+        st.json(st.session_state.ep_result)
 
 # ================== 标签页 4：跨病例复用 ==================
 with tab4:
@@ -497,8 +336,9 @@ with tab4:
         case_b = st.text_input("病例 B ID", value="CASE-003")
     if st.button("分析复用"):
         with st.spinner("分析中..."):
-            result = analyze_cross_case_reuse_simple(case_a, case_b)
-        st.json(result)
+            st.session_state.reuse_result = analyze_cross_case_reuse_simple(case_a, case_b)
+    if "reuse_result" in st.session_state:
+        st.json(st.session_state.reuse_result)
 
 # ================== 标签页 5：聚类分析 ==================
 with tab5:

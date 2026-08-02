@@ -14,3 +14,5 @@ CASE-012,PATH-001,Escherichia coli,MDR,"blaCTX-M,blaOXA-1",Bloodstream,Blood,Blo
 CASE-013,PATH-002,Acinetobacter baumannii,CR,"OXA-23,OXA-24",Wound,Skin,Wound,MICROBIOLOGY_LAB_VERIFIED,65-75,"DM,Obesity","Colistin,Tigecycline","vB_AbaM_007","Improved","Clearance",FDE-02,2026-06-15
 CASE-014,PATH-003,Klebsiella pneumoniae,KPC,"blaKPC-2,blaTEM",Pneumonia,Lung,Sputum,MICROBIOLOGY_LAB_VERIFIED,55-65,"CHF","Meropenem","","Not improved","Persistent",,2026-05-20
 CASE-015,PATH-004,Pseudomonas aeruginosa,MDR,"blaVIM",UTI,Urine,Urine,MICROBIOLOGY_LAB_VERIFIED,75-85,"CKD","Amikacin,Colistin","vB_Pae_002","Improved","Bacteria decreased from >100000 to <1000",FDE-01,2026-06-18
+CASE-998,PATH-003,Klebsiella pneumoniae,CR,"",VAP,Lung,BALF,MICROBIOLOGY_LAB_VERIFIED,55-65,"Diabetes,Immunosuppression","Meropenem","","","",FDE-TEST,2026-07-13
+CASE-999,PATH-002,Acinetobacter baumannii,CR,"",Pneumonia,Lung,Sputum,MICROBIOLOGY_LAB_VERIFIED,65-75,"COPD,Diabetes","Meropenem,Colistin","","","",FDE-TEST,2026-07-13

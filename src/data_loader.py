@@ -33,7 +33,6 @@ def insert_pathogen(tx, data):
 
 def insert_clinical_case(tx, data):
     """插入 ClinicalCase 节点，并与 Pathogen 建立关系，同时建立 TREATED_WITH 关系"""
-    # 1. 插入 Pathogen
     insert_pathogen(tx, {
         "pathogen_id": data["pathogen_id"],
         "species": data["species"],
@@ -42,7 +41,6 @@ def insert_clinical_case(tx, data):
         "verification_status": data["verification_status"]
     })
     
-    # 2. 创建 ClinicalCase 节点并关联 Pathogen，返回 case_id
     query1 = """
     MERGE (c:ClinicalCase {case_id: $case_id})
     SET c.infection_type = $infection_type,
@@ -67,7 +65,6 @@ def insert_clinical_case(tx, data):
         raise Exception(f"Failed to create ClinicalCase {data.get('case_id')}")
     case_id = record[0]
     
-    # 3. 如果 phage_treatment 不为空，建立 TREATED_WITH 关系（仅当对应的 Phage 节点存在时）
     treatment_str = data.get('phage_treatment')
     if treatment_str and pd.notna(treatment_str) and str(treatment_str).strip() != '':
         phage_names = [x.strip() for x in str(treatment_str).split(',') if x.strip()]
@@ -106,7 +103,6 @@ def load_cases_from_csv(csv_path):
                 row_dict = row.to_dict()
                 row_dict["resistance_genes"] = str(row_dict.get("resistance_genes", ""))
                 
-                # 处理可选字段的 NaN
                 optional_fields = [
                     'phage_treatment', 'microbiological_outcome', 'curated_by', 'curation_date',
                     'patient_age_group', 'comorbidities', 'prior_antibiotics'
@@ -115,7 +111,6 @@ def load_cases_from_csv(csv_path):
                     if pd.isna(row_dict.get(field)):
                         row_dict[field] = None
                 
-                # 将逗号分隔的字符串转换为列表
                 if row_dict.get('comorbidities') and isinstance(row_dict['comorbidities'], str):
                     row_dict['comorbidities'] = [x.strip() for x in row_dict['comorbidities'].split(',') if x.strip()]
                 if row_dict.get('prior_antibiotics') and isinstance(row_dict['prior_antibiotics'], str):
@@ -130,8 +125,7 @@ def load_cases_from_csv(csv_path):
     print(f"\n🎯 导入完成！成功 {success_count} 例，失败 {len(df) - success_count} 例。")
     return success_count
 
-
-# ========== 噬菌体互作数据导入（FR-2）==========
+# ========== 噬菌体互作数据导入 ==========
 def load_phages_from_csv(csv_path):
     """从 CSV 导入 Phage 和 PhageHostInteraction 节点，并建立完整关系链"""
     if not os.path.exists(csv_path):
@@ -148,7 +142,6 @@ def load_phages_from_csv(csv_path):
                 try:
                     interaction_id = f"{row['phage_id']}_{row['pathogen_id']}"
 
-                    # 1. 创建或合并 Phage 节点
                     session.run("""
                     MERGE (p:Phage {phage_id: $phage_id})
                     SET p.name = $phage_name,
@@ -160,17 +153,14 @@ def load_phages_from_csv(csv_path):
                     family=row.get('family') if pd.notna(row.get('family')) else None,
                     receptor_target=row.get('receptor_target') if pd.notna(row.get('receptor_target')) else None)
 
-                    # 2. 【关键修复】确保 Pathogen 节点存在（只设置 pathogen_id，后续会被 insert_pathogen 补齐）
                     session.run("MERGE (p:Pathogen {pathogen_id: $pathogen_id})", pathogen_id=row['pathogen_id'])
 
-                    # 3. 解析 evidence_ref
                     evidence_ref_str = row.get('evidence_ref', '')
                     if pd.isna(evidence_ref_str) or str(evidence_ref_str).strip() == '':
                         evidence_ref_list = []
                     else:
                         evidence_ref_list = [x.strip() for x in str(evidence_ref_str).split(',') if x.strip()]
 
-                    # 4. 创建 PhageHostInteraction 节点并建立关系
                     result = session.run("""
                     MERGE (i:PhageHostInteraction {interaction_id: $interaction_id})
                     SET i.phage_id = $phage_id,
@@ -196,7 +186,6 @@ def load_phages_from_csv(csv_path):
                     evidence_ref=evidence_ref_list,
                     notes=row.get('notes') if pd.notna(row.get('notes')) else None)
 
-                    created = result.single()['created']
                     success_count += 1
                 except Exception as e:
                     print(f"   ❌ 导入失败 (第 {index+2} 行): {e}")
@@ -204,12 +193,8 @@ def load_phages_from_csv(csv_path):
         print(f"\n🎯 噬菌体互作导入完成！成功 {success_count} 条记录。")
 
 # ========== 从裂解谱 CSV 导入 ==========
-# ========== 从裂解谱 CSV 导入（直接插入，不通过临时文件）==========
 def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> dict:
-    """
-    从裂解谱 CSV 文件读取数据，直接插入 Neo4j（不依赖临时文件和 load_phages_from_csv）。
-    每条互作记录生成唯一的 interaction_id（包含宿主菌株），确保全部插入。
-    """
+    """从裂解谱 CSV 文件读取数据，直接插入 Neo4j"""
     if not os.path.exists(csv_path):
         alt_path = os.path.join("data", os.path.basename(csv_path))
         if os.path.exists(alt_path):
@@ -224,9 +209,6 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
     phage_col = df.columns[0]
     host_cols = df.columns[1:-1]
 
-    from config import get_driver
-
-    # 确保 Pathogen 节点存在
     with get_driver() as driver:
         with driver.session() as session:
             session.run("""
@@ -248,7 +230,6 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                 phage_id = f"PHAGE-{phage_name}"
                 phages_set.add(phage_id)
 
-                # 确保 Phage 节点存在
                 session.run("""
                     MERGE (ph:Phage {phage_id: $phage_id})
                     SET ph.name = $phage_name
@@ -303,7 +284,6 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
         "total_in_db": total
     }
 
-
 def load_phages_from_lysis_csv_simple(csv_path: str = "../data/肺克数据脱敏.csv") -> dict:
     """简化版本，使用默认参数"""
     return load_phages_from_lysis_csv(csv_path, pathogen_id="PATH-003")
@@ -317,6 +297,72 @@ def clear_database():
             session.run("MATCH (n) DETACH DELETE n")
     print("✅ 数据库已清空")
 
+# ========== 黄金配型管理 ==========
+def import_golden_rules() -> str:
+    """导入黄金配型知识库（3 条规则）"""
+    from src.data_loader import get_driver
+    
+    validated_rules = [
+        {
+            "rule_id": "RULE_CRAB_KL2",
+            "pathogen_species": "Acinetobacter baumannii",
+            "strain_type": "KL2",
+            "phage_name": "ΦK2-v3",
+            "treatment": "ΦK2-v3 单用",
+            "outcome": "第14天微生物清除，第6个月未复发",
+            "evidence_from": "肖易倍团队第N次配型"
+        },
+        {
+            "rule_id": "RULE_CRKP_KL47",
+            "pathogen_species": "Klebsiella pneumoniae",
+            "strain_type": "KL47",
+            "phage_name": "ΦK47-w7",
+            "treatment": "ΦK47-w7 + 碳青霉烯类",
+            "outcome": "第3个月未复发",
+            "evidence_from": "肖易倍团队第N次配型"
+        },
+        {
+            "rule_id": "RULE_ECOLI_O25",
+            "pathogen_species": "Escherichia coli",
+            "strain_type": "O25",
+            "phage_name": "CP-p-EC-23086",
+            "treatment": "膀胱灌注（局部递送）",
+            "outcome": "48小时内细菌计数断崖式下降",
+            "evidence_from": "临床验证（结合CASE-001及既往数据）"
+        }
+    ]
+    
+    success_count = 0
+    with get_driver() as driver:
+        with driver.session() as session:
+            for rule in validated_rules:
+                result = session.run("""
+                    MERGE (r:KnowledgeRule {rule_id: $rule_id})
+                    SET r.strain_type = $strain_type,
+                        r.treatment = $treatment,
+                        r.outcome = $outcome,
+                        r.evidence_from = $evidence_from
+                    WITH r
+                    MERGE (p:Pathogen {species: $pathogen_species})
+                    ON CREATE SET p.resistance_mechanism = 'Unknown'
+                    MERGE (p)-[:HAS_VALIDATED_RULE]->(r)
+                    WITH r
+                    MERGE (ph:Phage {name: $phage_name})
+                    ON CREATE SET ph.family = 'Unknown'
+                    MERGE (r)-[:RECOMMENDS_PHAGE]->(ph)
+                    RETURN r.rule_id AS id
+                """,
+                rule_id=rule["rule_id"],
+                pathogen_species=rule["pathogen_species"],
+                strain_type=rule["strain_type"],
+                phage_name=rule["phage_name"],
+                treatment=rule["treatment"],
+                outcome=rule["outcome"],
+                evidence_from=rule["evidence_from"])
+                if result.single():
+                    success_count += 1
+    
+    return f"✅ 成功导入 {success_count} 条黄金规则"
 
 # ========== 主入口 ==========
 if __name__ == "__main__":
