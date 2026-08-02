@@ -55,7 +55,7 @@ with st.sidebar:
         """).single()
         col1, col2, col3 = st.columns(3)
         col1.metric("噬菌体", stats["phage_count"])
-        col2.metric("宿主菌株", stats["host_count"])
+        col2.metric("菌株", stats["host_count"])
         col3.metric("互作关系", stats["interaction_count"])
     
     if st.button("🔄 清空并重新导入全部数据", type="secondary"):
@@ -155,7 +155,7 @@ with st.sidebar:
             for field, count in v1_data['filled'].items():
                 st.write(f"   - {field}: {count}/{v1_data['total']} ({count/v1_data['total']*100:.0f}%)")
             if v1_data['rate'] >= 90:
-                st.success("🎉 V1 验证通过！填充率 ≥ 90%")
+                st.success("验证通过！填充率 ≥ 90%")
             else:
                 st.warning(f"⚠️ V1 验证未通过（{v1_data['rate']:.1f}% < 90%）")
     
@@ -174,7 +174,7 @@ with st.sidebar:
 
 # ---------- 主界面：多标签页 ----------
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🔍 菌株配型查询",
+    "🔍 噬菌体配型查询",
     "📊 批量菌株配型",
     "📦 证据包生成",
     "🔄 跨病例复用",
@@ -182,7 +182,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📝 知识策展"
 ])
 
-# ================== 标签页 1：菌株配型查询 ==================
+# ================== 标签页 1：噬菌体配型查询 ==================
 with tab1:
     st.subheader("单个菌株配型查询")
     col1, col2 = st.columns([3, 1])
@@ -329,7 +329,7 @@ with tab3:
     if "ep_result" in st.session_state:
         st.json(st.session_state.ep_result)
 
-# ================== 标签页 4：跨病例复用 ==================
+# ================== 标签页 4：跨病例知识复用 ==================
 with tab4:
     st.subheader("跨病例复用分析")
     col1, col2 = st.columns(2)
@@ -399,23 +399,26 @@ with tab5:
         st.markdown("---")
         st.subheader("推荐簇内广谱噬菌体")
         
-        cluster_label = st.number_input(
-            "输入簇编号（从 1 开始）", 
-            min_value=1, 
-            max_value=len(clusters), 
-            value=1,
-            key="cluster_select"
-        )
+        # 两个输入框放在同一行
+        col1, col2 = st.columns(2)
+        with col1:
+            cluster_label = st.number_input(
+                "簇编号", 
+                min_value=1, 
+                max_value=len(clusters), 
+                value=1,
+                key="cluster_select"
+            )
+        with col2:
+            min_host_count_cluster = st.number_input(
+                "最小覆盖菌株数", 
+                min_value=1, 
+                max_value=20, 
+                value=2,
+                key="cluster_min_host"
+            )
         
-        # 阈值调节
-        min_host_count_cluster = st.number_input(
-            "最小覆盖菌株数", 
-            min_value=1, 
-            max_value=20, 
-            value=2,
-            key="cluster_min_host"
-        )
-        
+        # 按钮单独一行
         if st.button("推荐该簇的噬菌体", key="recommend_cluster_phages"):
             target_label = cluster_label - 1
             if target_label in clusters:
@@ -443,7 +446,15 @@ with tab5:
                 
                 if phages:
                     df = pd.DataFrame(phages)
-                    st.dataframe(df[["phage_name", "host_count", "evidence_level"]], use_container_width=True)
+                    st.dataframe(
+                        df[["phage_name", "host_count", "evidence_level"]],
+                        column_config={
+                            "phage_name": st.column_config.TextColumn("噬菌体名称", width="large"),
+                            "host_count": st.column_config.NumberColumn("覆盖菌株数", width="small"),
+                            "evidence_level": st.column_config.TextColumn("证据等级", width="small"),
+                        },
+                        use_container_width=True
+                    )
                 else:
                     st.warning(f"该簇中无噬菌体同时覆盖 {min_host_count_cluster} 个以上菌株，请尝试降低阈值。")
             else:
@@ -468,11 +479,8 @@ with tab5:
     
     if st.button("🔍 针对该菌株进行型别级推荐", type="primary", key="individual_recommend"):
         with st.spinner("分析中..."):
-            # 需要重新聚类获取 strain_to_cluster，但这里复用 clusters 或重新计算
-            # 为简化，直接复用 st.session_state.clusters 反向映射
             if "clusters" in st.session_state and st.session_state.clusters:
                 clusters = st.session_state.clusters
-                # 反向映射
                 strain_to_cluster = {}
                 for label, strains in clusters.items():
                     for s in strains:
@@ -512,9 +520,9 @@ with tab5:
                         st.dataframe(
                             df_rec[["phage_name", "host_count", "evidence_level"]],
                             column_config={
-                                "phage_name": "噬菌体名称",
-                                "host_count": "覆盖菌株数",
-                                "evidence_level": "证据等级"
+                                "phage_name": st.column_config.TextColumn("噬菌体名称", width="large"),
+                                "host_count": st.column_config.NumberColumn("覆盖菌株数", width="small"),
+                                "evidence_level": st.column_config.TextColumn("证据等级", width="small"),
                             },
                             use_container_width=True
                         )
@@ -526,11 +534,7 @@ with tab5:
 
 # ================== 标签页 6：知识策展（五级完整支持） ==================
 with tab6:
-    st.subheader("📋 知识策展管理")
-    st.caption("证据等级体系：L1(文献) → L2(体外) → L3(单例临床) → L4(多中心) → L5(组织学习闭环)")
-    
     # ----- 步骤 1：查找可升级的互作记录 -----
-    st.markdown("---")
     st.markdown("#### 🔍 步骤 1：查找可升级的互作记录")
     
     # 目标等级选择
@@ -564,13 +568,14 @@ with tab6:
         if records:
             df = pd.DataFrame(records)
             st.dataframe(df, use_container_width=True)
-            st.success(f"找到 {len(records)} 条 {', '.join(source_levels)} → {target_level_selector} 可升级记录")
         else:
             st.info(f"当前没有 {', '.join(source_levels)} → {target_level_selector} 可升级记录")
+
+    st.caption("💡 证据等级说明：L1(文献) → L2(体外) → L3(单例临床) → L4(多中心) → L5(组织学习闭环)")
     
-    # ----- 步骤 2：执行策展升级 -----
+    # ----- 步骤 2：升级证据等级 -----
     st.markdown("---")
-    st.markdown("#### ⚡ 步骤 2：执行策展升级")
+    st.markdown("#### ⚡ 步骤 2：升级证据等级")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -609,8 +614,11 @@ with tab6:
     st.markdown("---")
     st.markdown("#### ✅ 步骤 3：验证升级结果")
     
-    verify_case_id = st.text_input("验证病例 ID", value="CASE-002")
-    verify_phage_id = st.text_input("验证噬菌体 ID（可选，留空则查所有）", value="PHAGE-013")
+    col1, col2 = st.columns(2)
+    with col1:
+        verify_case_id = st.text_input("验证病例 ID", value="CASE-002")
+    with col2:
+        verify_phage_id = st.text_input("验证噬菌体 ID（可选，留空则查所有）", value="PHAGE-013")
     
     if st.button("验证升级结果"):
         with st.spinner("验证中..."):
@@ -648,7 +656,7 @@ with tab6:
             st.warning("未找到该病例的互作记录")
     
     # ----- L3 证据查询（折叠） -----
-    with st.expander("📊 查看所有 L3 临床验证证据"):
+    with st.expander("📊 查看 L3 证据"):
         with st.spinner("查询中..."):
             records = query_l3_evidence()
         if records:
@@ -656,6 +664,106 @@ with tab6:
             st.dataframe(df, use_container_width=True)
         else:
             st.info("暂无 L3 临床验证记录")
+            
+    # ----- 新增：管理病例-噬菌体治疗关系（多选添加/删除） -----
+    with st.expander("📌 病例-噬菌体关联"):
+        st.caption("选择病例，查看并编辑其使用的噬菌体（可多选添加或删除）")
+        
+        # 获取所有病例ID列表
+        with driver.session() as session:
+            cases_result = session.run("MATCH (c:ClinicalCase) RETURN c.case_id AS case_id ORDER BY case_id")
+            case_ids = [record["case_id"] for record in cases_result]
+        
+        if not case_ids:
+            st.warning("暂无病例数据，请先导入病例")
+        else:
+            selected_case = st.selectbox("选择病例", case_ids, key="case_select_for_phage")
+            
+            # 获取该病例当前关联的噬菌体及其互作证据等级
+            with driver.session() as session:
+                current_phages = session.run("""
+                    MATCH (c:ClinicalCase {case_id: $case_id})-[:TREATED_WITH]->(p:Phage)
+                    OPTIONAL MATCH (p)-[:HAS_INTERACTION]->(phi:PhageHostInteraction)
+                    RETURN p.phage_id AS phage_id, p.name AS name, 
+                           collect(DISTINCT phi.evidence_level) AS evidence_levels
+                """, case_id=selected_case)
+                current_list = []
+                for r in current_phages:
+                    levels = r["evidence_levels"]
+                    # 过滤掉 None 或空字符串，取第一个非空值，否则显示 "无互作"
+                    level_display = next((lvl for lvl in levels if lvl and lvl.strip()), "无互作")
+                    current_list.append((r["phage_id"], r["name"], level_display))
+            
+            # 显示当前关联
+            st.write(f"**当前关联的噬菌体（{len(current_list)} 个）**")
+            if current_list:
+                current_df = pd.DataFrame(current_list, columns=["噬菌体ID", "名称", "互作证据等级"])
+                st.dataframe(current_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("该病例尚未关联任何噬菌体")
+            
+            # 删除部分：多选删除
+            if current_list:
+                delete_options = {f"{pid} ({name})": pid for pid, name, _ in current_list}
+                to_delete = st.multiselect(
+                    "选择要删除的噬菌体（可多选）",
+                    options=list(delete_options.keys()),
+                    key="delete_phage_multiselect"
+                )
+                if st.button("🗑️ 删除选中的噬菌体", key="delete_phage_btn"):
+                    if not to_delete:
+                        st.warning("请至少选择一个噬菌体")
+                    else:
+                        with st.spinner("删除中..."):
+                            for item in to_delete:
+                                phage_id = delete_options[item]
+                                with driver.session() as session:
+                                    session.run("""
+                                        MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(p:Phage {phage_id: $phage_id})
+                                        DELETE r
+                                    """, case_id=selected_case, phage_id=phage_id)
+                        st.success(f"已删除 {len(to_delete)} 个噬菌体关系")
+                        st.rerun()
+            
+            st.markdown("---")
+            
+            # 添加部分：多选添加
+            # 构建可选列表（排除已关联的）
+            current_ids = {pid for pid, _, _ in current_list}
+            # 获取所有可用噬菌体
+            with driver.session() as session:
+                all_phages = session.run("MATCH (p:Phage) RETURN p.phage_id AS phage_id, p.name AS name ORDER BY phage_id")
+                all_list = [(r["phage_id"], r["name"]) for r in all_phages]
+            available = [(pid, name) for pid, name in all_list if pid not in current_ids]
+            if available:
+                add_options = {f"{pid} ({name})": pid for pid, name in available}
+                to_add = st.multiselect(
+                    "选择要添加的噬菌体（可多选）",
+                    options=list(add_options.keys()),
+                    key="add_phage_multiselect"
+                )
+                if st.button("➕ 添加选中的噬菌体", key="add_phage_btn"):
+                    if not to_add:
+                        st.warning("请至少选择一个噬菌体")
+                    else:
+                        with st.spinner("添加中..."):
+                            for item in to_add:
+                                phage_id = add_options[item]
+                                with driver.session() as session:
+                                    existing = session.run("""
+                                        MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(p:Phage {phage_id: $phage_id})
+                                        RETURN r
+                                    """, case_id=selected_case, phage_id=phage_id).single()
+                                    if not existing:
+                                        session.run("""
+                                            MATCH (c:ClinicalCase {case_id: $case_id})
+                                            MATCH (p:Phage {phage_id: $phage_id})
+                                            CREATE (c)-[:TREATED_WITH]->(p)
+                                        """, case_id=selected_case, phage_id=phage_id)
+                        st.success(f"已添加 {len(to_add)} 个噬菌体关系")
+                        st.rerun()
+            else:
+                st.info("所有噬菌体均已关联，无更多可添加")
 
 # ---------- 底部信息 ----------
 st.markdown("---")
