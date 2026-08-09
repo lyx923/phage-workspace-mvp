@@ -19,7 +19,7 @@ from src.package_builder import (
     build_evidence_package_from_db,
     rule_based_evidence_package
 )
-from src.retriever import analyze_cross_case_reuse_simple, find_matching_phages, find_similar_cases
+from src.retriever import analyze_cross_case_reuse_simple, find_matching_phages, find_similar_cases, analyze_and_persist_reuse
 from src.curation import curate_case_by_id
 from src.data_loader import (
     load_phages_from_lysis_csv_simple,
@@ -32,10 +32,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="噬菌体配型系统", layout="wide")
 st.title("噬菌体配型智能助手")
-st.markdown("基于知识图谱的循证噬菌体推荐，支持裂解谱数据 + 临床验证")
+st.markdown("基于知识图谱的循证噬菌体推荐，支持裂解谱数据 + 临床验证（新模型 LysisAssay + HostStrain）")
 
 # ---------- 缓存数据库连接 ----------
-@st.cache_resource
 def get_db():
     return get_driver()
 
@@ -46,12 +45,13 @@ with st.sidebar:
     st.header("📊 数据总览")
     
     with driver.session() as session:
+        # 统计裂解谱数据（与 Notebook 测试 4 口径一致）
         stats = session.run("""
-            MATCH (phi:PhageHostInteraction)
-            WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-            RETURN count(DISTINCT phi.phage_id) AS phage_count,
-                   count(DISTINCT phi.notes) AS host_count,
-                   count(phi) AS interaction_count
+            MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+            WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+            RETURN count(DISTINCT ph) AS phage_count,
+                   count(DISTINCT h.strain_label) AS host_count,
+                   count(a) AS interaction_count
         """).single()
         col1, col2, col3 = st.columns(3)
         col1.metric("噬菌体", stats["phage_count"])
@@ -100,9 +100,9 @@ with st.sidebar:
     with st.expander("📄 裂解谱最广的噬菌体（Top 5）"):
         with driver.session() as session:
             result = session.run("""
-                MATCH (phi:PhageHostInteraction)
-                WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                WITH phi.phage_id AS phage_id, count(phi) AS host_count
+                MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+                WITH ph.phage_id AS phage_id, count(a) AS host_count
                 RETURN phage_id, host_count
                 ORDER BY host_count DESC
                 LIMIT 5
@@ -112,7 +112,7 @@ with st.sidebar:
     
     # ===== V1 验证（折叠，无按钮，自动显示） =====
     with st.expander("📄 数据完整性验证"):
-        @st.cache_data(ttl=600)  # 缓存 10 分钟
+        @st.cache_data(ttl=600)
         def get_v1_validation():
             with driver.session() as session:
                 result = session.run("""
@@ -314,17 +314,20 @@ with tab3:
     col1, col2 = st.columns(2)
     with col1:
         species = st.text_input("病原菌物种", value="Acinetobacter baumannii")
-        resistance = st.text_input("耐药机制", value="Carbapenem-resistant")
+        # 修改提示文字，value 设为空
+        resistance = st.text_input("耐药机制（留空表示不限）", value="")
     with col2:
         infection_type = st.text_input("感染类型", value="Pneumonia")
         use_llm = st.checkbox("使用 LLM (DeepSeek)", value=True)
     if st.button("生成证据包"):
         with st.spinner("生成中..."):
+            # 如果输入为空，转换为 None
+            resistance_val = resistance.strip() if resistance.strip() else None
             if use_llm:
-                result = build_evidence_package_from_db(species, resistance, infection_type)
+                result = build_evidence_package_from_db(species, resistance_val, infection_type)
                 st.session_state.ep_result = result
             else:
-                result = rule_based_evidence_package(species, resistance, infection_type)
+                result = rule_based_evidence_package(species, resistance_val, infection_type)
                 st.session_state.ep_result = result
     if "ep_result" in st.session_state:
         st.json(st.session_state.ep_result)
@@ -337,11 +340,18 @@ with tab4:
         case_a = st.text_input("病例 A ID", value="CASE-001")
     with col2:
         case_b = st.text_input("病例 B ID", value="CASE-003")
-    if st.button("分析复用"):
+    
+    if st.button("分析并持久化复用", type="primary"):
         with st.spinner("分析中..."):
-            st.session_state.reuse_result = analyze_cross_case_reuse_simple(case_a, case_b)
+            result = analyze_and_persist_reuse(driver, case_a, case_b)
+            st.session_state.reuse_result = result
+            if result['persistence']['success']:
+                st.success(result['persistence']['message'])
+            else:
+                st.info(result['persistence']['message'])
+    
     if "reuse_result" in st.session_state:
-        st.json(st.session_state.reuse_result)
+        st.json(st.session_state.reuse_result["analysis"])
 
 # ================== 标签页 5：聚类分析 ==================
 with tab5:
@@ -355,10 +365,10 @@ with tab5:
         with st.spinner("聚类中..."):
             with driver.session() as session:
                 result = session.run("""
-                    MATCH (phi:PhageHostInteraction)
-                    WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                    RETURN phi.phage_id AS phage,
-                           split(phi.notes, ': ')[1] AS host,
+                    MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                    WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+                    RETURN ph.phage_id AS phage,
+                           h.strain_label AS host,
                            1 AS value
                 """)
                 records = [dict(r) for r in result]
@@ -399,7 +409,6 @@ with tab5:
         st.markdown("---")
         st.subheader("推荐簇内广谱噬菌体")
         
-        # 两个输入框放在同一行
         col1, col2 = st.columns(2)
         with col1:
             cluster_label = st.number_input(
@@ -418,7 +427,6 @@ with tab5:
                 key="cluster_min_host"
             )
         
-        # 按钮单独一行
         if st.button("推荐该簇的噬菌体", key="recommend_cluster_phages"):
             target_label = cluster_label - 1
             if target_label in clusters:
@@ -426,18 +434,18 @@ with tab5:
                 st.write(f"🔍 簇 {cluster_label} 包含 {len(strains_in_cluster)} 个菌株")
                 
                 with driver.session() as session:
+                    # 修复：在 WITH 中保留 h
                     result = session.run("""
-                        MATCH (phi:PhageHostInteraction)<-[:HAS_INTERACTION]-(ph:Phage)
-                        WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                        WITH ph, phi, $strains AS strains
-                        WITH ph, phi, 
-                             REDUCE(s = 0, strain IN strains | 
-                                 s + CASE WHEN phi.notes CONTAINS strain THEN 1 ELSE 0 END
+                        MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                        WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+                        WITH ph, a, h, $strains AS strains
+                        WITH ph, a, h, REDUCE(s = 0, strain IN strains | 
+                                 s + CASE WHEN h.strain_label CONTAINS strain THEN 1 ELSE 0 END
                              ) AS host_count
                         WHERE host_count >= $min_host_count
                         RETURN ph.name AS phage_name,
                                ph.phage_id AS phage_id,
-                               phi.evidence_level AS evidence_level,
+                               a.evidence_level AS evidence_level,
                                host_count
                         ORDER BY host_count DESC
                         LIMIT 10
@@ -496,18 +504,18 @@ with tab5:
                     st.write(f"同簇菌株示例：{strains_in_cluster[:10]}{'...' if len(strains_in_cluster) > 10 else ''}")
                     
                     with driver.session() as session:
+                        # 修复：在 WITH 中保留 h
                         result = session.run("""
-                            MATCH (phi:PhageHostInteraction)<-[:HAS_INTERACTION]-(ph:Phage)
-                            WHERE phi.evidence_ref CONTAINS '合作方裂解谱数据'
-                            WITH ph, phi, $strains AS strains
-                            WITH ph, phi, 
-                                 REDUCE(s = 0, strain IN strains | 
-                                     s + CASE WHEN phi.notes CONTAINS strain THEN 1 ELSE 0 END
+                            MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                            WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+                            WITH ph, a, h, $strains AS strains
+                            WITH ph, a, h, REDUCE(s = 0, strain IN strains | 
+                                     s + CASE WHEN h.strain_label CONTAINS strain THEN 1 ELSE 0 END
                                  ) AS host_count
                             WHERE host_count >= $min_host_count
                             RETURN ph.name AS phage_name,
                                    ph.phage_id AS phage_id,
-                                   phi.evidence_level AS evidence_level,
+                                   a.evidence_level AS evidence_level,
                                    host_count
                             ORDER BY host_count DESC
                             LIMIT 10
@@ -537,7 +545,6 @@ with tab6:
     # ----- 步骤 1：查找可升级的互作记录 -----
     st.markdown("#### 🔍 步骤 1：查找可升级的互作记录")
     
-    # 目标等级选择
     target_level_selector = st.selectbox(
         "目标证据等级",
         ["L3", "L4", "L5"],
@@ -556,12 +563,12 @@ with tab6:
         with st.spinner("查询中..."):
             with driver.session() as session:
                 result = session.run(f"""
-                    MATCH (c:ClinicalCase)-[:TREATED_WITH]->(ph:Phage)-[:HAS_INTERACTION]->(phi:PhageHostInteraction)
-                    WHERE phi.evidence_level IN ['{source_levels_str}']
+                    MATCH (c:ClinicalCase)-[:TREATED_WITH]->(ph:Phage)-[:USED_IN]->(a:LysisAssay)
+                    WHERE a.evidence_level IN ['{source_levels_str}']
                     RETURN c.case_id AS case_id,
                            ph.phage_id AS phage_id,
                            ph.name AS phage_name,
-                           phi.evidence_level AS evidence_level
+                           a.evidence_level AS evidence_level
                 """)
                 records = [dict(r) for r in result]
         
@@ -591,7 +598,6 @@ with tab6:
             ["Clearance", "Persistent", "Bacteria decreased", "其他"]
         )
     
-    # 使用与步骤 1 相同的目标等级
     target_level_exec = st.selectbox(
         "目标证据等级",
         ["L3", "L4", "L5"],
@@ -626,19 +632,19 @@ with tab6:
                 if verify_phage_id.strip():
                     result = session.run("""
                         MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(ph:Phage {phage_id: $phage_id})
-                        MATCH (ph)-[:HAS_INTERACTION]->(phi:PhageHostInteraction)
+                        MATCH (ph)-[:USED_IN]->(a:LysisAssay)
                         RETURN ph.name AS phage_name,
-                               phi.evidence_level AS evidence_level,
-                               phi.evidence_ref AS evidence_ref
+                               a.evidence_level AS evidence_level,
+                               a.evidence_ref AS evidence_ref
                     """, case_id=verify_case_id, phage_id=verify_phage_id)
                 else:
                     result = session.run("""
                         MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(ph:Phage)
-                        MATCH (ph)-[:HAS_INTERACTION]->(phi:PhageHostInteraction)
+                        MATCH (ph)-[:USED_IN]->(a:LysisAssay)
                         RETURN ph.name AS phage_name,
                                ph.phage_id AS phage_id,
-                               phi.evidence_level AS evidence_level,
-                               phi.evidence_ref AS evidence_ref
+                               a.evidence_level AS evidence_level,
+                               a.evidence_ref AS evidence_ref
                     """, case_id=verify_case_id)
                 
                 records = [dict(r) for r in result]
@@ -665,11 +671,10 @@ with tab6:
         else:
             st.info("暂无 L3 临床验证记录")
             
-    # ----- 新增：管理病例-噬菌体治疗关系（多选添加/删除） -----
+    # ----- 管理病例-噬菌体治疗关系（多选添加/删除） -----
     with st.expander("📌 病例-噬菌体关联"):
         st.caption("选择病例，查看并编辑其使用的噬菌体（可多选添加或删除）")
         
-        # 获取所有病例ID列表
         with driver.session() as session:
             cases_result = session.run("MATCH (c:ClinicalCase) RETURN c.case_id AS case_id ORDER BY case_id")
             case_ids = [record["case_id"] for record in cases_result]
@@ -679,22 +684,19 @@ with tab6:
         else:
             selected_case = st.selectbox("选择病例", case_ids, key="case_select_for_phage")
             
-            # 获取该病例当前关联的噬菌体及其互作证据等级
             with driver.session() as session:
                 current_phages = session.run("""
                     MATCH (c:ClinicalCase {case_id: $case_id})-[:TREATED_WITH]->(p:Phage)
-                    OPTIONAL MATCH (p)-[:HAS_INTERACTION]->(phi:PhageHostInteraction)
+                    OPTIONAL MATCH (p)-[:USED_IN]->(a:LysisAssay)
                     RETURN p.phage_id AS phage_id, p.name AS name, 
-                           collect(DISTINCT phi.evidence_level) AS evidence_levels
+                           collect(DISTINCT a.evidence_level) AS evidence_levels
                 """, case_id=selected_case)
                 current_list = []
                 for r in current_phages:
                     levels = r["evidence_levels"]
-                    # 过滤掉 None 或空字符串，取第一个非空值，否则显示 "无互作"
                     level_display = next((lvl for lvl in levels if lvl and lvl.strip()), "无互作")
                     current_list.append((r["phage_id"], r["name"], level_display))
             
-            # 显示当前关联
             st.write(f"**当前关联的噬菌体（{len(current_list)} 个）**")
             if current_list:
                 current_df = pd.DataFrame(current_list, columns=["噬菌体ID", "名称", "互作证据等级"])
@@ -702,7 +704,6 @@ with tab6:
             else:
                 st.info("该病例尚未关联任何噬菌体")
             
-            # 删除部分：多选删除
             if current_list:
                 delete_options = {f"{pid} ({name})": pid for pid, name, _ in current_list}
                 to_delete = st.multiselect(
@@ -727,10 +728,7 @@ with tab6:
             
             st.markdown("---")
             
-            # 添加部分：多选添加
-            # 构建可选列表（排除已关联的）
             current_ids = {pid for pid, _, _ in current_list}
-            # 获取所有可用噬菌体
             with driver.session() as session:
                 all_phages = session.run("MATCH (p:Phage) RETURN p.phage_id AS phage_id, p.name AS name ORDER BY phage_id")
                 all_list = [(r["phage_id"], r["name"]) for r in all_phages]

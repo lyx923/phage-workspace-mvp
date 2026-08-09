@@ -1,6 +1,6 @@
 """
 配型效果验证工具
-支持 L1-L5 五级证据等级
+支持 L1-L5 五级证据等级（基于新模型 LysisAssay + HostStrain）
 """
 from typing import List, Dict, Optional
 import pandas as pd
@@ -17,27 +17,27 @@ def query_phages_for_host(
     evidence_level: Optional[str] = None
 ) -> List[Dict]:
     """
-    查询某个宿主菌株能匹配哪些噬菌体
-    使用 split 精确提取菌株名称
+    查询某个宿主菌株能匹配哪些噬菌体（基于 LysisAssay 和 HostStrain）
     """
-    host_strain = host_strain.strip() 
+    host_strain = host_strain.strip()
     with get_driver() as driver:
         with driver.session() as session:
             level_filter = ""
             if evidence_level:
-                level_filter = f"AND phi.evidence_level = '{evidence_level}'"
+                level_filter = f"AND a.evidence_level = '{evidence_level}'"
 
             result = session.run(f"""
-                MATCH (phi:PhageHostInteraction)
-                WHERE trim(split(phi.notes, ': ')[1]) = $host_strain
-                  {level_filter}
-                MATCH (ph:Phage)-[:HAS_INTERACTION]->(phi)
+                MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                WHERE h.strain_label = $host_strain
+                {level_filter}
+                MATCH (ph:Phage)-[:USED_IN]->(a)
                 RETURN ph.name AS phage_name,
                        ph.phage_id AS phage_id,
-                       phi.evidence_level AS evidence_level,
-                       phi.evidence_ref AS evidence_ref
+                       a.evidence_level AS evidence_level,
+                       a.evidence_ref AS evidence_ref,
+                       a.qc_status AS qc_status
                 ORDER BY 
-                    CASE phi.evidence_level
+                    CASE a.evidence_level
                         WHEN 'L5' THEN 1
                         WHEN 'L4' THEN 2
                         WHEN 'L3' THEN 3
@@ -56,20 +56,22 @@ def query_hosts_for_phage(
     limit: int = 10,
     evidence_level: Optional[str] = None
 ) -> List[Dict]:
+    """反向查询：给定噬菌体，返回能裂解的宿主菌株列表"""
     with get_driver() as driver:
         with driver.session() as session:
             level_filter = ""
             if evidence_level:
-                level_filter = f"AND phi.evidence_level = '{evidence_level}'"
+                level_filter = f"AND a.evidence_level = '{evidence_level}'"
 
+            # 支持用 phage_id 或 phage_name 查询
             result = session.run(f"""
-                MATCH (phi:PhageHostInteraction)
-                WHERE phi.phage_id = $phage_name OR phi.phage_id = 'PHAGE-' + $phage_name
-                  {level_filter}
-                RETURN split(phi.notes, ': ')[1] AS host_strain,
-                       phi.evidence_level AS evidence_level
+                MATCH (ph:Phage {{name: $phage_name}})-[:USED_IN]->(a:LysisAssay)
+                {level_filter}
+                MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
+                RETURN h.strain_label AS host_strain,
+                       a.evidence_level AS evidence_level
                 ORDER BY 
-                    CASE phi.evidence_level
+                    CASE a.evidence_level
                         WHEN 'L5' THEN 1
                         WHEN 'L4' THEN 2
                         WHEN 'L3' THEN 3
@@ -118,24 +120,25 @@ def get_phage_recommendation(
 
 
 def query_l3_evidence(host_strain: Optional[str] = None) -> List[Dict]:
+    """查询 L3/L4/L5 证据（基于 LysisAssay）"""
     with get_driver() as driver:
         with driver.session() as session:
             strain_filter = ""
             if host_strain:
-                strain_filter = f"AND split(phi.notes, ': ')[1] = '{host_strain}'"
+                strain_filter = f"AND h.strain_label = '{host_strain}'"
 
             result = session.run(f"""
-                MATCH (phi:PhageHostInteraction)
-                WHERE phi.evidence_level IN ['L3', 'L4', 'L5']
-                  {strain_filter}
-                MATCH (ph:Phage)-[:HAS_INTERACTION]->(phi)
+                MATCH (a:LysisAssay)
+                WHERE a.evidence_level IN ['L3', 'L4', 'L5']
+                OPTIONAL MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
+                MATCH (ph:Phage)-[:USED_IN]->(a)
                 RETURN ph.name AS phage_name,
                        ph.phage_id AS phage_id,
-                       phi.evidence_level AS evidence_level,
-                       phi.evidence_ref AS evidence_ref,
-                       split(phi.notes, ': ')[1] AS host_strain
+                       a.evidence_level AS evidence_level,
+                       a.evidence_ref AS evidence_ref,
+                       h.strain_label AS host_strain
                 ORDER BY 
-                    CASE phi.evidence_level
+                    CASE a.evidence_level
                         WHEN 'L5' THEN 1
                         WHEN 'L4' THEN 2
                         WHEN 'L3' THEN 3
@@ -180,6 +183,7 @@ def batch_validate_hosts(
 
 
 def validate_without_sequencing(host_strain: str) -> Dict:
+    """不依赖测序，仅凭菌株编号推荐噬菌体"""
     phages = query_phages_for_host(host_strain, limit=20)
 
     has_high_evidence = any(p['evidence_level'] in ['L3', 'L4', 'L5'] for p in phages)
@@ -197,7 +201,7 @@ def validate_without_sequencing(host_strain: str) -> Dict:
     }
 
 
-# ==================== 基于裂解谱聚类的伪型别推荐（不持久化，Python 动态计算） ====================
+# ==================== 基于裂解谱聚类的伪型别推荐（适配新模型） ====================
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
@@ -206,12 +210,10 @@ import pandas as pd
 
 
 def cluster_strains_from_csv(csv_path: str, n_clusters: int = 8, random_state: int = 42):
-    """
-    从裂解谱 CSV 读取数据，对菌株进行聚类，返回菌株到簇标签的映射 dict。
-    """
+    """从裂解谱 CSV 读取数据，对菌株进行聚类（不变）"""
     df = pd.read_csv(csv_path, encoding="utf-8")
-    host_cols = df.columns[1:-1]  # 所有菌株列
-    matrix = df[host_cols].T.values.astype(int)  # 菌株数 × 噬菌体数
+    host_cols = df.columns[1:-1]
+    matrix = df[host_cols].T.values.astype(int)
     scaler = StandardScaler()
     matrix_scaled = scaler.fit_transform(matrix)
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
@@ -222,39 +224,38 @@ def cluster_strains_from_csv(csv_path: str, n_clusters: int = 8, random_state: i
 
 def query_phages_by_pseudo_type_from_mapping(
     strain_to_cluster: Dict[str, int],
-    pseudo_type_label: int,  # 簇标签，从 0 开始
+    pseudo_type_label: int,
     min_host_count: int = 2,
     limit: int = 20
 ) -> List[Dict]:
     """
     基于聚类映射，查询某个伪型别（簇）中，至少覆盖 min_host_count 个菌株的噬菌体。
-    直接从数据库中查询，不依赖图中的伪型别节点。
+    使用新模型 LysisAssay 和 HostStrain。
     """
-    # 获取该簇的所有菌株
     strains_in_group = [strain for strain, label in strain_to_cluster.items() if label == pseudo_type_label]
     if not strains_in_group:
         return []
-    
+
     print(f"🔍 查询簇 {pseudo_type_label+1}，包含 {len(strains_in_group)} 个菌株")
-    
+
     with get_driver() as driver:
         with driver.session() as session:
-            # 使用 UNWIND 和 REDUCE 计算每个互作记录覆盖的菌株数
+            # 修复：在 WITH 中保留 h，避免引用未定义变量
             result = session.run("""
-                MATCH (phi:PhageHostInteraction)<-[:HAS_INTERACTION]-(ph:Phage)
-                WITH ph, phi, $strains AS strains
-                WITH ph, phi, 
-                     REDUCE(s = 0, strain IN strains | 
-                         s + CASE WHEN phi.notes CONTAINS strain THEN 1 ELSE 0 END
+                MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                WITH a, h, $strains AS strains
+                WITH a, h, REDUCE(s = 0, strain IN strains | 
+                         s + CASE WHEN h.strain_label CONTAINS strain THEN 1 ELSE 0 END
                      ) AS host_count
                 WHERE host_count >= $min_host_count
+                MATCH (ph:Phage)-[:USED_IN]->(a)
                 RETURN ph.name AS phage_name,
                        ph.phage_id AS phage_id,
-                       phi.evidence_level AS evidence_level,
-                       phi.evidence_ref AS evidence_ref,
+                       a.evidence_level AS evidence_level,
+                       a.evidence_ref AS evidence_ref,
                        host_count
                 ORDER BY host_count DESC,
-                         CASE phi.evidence_level
+                         CASE a.evidence_level
                              WHEN 'L5' THEN 1
                              WHEN 'L4' THEN 2
                              WHEN 'L3' THEN 3

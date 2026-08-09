@@ -8,6 +8,7 @@ venv/
 .venv/
 env/
 ENV/
+build/
 
 # Environment variables (contains API keys, DB passwords)
 .env

@@ -214,7 +214,7 @@ load_cases_from_csv("../data/cases.csv")
 
 ## **📋 演示脚本**
 
-**启动**：streamlit run app.py --no-email
+**启动**：streamlit run app.py 或者 jupyter notebook
 
 **展示数据库**：MATCH (n) RETURN labels(n), count(\*)4 Pathogen, 33 Phage, 30 PhageHostInteraction, 17 ClinicalCase, 3 KnowledgeRule
 
