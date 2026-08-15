@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from neo4j import Driver
 from src.data_loader import get_driver
 import uuid
+from src.action_log import log_action
 
 
 def find_matching_phages(
@@ -220,7 +221,7 @@ def analyze_cross_case_reuse_simple(case_a_id: str, case_b_id: str) -> Dict:
         return analyze_cross_case_reuse(driver, case_a_id, case_b_id)
 
 
-# ==================== 知识复用持久化（新增） ====================
+# ==================== 知识复用持久化 ====================
 def analyze_and_persist_reuse(
     driver: Driver,
     case_a_id: str,
@@ -277,7 +278,8 @@ def analyze_and_persist_reuse(
                 source_object_id: $source_id,
                 target_package_id: $target_package_id,
                 reuse_type: $reuse_type,
-                expert_assessment: 'confirmed',
+                status: 'detected',
+                expert_assessment: 'pending',
                 retrieval_reason: $reason,
                 created_at: datetime()
             })
@@ -301,3 +303,54 @@ def analyze_and_persist_reuse(
                 "reuse_id": reuse_id
             }
         }
+# ==================== 知识复用事件改为待确认 ====================
+def confirm_knowledge_reuse(
+    driver: Driver,
+    reuse_event_id: str,
+    reviewer_id: str,
+    decision: str,  # 'confirmed' or 'rejected'
+    comment: str = None
+) -> str:
+    """人工确认或拒绝知识复用事件，并创建 Review 记录"""
+    with driver.session() as session:
+        # 检查事件是否存在且状态为 detected
+        event = session.run("""
+            MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
+            WHERE kre.status = 'detected'
+            RETURN kre
+        """, reuse_event_id=reuse_event_id).single()
+        if not event:
+            raise ValueError(f"未找到状态为 detected 的复用事件 {reuse_event_id}")
+
+        # 创建 Review
+        review_id = f"REV-{uuid.uuid4().hex[:8].upper()}"
+        session.run("""
+            CREATE (r:Review {
+                review_id: $review_id,
+                target_domain: 'scientific',
+                target_object_type: 'KnowledgeReuseEvent',
+                target_object_id: $reuse_event_id,
+                reviewer_id: $reviewer_id,
+                decision: $decision,
+                comment: $comment,
+                policy_version: 'v1',
+                reviewed_at: datetime(),
+                created_at: datetime()
+            })
+        """, review_id=review_id, reuse_event_id=reuse_event_id,
+        reviewer_id=reviewer_id, decision=decision, comment=comment)
+
+        # 更新 KnowledgeReuseEvent 状态
+        new_status = 'confirmed' if decision == 'confirmed' else 'rejected'
+        session.run("""
+            MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
+            SET kre.status = $new_status,
+                kre.expert_assessment = $new_status,
+                kre.reviewed_at = datetime(),
+                kre.reviewer_id = $reviewer_id
+        """, reuse_event_id=reuse_event_id, new_status=new_status, reviewer_id=reviewer_id)
+
+        # 审计日志
+        log_action(driver, f"KNOWLEDGE_REUSE_{new_status.upper()}", "KnowledgeReuseEvent", reuse_event_id,
+                   {"decision": decision, "reviewer": reviewer_id}, performed_by=reviewer_id)
+    return review_id

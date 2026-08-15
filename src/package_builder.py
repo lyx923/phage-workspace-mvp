@@ -9,6 +9,7 @@ from openai import OpenAI
 from src.data_loader import get_driver
 from src.retriever import find_matching_phages, find_similar_cases
 from config import Config
+import uuid
 
 
 # ==================== 系统提示词（对齐规范 P2、P4） ====================
@@ -30,7 +31,7 @@ def _get_client() -> OpenAI:
 
 
 # ==================== 黄金规则检索（公共函数） ====================
-def _retrieve_golden_rules(species: str) -> Dict:
+def _retrieve_golden_rules(species: str, strain_type: Optional[str] = None) -> Dict:
     """
     从 Neo4j 检索指定病原菌关联的黄金规则及其推荐的噬菌体。
     返回包含 rule_phages 和 matched_rules 的字典。
@@ -40,10 +41,11 @@ def _retrieve_golden_rules(species: str) -> Dict:
             rule_result = session.run("""
                 MATCH (p:Pathogen {species: $species})
                 OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:KnowledgeRule)
+                WHERE $strain_type IS NULL OR r.strain_type = $strain_type   // 新增条件
                 OPTIONAL MATCH (r)-[:RECOMMENDS_PHAGE]->(ph:Phage)
                 RETURN COLLECT(DISTINCT ph.name) AS rule_phages,
                        COLLECT(DISTINCT {rule_id: r.rule_id, treatment: r.treatment, outcome: r.outcome}) AS rules
-            """, species=species)
+            """, species=species, strain_type=strain_type)
             rule_data = rule_result.single().data()
             return {
                 "rule_phages": rule_data.get('rule_phages', []),
@@ -246,6 +248,7 @@ def build_evidence_package(
 # ==================== 一站式入口（LLM 版本） ====================
 def build_evidence_package_from_db(
     species: str,
+    strain_type: Optional[str] = None,   # 新增
     resistance: Optional[str] = None,
     infection_type: Optional[str] = None,
     phage_limit: int = 20,
@@ -263,6 +266,9 @@ def build_evidence_package_from_db(
     # 2. 格式化互作路径的噬菌体
     formatted_phages = _format_matching_phages(raw_phages)
 
+    # 传递 strain_type
+    rule_data = _retrieve_golden_rules(species, strain_type)   # 增加参数
+
     # 3. 检索黄金规则
     rule_data = _retrieve_golden_rules(species)
 
@@ -275,13 +281,20 @@ def build_evidence_package_from_db(
     # 6. 构造上下文（包含黄金规则信息）
     query_context = {
         "species": species,
+        "strain_type": strain_type,                     # 记录到上下文
         "resistance": resistance or "未知",
         "infection_type": infection_type or "未知",
         "matched_rules": rule_data.get('matched_rules', [])
     }
-
+    
     # 7. 调用 LLM
-    return build_evidence_package(formatted_phages, formatted_cases, query_context)
+    package_dict = build_evidence_package(formatted_phages, formatted_cases, query_context)
+
+    # ---- 新增：持久化 ----
+    package_id = persist_evidence_package(package_dict, query_context)
+    package_dict["_package_id"] = package_id   # 在返回字典中附带 ID
+
+    return package_dict
 
 
 # ==================== 验证函数 ====================
@@ -424,3 +437,43 @@ def rule_based_evidence_package(
             "_engine_type": "rule_based",
             "_golden_rules_applied": golden_phages
         }
+
+def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
+    """
+    将 Evidence Package 持久化为 ScientificEvidencePackage 节点，并建立关系。
+    """
+    package_id = f"EP-{uuid.uuid4().hex[:8].upper()}"
+    with get_driver() as driver:
+        with driver.session() as session:
+            # 1. 创建节点
+            session.run("""
+                CREATE (p:ScientificEvidencePackage {
+                    package_id: $package_id,
+                    query_species: $species,
+                    query_resistance: $resistance,
+                    query_infection_type: $infection_type,
+                    generated_at: datetime(),
+                    status: 'draft',
+                    summary: $summary,
+                    limitations: $limitations,
+                    review_status: 'pending'
+                })
+            """, package_id=package_id,
+            species=query_context.get('species'),
+            resistance=query_context.get('resistance'),
+            infection_type=query_context.get('infection_type'),
+            summary=package_dict.get('explanation', ''),
+            limitations='需人工进一步确认')
+
+            # 2. 关联噬菌体、病例和来源（遍历 matching_evidence 和 clinical_evidence）
+            # 示例：关联匹配的噬菌体（以 phage_name 查找 Phage 节点）
+            for item in package_dict.get('matching_evidence', []):
+                phage_name = item.get('phage_name')
+                if phage_name:
+                    session.run("""
+                        MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+                        MATCH (ph:Phage {name: $phage_name})
+                        CREATE (pkg)-[:INCLUDES_CANDIDATE]->(ph)
+                    """, package_id=package_id, phage_name=phage_name)
+            # 同理，关联 ClinicalCase、EvidenceSource 等
+        return package_id

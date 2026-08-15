@@ -47,7 +47,7 @@ def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
                 return strain
     return None
 
-# ================== 病例导入（保持不变，但确保与 Phage 关联） ==================
+# ================== 病例导入 ==================
 def validate_case_row(row):
     missing = []
     for field in REQUIRED_CASE_FIELDS:
@@ -68,6 +68,7 @@ def insert_pathogen(tx, data):
     return result.single()[0]
 
 def insert_clinical_case(tx, data):
+    # 1. 插入 Pathogen
     insert_pathogen(tx, {
         "pathogen_id": data["pathogen_id"],
         "species": data["species"],
@@ -76,6 +77,7 @@ def insert_clinical_case(tx, data):
         "verification_status": data["verification_status"]
     })
     
+    # 2. 创建 ClinicalCase
     query1 = """
     MERGE (c:ClinicalCase {case_id: $case_id})
     SET c.infection_type = $infection_type,
@@ -100,9 +102,11 @@ def insert_clinical_case(tx, data):
         raise Exception(f"Failed to create ClinicalCase {data.get('case_id')}")
     case_id = record[0]
     
+    # 3. 关联 TREATED_WITH（如果存在噬菌体治疗）—— 已增加去重
     treatment_str = data.get('phage_treatment')
     if treatment_str and pd.notna(treatment_str) and str(treatment_str).strip() != '':
-        phage_names = [x.strip() for x in str(treatment_str).split(',') if x.strip()]
+        # 使用 set 去重，避免重复噬菌体名称导致重复关系
+        phage_names = list(set([x.strip() for x in str(treatment_str).split(',') if x.strip()]))
         if phage_names:
             query2 = """
             MATCH (c:ClinicalCase {case_id: $case_id})
@@ -114,6 +118,27 @@ def insert_clinical_case(tx, data):
             RETURN count(*) AS cnt
             """
             tx.run(query2, case_id=case_id, phage_names=phage_names)
+
+    # 4. 建立 HAS_ISOLATE → HostStrain（必须从 CSV 提供真实菌株）
+    host_strain_label = data.get('host_strain')
+    if not host_strain_label or pd.isna(host_strain_label) or str(host_strain_label).strip() == '':
+        raise ValueError(f"病例 {case_id} 缺少 host_strain（真实菌株编号），无法建立 HAS_ISOLATE 关系，请补充数据后重试。")
+    
+    host_strain_id = _get_or_create_host_strain(tx, host_strain_label)
+    
+    # 关联 HostStrain 到 Pathogen
+    tx.run("""
+        MATCH (h:HostStrain {host_strain_id: $host_strain_id})
+        MATCH (p:Pathogen {pathogen_id: $pathogen_id})
+        MERGE (h)-[:IS_STRAIN_OF]->(p)
+    """, host_strain_id=host_strain_id, pathogen_id=data["pathogen_id"])
+    
+    # 建立 ClinicalCase → HAS_ISOLATE
+    tx.run("""
+        MATCH (c:ClinicalCase {case_id: $case_id})
+        MATCH (h:HostStrain {host_strain_id: $host_strain_id})
+        MERGE (c)-[:HAS_ISOLATE]->(h)
+    """, case_id=case_id, host_strain_id=host_strain_id)
     
     return case_id
 
@@ -123,19 +148,29 @@ def load_cases_from_csv(csv_path):
         return
     df = pd.read_csv(csv_path)
     print(f"📂 读取到 {len(df)} 条病例记录")
+    
+    # 检查是否有 host_strain 列（必须存在）
+    if 'host_strain' not in df.columns:
+        print("❌ CSV 文件中缺少 'host_strain' 列，该列是建立 HAS_ISOLATE 关系所必需的，请添加该列并填入真实菌株编号。")
+        return 0  # 终止导入
+    
     with get_driver() as driver:
         success_count = 0
+        skip_count = 0
         with driver.session() as session:
             for index, row in df.iterrows():
                 missing = validate_case_row(row)
                 if missing:
                     print(f"⚠️ 第 {index+2} 行 (Case: {row.get('case_id', '未知')}) 缺失必填字段: {missing}，已跳过")
+                    skip_count += 1
                     continue
+                
                 row_dict = row.to_dict()
                 row_dict["resistance_genes"] = str(row_dict.get("resistance_genes", ""))
                 optional_fields = [
                     'phage_treatment', 'microbiological_outcome', 'curated_by', 'curation_date',
-                    'patient_age_group', 'comorbidities', 'prior_antibiotics'
+                    'patient_age_group', 'comorbidities', 'prior_antibiotics',
+                    'host_strain'  # 必须字段，已在 CSV 中校验存在
                 ]
                 for field in optional_fields:
                     if pd.isna(row_dict.get(field)):
@@ -144,12 +179,17 @@ def load_cases_from_csv(csv_path):
                     row_dict['comorbidities'] = [x.strip() for x in row_dict['comorbidities'].split(',') if x.strip()]
                 if row_dict.get('prior_antibiotics') and isinstance(row_dict['prior_antibiotics'], str):
                     row_dict['prior_antibiotics'] = [x.strip() for x in row_dict['prior_antibiotics'].split(',') if x.strip()]
+                
                 try:
                     session.execute_write(insert_clinical_case, row_dict)
                     success_count += 1
+                except ValueError as e:
+                    print(f"⚠️ {e}，已跳过该病例")
+                    skip_count += 1
                 except Exception as e:
                     print(f"❌ 导入失败 (Case: {row_dict.get('case_id')}): {e}")
-    print(f"\n🎯 导入完成！成功 {success_count} 例，失败 {len(df) - success_count} 例。")
+                    skip_count += 1
+    print(f"\n🎯 导入完成！成功 {success_count} 例，跳过 {skip_count} 例（含缺少 host_strain 或必填字段）。")
     return success_count
 
 # ================== 噬菌体互作数据导入（新模型：LysisAssay + HostStrain） ==================
@@ -238,6 +278,13 @@ def load_phages_from_csv(csv_path):
                             MATCH (h:HostStrain {host_strain_id: $host_strain_id})
                             CREATE (a)-[:TESTED_AGAINST]->(h)
                         """, assay_id=assay_id, host_strain_id=host_strain_id)
+
+                        # ===== 新增：建立 HostStrain → Pathogen 关系（IS_STRAIN_OF） =====
+                        session.run("""
+                            MATCH (h:HostStrain {host_strain_id: $host_strain_id})
+                            MATCH (p:Pathogen {pathogen_id: $pathogen_id})
+                            MERGE (h)-[:IS_STRAIN_OF]->(p)
+                        """, host_strain_id=host_strain_id, pathogen_id=row['pathogen_id'])
 
                     # 6. 关联 EvidenceSource（为每个 evidence_ref 创建或获取）
                     for ref in evidence_ref_list:
@@ -335,6 +382,13 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                         assay_id=assay_id,
                         evidence_ref=evidence_ref,
                         host_strain_id=host_strain_id)
+
+                        # ===== 新增：建立 HostStrain → Pathogen 关系（IS_STRAIN_OF） =====
+                        session.run("""
+                            MATCH (h:HostStrain {host_strain_id: $host_strain_id})
+                            MATCH (p:Pathogen {pathogen_id: $pathogen_id})
+                            MERGE (h)-[:IS_STRAIN_OF]->(p)
+                        """, host_strain_id=host_strain_id, pathogen_id=pathogen_id)
 
                         # 关联 EvidenceSource
                         source_id = _get_or_create_evidence_source(session, "合作方裂解谱数据", "lysis_assay_file")
