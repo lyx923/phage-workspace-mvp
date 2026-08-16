@@ -25,6 +25,10 @@ def create_schema(driver):
 
         # EvidenceSource：evidence_id 唯一（后续使用）
         session.run("CREATE CONSTRAINT evidence_id_unique IF NOT EXISTS FOR (e:EvidenceSource) REQUIRE e.evidence_id IS UNIQUE;")
+        
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SourceArtifact) REQUIRE s.source_id IS UNIQUE")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_domain)")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_type)")
 
         # -------- 第二阶段新增对象（市场情报子网） --------
         session.run("CREATE CONSTRAINT org_id_unique IF NOT EXISTS FOR (o:Organization) REQUIRE o.organization_id IS UNIQUE;")
@@ -47,6 +51,28 @@ def create_schema(driver):
 
         print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网）")
 
-if __name__ == "__main__":
-    with get_driver() as driver:
-        create_schema(driver)
+def create_ontology_modules(driver):
+    """创建 OntologyModule 节点，记录模块版本"""
+    modules = [
+        {"id": "FOUNDATION-CORE", "name": "foundation-core", "domain": "foundation", "version": "1.0.0"},
+        {"id": "FOUNDATION-PROVENANCE", "name": "foundation-provenance", "domain": "foundation", "version": "1.0.0"},
+        {"id": "FOUNDATION-GOVERNANCE", "name": "foundation-governance", "domain": "foundation", "version": "1.0.0"},
+        {"id": "SCIENTIFIC-CORE", "name": "scientific-core", "domain": "scientific", "version": "1.0.0"},
+        {"id": "SCIENTIFIC-EVIDENCE", "name": "scientific-evidence", "domain": "scientific", "version": "1.0.0"},
+        {"id": "CI-PLACEHOLDER", "name": "ci-placeholder", "domain": "ci", "version": "0.1.0", "status": "draft"},
+        {"id": "CONSUMER-CONTRACT", "name": "consumer-contract", "domain": "foundation", "version": "1.0.0"},
+    ]
+    with driver.session() as session:
+        for mod in modules:
+            session.run("""
+                MERGE (m:OntologyModule {module_id: $id})
+                SET m.module_name = $name,
+                    m.domain = $domain,
+                    m.version = $version,
+                    m.status = COALESCE($status, 'active'),
+                    m.owner = 'platform_team',
+                    m.activated_at = datetime(),
+                    m.created_at = datetime()
+            """, id=mod["id"], name=mod["name"], domain=mod["domain"],
+                version=mod["version"], status=mod.get("status", "active"))
+    print("✅ OntologyModule 版本记录已创建")

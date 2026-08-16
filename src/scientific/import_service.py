@@ -34,6 +34,46 @@ def _get_or_create_evidence_source(tx, source_ref: str, source_type: str = "unkn
         RETURN e.evidence_id AS id
     """, evidence_id=ev_id, title=source_ref, source_type=source_type)
     return result.single()["id"]
+def _get_or_create_source_artifact(
+    tx, 
+    source_ref: str, 
+    source_type: str = "unknown", 
+    source_domain: str = "scientific",
+    title: str = None,
+    access_level: str = "internal"
+) -> str:
+    """
+    获取或创建 SourceArtifact 节点（替代 EvidenceSource）
+    返回 source_id
+    """
+    # 生成稳定的 source_id（与之前 EvidenceSource 保持一致，便于迁移）
+    source_id = f"SRC-{source_ref.replace(':', '_').replace('/', '_').replace(' ', '_')}"
+    if not title:
+        title = source_ref
+    
+    result = tx.run("""
+        MERGE (s:SourceArtifact {source_id: $source_id})
+        ON CREATE SET 
+            s.source_domain = $source_domain,
+            s.source_type = $source_type,
+            s.title = $title,
+            s.access_level = $access_level,
+            s.review_status = 'pending',
+            s.retrieved_at = datetime(),
+            s.created_at = datetime(),
+            s.updated_at = datetime(),
+            s.schema_version = '1.0.0'
+        ON MATCH SET 
+            s.updated_at = datetime()
+        RETURN s.source_id AS id
+    """, 
+    source_id=source_id, 
+    source_domain=source_domain, 
+    source_type=source_type, 
+    title=title,
+    access_level=access_level)
+    
+    return result.single()["id"]
 
 def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
     """从 notes 字段中提取宿主菌株编号（若存在）"""
@@ -194,7 +234,7 @@ def load_cases_from_csv(csv_path):
 
 # ================== 噬菌体互作数据导入（新模型：LysisAssay + HostStrain） ==================
 def load_phages_from_csv(csv_path):
-    """从 CSV 导入 Phage 和互作数据，创建 LysisAssay、HostStrain 并关联 EvidenceSource"""
+    """从 CSV 导入 Phage 和互作数据，创建 LysisAssay、HostStrain 并关联 SourceArtifact（替代 EvidenceSource）"""
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return
@@ -228,15 +268,11 @@ def load_phages_from_csv(csv_path):
 
                     # 3. 解析宿主菌株（优先从 host_strain 列读取，否则从 notes 解析）
                     host_strain_label = None
-                    
-                    # 3a. 优先使用新增的 host_strain 列（如果存在）
                     if 'host_strain' in df.columns and pd.notna(row.get('host_strain')) and str(row.get('host_strain')).strip():
                         host_strain_label = str(row['host_strain']).strip()
-                    
-                    # 3b. 如果没有 host_strain 列，从 notes 中解析
                     if not host_strain_label and row.get('notes') and pd.notna(row.get('notes')):
                         host_strain_label = _parse_host_strain_from_notes(row['notes'])
-                    
+
                     # 4. 创建 LysisAssay 节点
                     assay_id = f"ASSAY-{row['phage_id']}_{row['pathogen_id']}_{host_strain_label or 'UNKNOWN'}"
                     check = session.run("MATCH (a:LysisAssay {assay_id: $assay_id}) RETURN a", assay_id=assay_id).single()
@@ -245,8 +281,7 @@ def load_phages_from_csv(csv_path):
                         success_count += 1
                         continue
 
-                    # 创建 LysisAssay（包含 pathogen_id）
-                    result = session.run("""
+                    session.run("""
                         MATCH (ph:Phage {phage_id: $phage_id})
                         CREATE (a:LysisAssay {
                             assay_id: $assay_id,
@@ -268,7 +303,6 @@ def load_phages_from_csv(csv_path):
                     infection_probability=float(row['infection_probability']) if pd.notna(row.get('infection_probability')) else None,
                     evidence_level=row['evidence_level'] if pd.notna(row.get('evidence_level')) else None,
                     evidence_ref=evidence_ref_list)
-                    result.single()  # 确保执行
 
                     # 5. 关联 HostStrain（如果存在）
                     if host_strain_label:
@@ -278,23 +312,30 @@ def load_phages_from_csv(csv_path):
                             MATCH (h:HostStrain {host_strain_id: $host_strain_id})
                             CREATE (a)-[:TESTED_AGAINST]->(h)
                         """, assay_id=assay_id, host_strain_id=host_strain_id)
-
-                        # ===== 新增：建立 HostStrain → Pathogen 关系（IS_STRAIN_OF） =====
+                        # 建立 HostStrain → Pathogen 关系
                         session.run("""
                             MATCH (h:HostStrain {host_strain_id: $host_strain_id})
                             MATCH (p:Pathogen {pathogen_id: $pathogen_id})
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=row['pathogen_id'])
 
-                    # 6. 关联 EvidenceSource（为每个 evidence_ref 创建或获取）
+                    # 6. 关联 SourceArtifact（替代 EvidenceSource），使用 DERIVED_FROM 关系
                     for ref in evidence_ref_list:
                         if ref and str(ref).strip():
-                            source_id = _get_or_create_evidence_source(session, ref, "literature" if ref.startswith("PMID") else "clinical_case")
+                            source_type = "literature" if ref.startswith("PMID") else "clinical_case"
+                            source_id = _get_or_create_source_artifact(
+                                session,
+                                source_ref=ref,
+                                source_type=source_type,
+                                source_domain="scientific",
+                                title=ref,
+                                access_level="internal"
+                            )
                             session.run("""
                                 MATCH (a:LysisAssay {assay_id: $assay_id})
-                                MATCH (e:EvidenceSource {evidence_id: $evidence_id})
-                                CREATE (a)-[:SUPPORTED_BY]->(e)
-                            """, assay_id=assay_id, evidence_id=source_id)
+                                MATCH (s:SourceArtifact {source_id: $source_id})
+                                CREATE (a)-[:DERIVED_FROM]->(s)
+                            """, assay_id=assay_id, source_id=source_id)
 
                     success_count += 1
                     if success_count % 10 == 0:
@@ -358,7 +399,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                         existing = session.run("MATCH (a:LysisAssay {assay_id: $assay_id}) RETURN a", assay_id=assay_id).single()
                         if existing:
                             continue
-                        # 创建 LysisAssay（包含 pathogen_id）
+
                         evidence_ref = ["合作方裂解谱数据"]
                         session.run("""
                             MATCH (ph:Phage {phage_id: $phage_id})
@@ -383,20 +424,27 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                         evidence_ref=evidence_ref,
                         host_strain_id=host_strain_id)
 
-                        # ===== 新增：建立 HostStrain → Pathogen 关系（IS_STRAIN_OF） =====
+                        # 建立 HostStrain → Pathogen 关系
                         session.run("""
                             MATCH (h:HostStrain {host_strain_id: $host_strain_id})
                             MATCH (p:Pathogen {pathogen_id: $pathogen_id})
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=pathogen_id)
 
-                        # 关联 EvidenceSource
-                        source_id = _get_or_create_evidence_source(session, "合作方裂解谱数据", "lysis_assay_file")
+                        # 关联 SourceArtifact（替代 EvidenceSource），使用 DERIVED_FROM 关系
+                        source_id = _get_or_create_source_artifact(
+                            session,
+                            source_ref="合作方裂解谱数据",
+                            source_type="lysis_assay_file",
+                            source_domain="scientific",
+                            title="合作方裂解谱数据",
+                            access_level="internal"
+                        )
                         session.run("""
                             MATCH (a:LysisAssay {assay_id: $assay_id})
-                            MATCH (e:EvidenceSource {evidence_id: $evidence_id})
-                            CREATE (a)-[:SUPPORTED_BY]->(e)
-                        """, assay_id=assay_id, evidence_id=source_id)
+                            MATCH (s:SourceArtifact {source_id: $source_id})
+                            CREATE (a)-[:DERIVED_FROM]->(s)
+                        """, assay_id=assay_id, source_id=source_id)
 
                         success_count += 1
                         if success_count % 100 == 0:
