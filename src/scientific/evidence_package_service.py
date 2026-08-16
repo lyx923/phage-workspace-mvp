@@ -1,23 +1,25 @@
 """
-src/package_builder.py Evidence Package 构建器
+src/scientific/evidence_package_service.py Evidence Package 构建器
 支持互作路径 + 黄金规则路径双路检索，LLM 和规则引擎均可使用。
 
 """
 from typing import List, Dict, Optional, Any
 import json
 from openai import OpenAI
-from src.data_loader import get_driver
-from src.retriever import find_matching_phages, find_similar_cases
+from src.scientific.import_service import get_driver
+from src.scientific.retriever_service import find_matching_phages, find_similar_cases
 from config import Config
 import uuid
 
 
-# ==================== 系统提示词（对齐规范 P2、P4） ====================
+# ==================== 系统提示词（对齐规范 P2、P4 及文案约束） ====================
 SYSTEM_PROMPT = """你是一个精准抗感染领域的循证助手。
 你的职责是组织已有的检索结果，不是创造新知识。
 你只使用下面提供的检索结果，不添加任何未在检索结果中出现的信息。
 对于缺失的信息，标注"需人工进一步确认"。
 不做治疗推荐。
+严禁使用"推荐使用"、"优先治疗"、"应采用"等表达。
+应使用"在当前检索结果中证据排序较高"、"存在以下候选证据"、"需领域专家进一步审核"等表述。
 输出严格的 JSON 格式。"""
 
 
@@ -41,7 +43,7 @@ def _retrieve_golden_rules(species: str, strain_type: Optional[str] = None) -> D
             rule_result = session.run("""
                 MATCH (p:Pathogen {species: $species})
                 OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:KnowledgeRule)
-                WHERE $strain_type IS NULL OR r.strain_type = $strain_type   // 新增条件
+                WHERE $strain_type IS NULL OR r.strain_type = $strain_type
                 OPTIONAL MATCH (r)-[:RECOMMENDS_PHAGE]->(ph:Phage)
                 RETURN COLLECT(DISTINCT ph.name) AS rule_phages,
                        COLLECT(DISTINCT {rule_id: r.rule_id, treatment: r.treatment, outcome: r.outcome}) AS rules
@@ -96,7 +98,8 @@ def _merge_golden_rule_phages(
 ) -> List[Dict]:
     """
     将黄金规则推荐的噬菌体合并到互作路径的噬菌体列表中。
-    如果某噬菌体已在列表中，则将其 evidence_level 提升为 GOLDEN_RULE。
+    黄金规则条目不再使用 evidence_level='GOLDEN_RULE'，
+    而是使用 source_type='validated_rule' 和 priority='high'。
     """
     rule_phages = rule_data.get('rule_phages', [])
     matched_rules = rule_data.get('matched_rules', [])
@@ -118,22 +121,25 @@ def _merge_golden_rule_phages(
             continue
         
         if phage_name in name_to_idx:
-            # 已存在于互作列表中，提升证据等级
+            # 已存在于互作列表中，提升为 validated_rule
             idx = name_to_idx[phage_name]
-            formatted_phages[idx]['evidence_level'] = 'GOLDEN_RULE'
+            # 移除原有的 evidence_level（保留但标注为来自规则）
+            formatted_phages[idx]['source_type'] = 'validated_rule'
+            formatted_phages[idx]['priority'] = 'high'
             # 追加规则信息到 notes
             existing_notes = formatted_phages[idx].get('notes') or ''
             if matched_rules:
                 rule_info = f"黄金规则: {', '.join([r['rule_id'] for r in matched_rules])}"
                 formatted_phages[idx]['notes'] = f"{existing_notes}；{rule_info}".strip('；')
         else:
-            # 不在互作列表中，新增条目
+            # 不在互作列表中，新增条目（不带 evidence_level）
             golden_entries.append({
                 "phage_name": phage_name,
                 "family": "黄金规则推荐",
                 "infection_result": "Lytic (黄金规则)",
                 "infection_probability": 1.0,
-                "evidence_level": "GOLDEN_RULE",
+                "source_type": "validated_rule",
+                "priority": "high",
                 "evidence_ref": [f"Rule: {', '.join([r['rule_id'] for r in matched_rules])}"],
                 "notes": f"由经过临床验证的黄金规则推荐。预期结局：{', '.join([r['outcome'] for r in matched_rules])}"
             })
@@ -150,14 +156,6 @@ def build_evidence_package(
 ) -> Dict:
     """
     调用 DeepSeek API 组织检索结果，生成结构化的 Evidence Package。
-
-    Args:
-        matching_phages: 已格式化的噬菌体匹配列表（含 GOLDEN_RULE 标记）
-        similar_cases: 已格式化的相似病例列表
-        query_context: 查询上下文，包含 species, resistance, infection_type, matched_rules
-
-    Returns:
-        Dict: matching_evidence, clinical_evidence, explanation
     """
     # 提取黄金规则信息
     matched_rules = query_context.get('matched_rules', [])
@@ -172,7 +170,7 @@ def build_evidence_package(
 【黄金规则（经过临床验证的配型知识）】
 {rules_text}
 
-【匹配到的噬菌体（按证据等级排序，GOLDEN_RULE 为最高优先级）】
+【匹配到的噬菌体（按证据排序，validated_rule 优先，其后按 L1-L5 排序）】
 {json.dumps(matching_phages, ensure_ascii=False, indent=2)}
 
 【相似历史病例】
@@ -181,7 +179,7 @@ def build_evidence_package(
 请按以下 JSON 格式输出 Evidence Package：
 {{
   "matching_evidence": [
-    {{"phage_name": "", "family": "", "infection_result": "", "infection_probability": 0.0, "evidence_level": "", "evidence_ref": [], "notes": ""}}
+    {{"phage_name": "", "family": "", "infection_result": "", "infection_probability": 0.0, "evidence_level": "", "evidence_ref": [], "notes": "", "source_type": "", "priority": ""}}
   ],
   "clinical_evidence": [
     {{"case_id": "", "infection_type": "", "phage_treatment": "", "clinical_outcome": "", "microbiological_outcome": ""}}
@@ -190,25 +188,22 @@ def build_evidence_package(
 }}
 
 【重要约束 - 必须严格遵守】
-1. 如果存在 evidence_level 为 "GOLDEN_RULE" 的噬菌体，必须将其排在 matching_evidence 的第一位。
+1. 如果存在 source_type 为 "validated_rule" 的噬菌体，必须将其排在 matching_evidence 的第一位。
 2. explanation 必须逐条引用证据，格式为："噬菌体名称（证据等级 Y，来源：Z）"。
 3. ⚠️ 禁止使用"等"字概括未列出的噬菌体。所有匹配到的噬菌体都必须在 explanation 中单独列出。
-4. 对于 GOLDEN_RULE 级别的噬菌体，必须引用其对应的规则 ID 和预期结局。
+4. 对于 validated_rule 级别的噬菌体，必须引用其对应的规则 ID 和预期结局。
 5. 对于 L3 级别的噬菌体，必须引用其对应的 CASE-XXX 来源。
 6. 对于 L1/L2 级别的噬菌体，必须引用其对应的 PMID 或标注"体外验证"。
 7. 只使用提供的数据，不添加任何未出现的信息。
+8. 严禁使用"推荐使用"、"优先治疗"、"应采用"等表述，应使用"在当前检索结果中证据排序较高"、"存在以下候选证据"、"需领域专家进一步审核"。
 
 【explanation 输出格式示例】
 本次检索针对 [病原菌]（[耐药机制]）引起的 [感染类型]，共匹配到 N 个噬菌体：
-- ΦK2-v3（黄金规则，来源：RULE_CRAB_KL2，预期结局：第14天微生物清除）—— 优先级最高，推荐使用。
-- vB_AbaM_003（L3，来源：CASE-004，临床验证有效）—— 有单例临床验证支持。
-- vB_AbaM_007（L3，来源：CASE-013，临床验证有效）—— 有单例临床验证支持。
-- vB_AbaM_001（L2，来源：体外验证）—— 仅有体外活性数据，需进一步临床验证。
-- vB_AbaM_008（L1，来源：PMID:56789012）—— 公开文献报道。
+- ΦK2-v3（黄金规则，来源：RULE_CRAB_KL2，预期结局：第14天微生物清除）—— 在当前检索结果中证据排序较高。
+- vB_AbaM_003（L3，来源：CASE-004，临床验证有效）—— 存在单例临床验证支持。
+- vB_AbaM_001（L2，来源：体外验证）—— 仅有体外活性数据，需领域专家进一步审核。
 （按此格式列出所有噬菌体，禁止使用"等"字）
 相似历史病例中，CASE-XXX 无噬菌体治疗记录，无法提供参考。
-⚠️ explanation 中必须按以下格式逐条列出所有匹配到的噬菌体，不得使用"等"、"多个"等概括性词语：
-格式：- 噬菌体名称（证据等级：X，来源：Y）
 """
 
     try:
@@ -248,7 +243,7 @@ def build_evidence_package(
 # ==================== 一站式入口（LLM 版本） ====================
 def build_evidence_package_from_db(
     species: str,
-    strain_type: Optional[str] = None,   # 新增
+    strain_type: Optional[str] = None,
     resistance: Optional[str] = None,
     infection_type: Optional[str] = None,
     phage_limit: int = 20,
@@ -256,43 +251,34 @@ def build_evidence_package_from_db(
 ) -> Dict:
     """
     一站式入口：检索互作路径 + 黄金规则路径 → 合并 → 构建 Evidence Package。
-    黄金规则推荐的噬菌体会被标记为 GOLDEN_RULE 并优先展示。
     """
     with get_driver() as driver:
-        # 1. 从互作路径检索
         raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
         raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
 
-    # 2. 格式化互作路径的噬菌体
     formatted_phages = _format_matching_phages(raw_phages)
 
-    # 传递 strain_type
-    rule_data = _retrieve_golden_rules(species, strain_type)   # 增加参数
+    # 检索黄金规则
+    rule_data = _retrieve_golden_rules(species, strain_type)
 
-    # 3. 检索黄金规则
-    rule_data = _retrieve_golden_rules(species)
-
-    # 4. 合并黄金规则推荐的噬菌体（提升优先级或新增）
+    # 合并黄金规则推荐的噬菌体
     formatted_phages = _merge_golden_rule_phages(formatted_phages, rule_data)
 
-    # 5. 格式化临床证据
     formatted_cases = _format_similar_cases(raw_cases)
 
-    # 6. 构造上下文（包含黄金规则信息）
     query_context = {
         "species": species,
-        "strain_type": strain_type,                     # 记录到上下文
+        "strain_type": strain_type,
         "resistance": resistance or "未知",
         "infection_type": infection_type or "未知",
         "matched_rules": rule_data.get('matched_rules', [])
     }
     
-    # 7. 调用 LLM
     package_dict = build_evidence_package(formatted_phages, formatted_cases, query_context)
 
-    # ---- 新增：持久化 ----
+    # 持久化
     package_id = persist_evidence_package(package_dict, query_context)
-    package_dict["_package_id"] = package_id   # 在返回字典中附带 ID
+    package_dict["_package_id"] = package_id
 
     return package_dict
 
@@ -320,14 +306,12 @@ def verify_llm_effectiveness(case_id: str = "CASE-001") -> Dict:
     if not case_data:
         return {"error": f"病例 {case_id} 不存在"}
     
-    # 构建 Evidence Package
     package = build_evidence_package_from_db(
         species=case_data['species'],
         resistance=case_data['resistance'],
         infection_type=case_data['infection_type']
     )
     
-    # 对比真实方案
     actual_phages = ["cp-p-ec-23086", "cp-p-ec-23062"]
     lower = json.dumps(package, ensure_ascii=False).lower()
     found = [p for p in actual_phages if p in lower]
@@ -340,7 +324,6 @@ def verify_llm_effectiveness(case_id: str = "CASE-001") -> Dict:
         "coverage": "full" if set(found) == set(actual_phages) else "partial" if found else "none"
     }
     
-    # 检查是否引用了规则
     if any(rule.get('rule_id') == 'RULE_ECOLI_O25' for rule in case_data.get('rules', [])):
         package["_verification"]["rule_cited"] = "O25" in lower or "48小时" in lower
     
@@ -350,6 +333,7 @@ def verify_llm_effectiveness(case_id: str = "CASE-001") -> Dict:
 # ==================== 规则引擎（无 LLM） ====================
 def rule_based_evidence_package(
     species: str,
+    strain_type: Optional[str] = None,
     resistance: Optional[str] = None,
     infection_type: Optional[str] = None,
     phage_limit: int = 20,
@@ -357,14 +341,11 @@ def rule_based_evidence_package(
 ) -> Dict:
     """
     纯规则引擎：同时检索互作路径和黄金规则路径。
-    黄金规则推荐的噬菌体优先级最高。
     """
     with get_driver() as driver:
-        # 1. 从互作路径检索
         raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
         raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
 
-        # 2. 格式化互作路径的噬菌体
         matching_evidence = []
         for item in raw_phages:
             ref = item.get('evidence_ref')
@@ -383,22 +364,22 @@ def rule_based_evidence_package(
                 "notes": item.get('notes')
             })
 
-        # 3. 检索并合并黄金规则
-        rule_data = _retrieve_golden_rules(species)
+        # 检索并合并黄金规则
+        rule_data = _retrieve_golden_rules(species, strain_type)
         matching_evidence = _merge_golden_rule_phages(matching_evidence, rule_data)
 
-        # 4. 排序：GOLDEN_RULE > L3 > L2 > L1
+        # 排序：priority='high' 优先，然后按 evidence_level（L1-L5 数字越小越高）
         def sort_key(e):
+            priority = e.get('priority', 'normal')
             level = e.get('evidence_level', 'L5')
             prob = e.get('infection_probability', 0) or 0
-            if level == 'GOLDEN_RULE':
-                return (0, 1.0)
-            level_order = {'L3': 1, 'L2': 2, 'L1': 3, 'L4': 4, 'L5': 5}
-            return (level_order.get(level, 5), -prob)
+            if priority == 'high':
+                return (0, 0, 1.0)  # 第一优先级
+            level_order = {'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5}
+            return (1, level_order.get(level, 5), -prob)
         
         matching_evidence.sort(key=sort_key)
 
-        # 5. 格式化临床证据
         clinical_evidence = [
             {
                 "case_id": item.get('case_id'),
@@ -410,22 +391,21 @@ def rule_based_evidence_package(
             for item in raw_cases
         ]
 
-        # 6. 生成解释
         total = len(matching_evidence)
         clinical_cnt = len(clinical_evidence)
         
-        golden_phages = [e['phage_name'] for e in matching_evidence if e.get('evidence_level') == 'GOLDEN_RULE']
+        golden_phages = [e['phage_name'] for e in matching_evidence if e.get('priority') == 'high']
         validated_phages = [e['phage_name'] for e in matching_evidence if e.get('evidence_level') == 'L3']
         
         if golden_phages:
             explanation = (
                 f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
-                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(golden_phages)} 由经过临床验证的黄金规则推荐，优先级最高。"
+                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(golden_phages)} 由经过临床验证的黄金规则推荐，证据排序较高。"
             )
         elif validated_phages:
             explanation = (
                 f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
-                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(validated_phages[:3])} 有临床病例验证，优先推荐。"
+                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(validated_phages[:3])} 有临床病例验证，需领域专家进一步审核。"
             )
         else:
             explanation = f"检索到 {total} 个匹配噬菌体和 {clinical_cnt} 个相似病例，无临床验证噬菌体，建议人工复核。"
@@ -438,6 +418,8 @@ def rule_based_evidence_package(
             "_golden_rules_applied": golden_phages
         }
 
+
+# ==================== 持久化 Evidence Package ====================
 def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
     """
     将 Evidence Package 持久化为 ScientificEvidencePackage 节点，并建立关系。
@@ -445,7 +427,6 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
     package_id = f"EP-{uuid.uuid4().hex[:8].upper()}"
     with get_driver() as driver:
         with driver.session() as session:
-            # 1. 创建节点
             session.run("""
                 CREATE (p:ScientificEvidencePackage {
                     package_id: $package_id,
@@ -465,8 +446,6 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
             summary=package_dict.get('explanation', ''),
             limitations='需人工进一步确认')
 
-            # 2. 关联噬菌体、病例和来源（遍历 matching_evidence 和 clinical_evidence）
-            # 示例：关联匹配的噬菌体（以 phage_name 查找 Phage 节点）
             for item in package_dict.get('matching_evidence', []):
                 phage_name = item.get('phage_name')
                 if phage_name:
@@ -475,5 +454,4 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
                         MATCH (ph:Phage {name: $phage_name})
                         CREATE (pkg)-[:INCLUDES_CANDIDATE]->(ph)
                     """, package_id=package_id, phage_name=phage_name)
-            # 同理，关联 ClinicalCase、EvidenceSource 等
-        return package_id
+    return package_id

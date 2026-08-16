@@ -4,58 +4,84 @@
 
 ## **📖 项目简介**
 
-**Phage Intelligence Workspace** 是一个基于知识图谱和大语言模型的噬菌体精准治疗循证决策支持系统。本项目通过构建噬菌体-宿主互作知识图谱，结合 DeepSeek 大模型的检索增强生成（RAG）能力，为多重耐药菌感染的噬菌体治疗提供**可追溯、可复用的循证证据包**。
+**Phage Intelligence Workspace** 是一个基于知识图谱和大语言模型的噬菌体精准治疗循证决策支持系统。本项目通过构建噬菌体-宿主互作知识图谱，结合 DeepSeek 大模型的检索增强生成能力，为多重耐药菌感染的噬菌体治疗提供**可追溯、可复用、可审核**的循证证据包。
+
+本阶段（第二阶段）已完成从"知识图谱原型"到 **Ontology-driven Learning System 原型** 的升级，建立了完整的**证据升级-人工审核-知识复用**闭环。
 
 ### **🎯 核心验证目标**
 
-| **目标** | **说明** | **状态** |
-| --- | --- | --- |
-| **V1** | Ontology 能否承载真实临床数据？ | ✅ 15 例病例，必填字段填充率 100% |
+| 目标 | 说明 | 状态 |
+|:---|:---|:---|
+| **V1** | Ontology 能否承载真实临床数据？ | ✅ 16 例病例，必填字段填充率 100% |
 | **V2** | 历史病例知识能否被复用？ | ✅ 跨病例复用验证通过 |
 | **V3** | 学习闭环是否可演示？ | ✅ 完整链路已跑通 |
 
 ### **✨ 核心功能**
 
-**知识图谱构建**：基于 Neo4j 存储病原菌、噬菌体、互作关系、临床病例  
-**黄金规则管理**：支持导入临床验证的配型规则（如 CRAB KL2 → ΦK2-v3）  
-**双引擎推荐**：规则引擎：确定性逻辑，0 成本，0 幻觉  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LLM 引擎：基于 DeepSeek 的 RAG，生成自然语言证据包  
-**知识策展闭环**：病例结局回写 → 证据等级自动升级（L1/L2 → L3）  
-**跨病例复用检测**：自动识别相似病例，推荐复用历史经验  
+**知识图谱构建**：基于 Neo4j 存储病原菌、噬菌体、宿主菌株、裂解实验、临床病例  
+**Ontology 驱动**：采用 Palantir-style Ontology，所有业务对象可操作、可审核、可追溯  
+**黄金规则管理**：支持导入临床验证的配型规则（如 CRAB KL2 → ΦK2-v3），按菌种+菌型精确匹配  
+**双引擎推荐**：
+- 规则引擎：确定性逻辑，0 成本，0 幻觉
+- LLM 引擎：基于 DeepSeek 的 RAG，生成自然语言证据包  
+**知识策展闭环**：
+1. 病例结局录入 → 自动创建升级提案（`EvidenceUpgradeProposal`）
+2. 专家人工审核（`Review`） → 批准/拒绝/需修改
+3. 执行升级 → 证据等级从 L1/L2 升级至 L3  
+**跨病例复用检测**：自动识别相似病例，推荐复用历史经验，需专家确认后才生效  
+**证据包持久化**：`ScientificEvidencePackage` 节点存储，支持审核和后续引用
+
+---
 
 ## **📦 数据模型**
 
 ### **核心实体**
 
-| **实体** | **说明** | **关键属性** |
-| --- | --- | --- |
-| **Pathogen** | 病原菌 | species, resistance_mechanism, verification_status |
+| 实体 | 说明 | 关键属性 |
+|:---|:---|:---|
+| **Pathogen** | 病原菌（共享 Foundation） | species, resistance_mechanism, verification_status |
 | **Phage** | 噬菌体 | name, family, receptor_target |
-| **PhageHostInteraction** | 噬菌体-宿主互作 | evidence_level(L1-L5), evidence_ref, infection_probability |
-| **ClinicalCase** | 临床病例 | case_id, infection_type, phage_treatment, clinical_outcome |
+| **HostStrain** | 宿主菌株 | strain_label, host_strain_id |
+| **LysisAssay** | 裂解实验（替代 PhageHostInteraction） | assay_id, evidence_level(L1-L5), result, evidence_ref |
+| **ClinicalCase** | 临床病例 | case_id, infection_type, phage_treatment, clinical_outcome, host_strain |
 | **KnowledgeRule** | 黄金规则 | rule_id, strain_type, treatment, outcome |
+| **EvidenceUpgradeProposal** | 证据升级提案 | proposal_id, assay_id, current_level, proposed_level, status(pending_review/approved/rejected) |
+| **Review** | 统一审核记录 | review_id, target_object_id, decision, reviewer_id |
+| **ScientificEvidencePackage** | 持久化证据包 | package_id, query_context, summary, review_status |
+| **KnowledgeReuseEvent** | 知识复用事件 | reuse_event_id, source_object_id, status(detected/confirmed/rejected) |
 
 ### **证据等级体系**
 
-| **等级** | **名称** | **含义** |
-| --- | --- | --- |
+| 等级 | 名称 | 含义 |
+|:---|:---|:---|
 | **L1** | PUBLISHED_LITERATURE | 公开文献报道 |
 | **L2** | IN_VITRO_VERIFIED | 体外实验验证 |
 | **L3** | CLINICAL_SINGLE_CASE | 单例临床验证 |
 | **L4** | CLINICAL_MULTI_CENTER | 多中心临床验证 |
 | **L5** | ORGANIZATIONAL_LEARNING | 组织学习闭环 |
+| **GOLDEN_RULE** | 黄金规则推荐 | 独立于 L1-L5 的最高优先级，基于临床验证规则 |
 
 ### **核心关系**
 
 text
 
-(Phage)-\[:HAS_INTERACTION\]->(PhageHostInteraction)-\[:TARGETS\]->(Pathogen)
+(Phage)-[:USED_IN]->(LysisAssay)-[:TESTED_AGAINST]->(HostStrain)
 
-(ClinicalCase)-\[:INVOLVES_PATHOGEN\]->(Pathogen)
+(HostStrain)-[:IS_STRAIN_OF]->(Pathogen)
 
-(ClinicalCase)-\[:TREATED_WITH\]->(Phage)
+(ClinicalCase)-[:INVOLVES_PATHOGEN]->(Pathogen)
 
-(Pathogen)-\[:HAS_VALIDATED_RULE\]->(KnowledgeRule)-\[:RECOMMENDS_PHAGE\]->(Phage)
+(ClinicalCase)-[:TREATED_WITH]->(Phage)
+
+(ClinicalCase)-[:HAS_ISOLATE]->(HostStrain)
+
+(Pathogen)-[:HAS_VALIDATED_RULE]->(KnowledgeRule)-[:RECOMMENDS_PHAGE]->(Phage)
+
+(EvidenceUpgradeProposal)<-[:REVIEWS]-(Review)
+
+(ScientificEvidencePackage)-[:INCLUDES_CANDIDATE]->(Phage)
+
+(KnowledgeReuseEvent)-[:REUSES]->(LysisAssay)
 
 ## **🏗️ 项目结构**
 
@@ -167,27 +193,11 @@ jupyter notebook
 
 ### **6\. 运行演示**
 
-打开 notebooks/01_data_import.ipynb，按顺序运行所有 Cell：
+_\# 1. 打开 notebooks/01_data_import.ipynb，按顺序运行所有 Cell
 
-python
+_\# 2. 打开 notebooks/02_evidence_package.ipynb，按顺序运行所有 Cell
 
-_\# 1. 清空数据库_
-
-clear_database()
-
-_\# 2. 创建约束和索引_
-
-with get_driver() as driver:
-
-create_schema(driver)
-
-_\# 3. 导入噬菌体互作数据_
-
-load_phages_from_csv("../data/phage_interactions.csv")
-
-_\# 4. 导入临床病例数据_
-
-load_cases_from_csv("../data/cases.csv")
+_\# 3. 打开 notebooks/03_cross_case_reuse.ipynb，按顺序运行所有 Cell
 
 ## **📊 验证结果**
 

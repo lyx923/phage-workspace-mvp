@@ -8,20 +8,26 @@ import os
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from config import get_driver
-from src.validator import (
+from src.scientific.validator_service import (
     query_phages_for_host,
     batch_validate_hosts,
     query_l3_evidence,
     query_hosts_for_phage,
     validate_without_sequencing,
 )
-from src.package_builder import (
+from src.scientific.evidence_package_service import (
     build_evidence_package_from_db,
     rule_based_evidence_package
 )
-from src.retriever import analyze_cross_case_reuse_simple, find_matching_phages, find_similar_cases, analyze_and_persist_reuse
-from src.curation import curate_case_by_id
-from src.data_loader import (
+from src.scientific.retriever_service import (
+    analyze_cross_case_reuse_simple,
+    find_matching_phages,
+    find_similar_cases,
+    analyze_and_persist_reuse,
+    confirm_knowledge_reuse          # 新增导入
+)
+from src.scientific.evidence_upgrade_service import curate_case_by_id, review_evidence_upgrade_proposal
+from src.scientific.import_service import (
     load_phages_from_lysis_csv_simple,
     import_golden_rules
 )
@@ -45,7 +51,6 @@ with st.sidebar:
     st.header("📊 数据总览")
     
     with driver.session() as session:
-        # 统计裂解谱数据（与 Notebook 测试 4 口径一致）
         stats = session.run("""
             MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
             WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
@@ -60,8 +65,8 @@ with st.sidebar:
     
     if st.button("🔄 清空并重新导入全部数据", type="secondary"):
         with st.status("执行数据导入...", expanded=True) as status:
-            from src.data_loader import clear_database, load_cases_from_csv, load_phages_from_csv
-            from src.schema import create_schema
+            from src.scientific.import_service import clear_database, load_cases_from_csv, load_phages_from_csv
+            from src.foundation.schema import create_schema
 
             status.update(label="正在清空数据库...")
             clear_database()
@@ -92,11 +97,8 @@ with st.sidebar:
         st.rerun()
     
     st.markdown("---")
-    
-    # ===== 数据管理区域 =====
     st.subheader("📄 数据管理")
     
-    # ===== 裂解谱最广的噬菌体（折叠） =====
     with st.expander("📄 裂解谱最广的噬菌体（Top 5）"):
         with driver.session() as session:
             result = session.run("""
@@ -110,7 +112,6 @@ with st.sidebar:
             for record in result:
                 st.write(f"   - {record['phage_id']}: {record['host_count']} 个菌株")
     
-    # ===== V1 验证（折叠，无按钮，自动显示） =====
     with st.expander("📄 数据完整性验证"):
         @st.cache_data(ttl=600)
         def get_v1_validation():
@@ -160,8 +161,6 @@ with st.sidebar:
                 st.warning(f"⚠️ V1 验证未通过（{v1_data['rate']:.1f}% < 90%）")
     
     st.markdown("---")
-    
-    # ===== 系统状态 =====
     st.subheader("⚙️ 系统状态")
     try:
         from config import Config
@@ -173,13 +172,14 @@ with st.sidebar:
         st.caption("⚠️ 无法读取配置")
 
 # ---------- 主界面：多标签页 ----------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🔍 噬菌体配型查询",
     "📊 批量菌株配型",
     "📦 证据包生成",
     "🔄 跨病例复用",
     "📈 聚类分析",
-    "📝 知识策展"
+    "📝 知识策展",
+    "📋 审计日志"
 ])
 
 # ================== 标签页 1：噬菌体配型查询 ==================
@@ -223,7 +223,6 @@ with tab1:
     
     st.markdown("---")
     
-    # ===== 匹配噬菌体查询（独立折叠） =====
     with st.expander("🔬 匹配噬菌体查询"):
         st.markdown("#### 匹配噬菌体查询")
         col_species, col_resistance = st.columns(2)
@@ -243,7 +242,6 @@ with tab1:
             if len(phages_raw) > 5:
                 st.write(f"   ... 还有 {len(phages_raw)-5} 个")
     
-    # ===== 相似病例查询（独立折叠） =====
     with st.expander("🔬 相似病例查询"):
         st.markdown("#### 相似病例查询")
         col_sim_species, col_sim_type = st.columns(2)
@@ -261,10 +259,8 @@ with tab1:
             for c in cases_raw:
                 st.write(f"   - {c['case_id']}: 结局 {c['clinical_outcome']}, 噬菌体: {c.get('phages_used', [])}")
     
-    # ===== 噬菌体宿主谱查询（反向查询） =====
     with st.expander("🔬 噬菌体宿主谱查询（反向查询）"):
         st.caption("输入噬菌体名称，查看它能裂解哪些宿主菌株")
-        
         col_phage1, col_phage2 = st.columns([3, 1])
         with col_phage1:
             phage_input = st.text_input("输入噬菌体名称（如 PKP014 或 PHAGE-PKP014）", value="PKP014", key="phage_input_reverse")
@@ -292,15 +288,15 @@ with tab1:
                 st.write("**📊 证据等级分布**")
                 cols = st.columns(len(level_counts))
                 for idx, (level, count) in enumerate(level_counts.items()):
-                    cols[idx].metric(f"L{level}", count)
+                    cols[idx].metric(f"{level}", count)
             else:
                 st.warning(f"未找到噬菌体 **{phage_input}** 的宿主记录，请确认名称是否正确")
 
 # ================== 标签页 2：批量菌株配型 ==================
 with tab2:
     st.subheader("批量菌株配型覆盖度")
-    if st.button("运行随机 15 个菌株"):
-        strains = random.sample([f"B-KP{i}" for i in range(1, 244)], 15)
+    if st.button("运行随机 10 个菌株"):
+        strains = random.sample([f"B-KP{i}" for i in range(1, 244)], 10)
         with st.spinner("验证中..."):
             df = batch_validate_hosts(strains)
             st.session_state.batch_result = df
@@ -314,14 +310,12 @@ with tab3:
     col1, col2 = st.columns(2)
     with col1:
         species = st.text_input("病原菌物种", value="Acinetobacter baumannii")
-        # 修改提示文字，value 设为空
         resistance = st.text_input("耐药机制（留空表示不限）", value="")
     with col2:
         infection_type = st.text_input("感染类型", value="Pneumonia")
         use_llm = st.checkbox("使用 LLM (DeepSeek)", value=True)
     if st.button("生成证据包"):
         with st.spinner("生成中..."):
-            # 如果输入为空，转换为 None
             resistance_val = resistance.strip() if resistance.strip() else None
             if use_llm:
                 result = build_evidence_package_from_db(species, resistance_val, infection_type)
@@ -332,12 +326,12 @@ with tab3:
     if "ep_result" in st.session_state:
         st.json(st.session_state.ep_result)
 
-# ================== 标签页 4：跨病例知识复用 ==================
+# ================== 标签页 4：跨病例知识复用（含审核复用事件） ==================
 with tab4:
     st.subheader("跨病例复用分析")
     col1, col2 = st.columns(2)
     with col1:
-        case_a = st.text_input("病例 A ID", value="CASE-001")
+        case_a = st.text_input("病例 A ID", value="CASE-002")
     with col2:
         case_b = st.text_input("病例 B ID", value="CASE-003")
     
@@ -352,6 +346,58 @@ with tab4:
     
     if "reuse_result" in st.session_state:
         st.json(st.session_state.reuse_result["analysis"])
+    
+    # ===== 新增：审核待确认的复用事件 =====
+    st.markdown("---")
+    st.markdown("#### 🧾 审核待确认的复用事件")
+    
+    with driver.session() as session:
+        pending_reuse = session.run("""
+            MATCH (kre:KnowledgeReuseEvent)
+            WHERE kre.status = 'detected'
+            RETURN kre.reuse_event_id AS reuse_event_id,
+                   kre.source_object_id AS source_case,
+                   kre.target_package_id AS target_package,
+                   kre.reuse_type AS reuse_type,
+                   kre.retrieval_reason AS reason,
+                   kre.created_at AS created_at
+            ORDER BY kre.created_at
+        """)
+        pending_list = [dict(r) for r in pending_reuse]
+    
+    if not pending_list:
+        st.info("✅ 当前没有待审核的复用事件")
+    else:
+        st.write(f"共 **{len(pending_list)}** 个复用事件待审核")
+        for evt in pending_list:
+            with st.container(border=True):
+                cols = st.columns([3, 1, 1])
+                with cols[0]:
+                    st.write(f"**{evt['reuse_event_id']}**")
+                    st.write(f"来源病例: `{evt['source_case']}` → 目标包: `{evt['target_package']}`")
+                    st.write(f"复用类型: {evt['reuse_type']}")
+                    st.caption(f"理由: {evt['reason'][:80]}..." if evt['reason'] and len(evt['reason']) > 80 else f"理由: {evt['reason']}")
+                    st.caption(f"创建于: {evt['created_at']}")
+                with cols[1]:
+                    if st.button("✅ 确认", key=f"confirm_reuse_{evt['reuse_event_id']}"):
+                        try:
+                            review_id = confirm_knowledge_reuse(
+                                driver, evt['reuse_event_id'], "expert_001", "confirmed", "人工确认复用有效"
+                            )
+                            st.success(f"已确认，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"确认失败: {e}")
+                with cols[2]:
+                    if st.button("❌ 拒绝", key=f"reject_reuse_{evt['reuse_event_id']}"):
+                        try:
+                            review_id = confirm_knowledge_reuse(
+                                driver, evt['reuse_event_id'], "expert_001", "rejected", "人工拒绝复用"
+                            )
+                            st.success(f"已拒绝，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"拒绝失败: {e}")
 
 # ================== 标签页 5：聚类分析 ==================
 with tab5:
@@ -360,7 +406,6 @@ with tab5:
     
     n_clusters = st.slider("聚类数", min_value=2, max_value=15, value=8)
     
-    # ---- 运行聚类 ----
     if st.button("运行聚类"):
         with st.spinner("聚类中..."):
             with driver.session() as session:
@@ -402,7 +447,6 @@ with tab5:
                 for label, strains in sorted(clusters.items()):
                     st.write(f"**簇 {label+1}**：{len(strains)} 个菌株，示例 {strains[:5]}")
     
-    # ---- 推荐该簇的噬菌体（独立于“运行聚类”按钮） ----
     if "clusters" in st.session_state and st.session_state.clusters:
         clusters = st.session_state.clusters
         
@@ -434,7 +478,6 @@ with tab5:
                 st.write(f"🔍 簇 {cluster_label} 包含 {len(strains_in_cluster)} 个菌株")
                 
                 with driver.session() as session:
-                    # 修复：在 WITH 中保留 h
                     result = session.run("""
                         MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
                         WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
@@ -468,7 +511,6 @@ with tab5:
             else:
                 st.error("无效的簇编号，请重新运行聚类。")
     
-    # ---- 单个菌株型别级推荐（保留原有功能） ----
     st.markdown("---")
     st.subheader("🔍 单个菌株型别级推荐")
     st.caption("输入菌株编号，系统自动定位所属簇，推荐该簇内覆盖多菌株的噬菌体")
@@ -504,7 +546,6 @@ with tab5:
                     st.write(f"同簇菌株示例：{strains_in_cluster[:10]}{'...' if len(strains_in_cluster) > 10 else ''}")
                     
                     with driver.session() as session:
-                        # 修复：在 WITH 中保留 h
                         result = session.run("""
                             MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
                             WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
@@ -540,7 +581,7 @@ with tab5:
             else:
                 st.warning("请先运行聚类，生成簇分布。")
 
-# ================== 标签页 6：知识策展（五级完整支持） ==================
+# ================== 标签页 6：知识策展（含审核提案） ==================
 with tab6:
     # ----- 步骤 1：查找可升级的互作记录 -----
     st.markdown("#### 🔍 步骤 1：查找可升级的互作记录")
@@ -565,7 +606,7 @@ with tab6:
                 result = session.run(f"""
                     MATCH (c:ClinicalCase)-[:TREATED_WITH]->(ph:Phage)-[:USED_IN]->(a:LysisAssay)
                     WHERE a.evidence_level IN ['{source_levels_str}']
-                    RETURN c.case_id AS case_id,
+                    RETURN DISTINCT c.case_id AS case_id,
                            ph.phage_id AS phage_id,
                            ph.name AS phage_name,
                            a.evidence_level AS evidence_level
@@ -616,15 +657,79 @@ with tab6:
             )
         st.success(summary)
     
+    # ===== 审核 EvidenceUpgradeProposal 面板 =====
+    st.markdown("---")
+    st.markdown("#### 🧾 步骤 3：审核待处理的升级提案")
+    
+    with driver.session() as session:
+        pending_proposals = session.run("""
+            MATCH (p:EvidenceUpgradeProposal)
+            WHERE p.status = 'pending_review'
+            RETURN p.proposal_id AS proposal_id,
+                   p.assay_id AS assay_id,
+                   p.source_case_id AS source_case_id,
+                   p.current_level AS current_level,
+                   p.proposed_level AS proposed_level,
+                   p.reason AS reason,
+                   p.proposed_by AS proposed_by,
+                   p.proposed_at AS proposed_at
+            ORDER BY p.proposed_at
+        """)
+        pending_list = [dict(r) for r in pending_proposals]
+    
+    if not pending_list:
+        st.info("✅ 当前没有待审核的升级提案")
+    else:
+        st.write(f"共 **{len(pending_list)}** 个提案待审核")
+        for prop in pending_list:
+            with st.container(border=True):
+                cols = st.columns([3, 1, 1, 1])
+                with cols[0]:
+                    st.write(f"**{prop['proposal_id']}**")
+                    st.write(f"Assay: `{prop['assay_id']}`  病例: `{prop['source_case_id']}`")
+                    st.write(f"{prop['current_level']} → {prop['proposed_level']}")
+                    st.caption(f"理由: {prop['reason'][:80]}..." if prop['reason'] and len(prop['reason']) > 80 else f"理由: {prop['reason']}")
+                    st.caption(f"提议人: {prop['proposed_by']} 于 {prop['proposed_at']}")
+                with cols[1]:
+                    if st.button("✅ 批准", key=f"approve_{prop['proposal_id']}"):
+                        try:
+                            review_id = review_evidence_upgrade_proposal(
+                                driver, prop['proposal_id'], "expert_001", "approved", "界面审核通过"
+                            )
+                            st.success(f"已批准，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"审核失败: {e}")
+                with cols[2]:
+                    if st.button("❌ 拒绝", key=f"reject_{prop['proposal_id']}"):
+                        try:
+                            review_id = review_evidence_upgrade_proposal(
+                                driver, prop['proposal_id'], "expert_001", "rejected", "界面审核拒绝"
+                            )
+                            st.success(f"已拒绝，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"审核失败: {e}")
+                with cols[3]:
+                    if st.button("📝 需修改", key=f"revise_{prop['proposal_id']}"):
+                        try:
+                            review_id = review_evidence_upgrade_proposal(
+                                driver, prop['proposal_id'], "expert_001", "needs_revision", "需补充数据"
+                            )
+                            st.success(f"已标记为需修改，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"操作失败: {e}")
+
     # ----- 步骤 3：验证升级结果 -----
     st.markdown("---")
-    st.markdown("#### ✅ 步骤 3：验证升级结果")
+    st.markdown("#### ✅ 步骤 4：验证升级结果")
     
     col1, col2 = st.columns(2)
     with col1:
         verify_case_id = st.text_input("验证病例 ID", value="CASE-002")
     with col2:
-        verify_phage_id = st.text_input("验证噬菌体 ID（可选，留空则查所有）", value="PHAGE-013")
+        verify_phage_id = st.text_input("验证噬菌体 ID（可选，留空则查所有）", value="")
     
     if st.button("验证升级结果"):
         with st.spinner("验证中..."):
@@ -633,7 +738,7 @@ with tab6:
                     result = session.run("""
                         MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(ph:Phage {phage_id: $phage_id})
                         MATCH (ph)-[:USED_IN]->(a:LysisAssay)
-                        RETURN ph.name AS phage_name,
+                        RETURN DISTINCT ph.name AS phage_name,
                                a.evidence_level AS evidence_level,
                                a.evidence_ref AS evidence_ref
                     """, case_id=verify_case_id, phage_id=verify_phage_id)
@@ -641,7 +746,7 @@ with tab6:
                     result = session.run("""
                         MATCH (c:ClinicalCase {case_id: $case_id})-[r:TREATED_WITH]->(ph:Phage)
                         MATCH (ph)-[:USED_IN]->(a:LysisAssay)
-                        RETURN ph.name AS phage_name,
+                        RETURN DISTINCT ph.name AS phage_name,
                                ph.phage_id AS phage_id,
                                a.evidence_level AS evidence_level,
                                a.evidence_ref AS evidence_ref
@@ -671,7 +776,7 @@ with tab6:
         else:
             st.info("暂无 L3 临床验证记录")
             
-    # ----- 管理病例-噬菌体治疗关系（多选添加/删除） -----
+    # ----- 管理病例-噬菌体治疗关系 -----
     with st.expander("📌 病例-噬菌体关联"):
         st.caption("选择病例，查看并编辑其使用的噬菌体（可多选添加或删除）")
         
@@ -762,6 +867,62 @@ with tab6:
                         st.rerun()
             else:
                 st.info("所有噬菌体均已关联，无更多可添加")
+
+# ================== 新增标签页 7：审计日志 ==================
+with tab7:
+    st.subheader("📋 审计日志")
+    
+    col_filter1, col_filter2 = st.columns(2)
+    with col_filter1:
+        filter_action = st.text_input("按动作类型筛选（留空显示全部）", value="")
+    with col_filter2:
+        filter_object = st.text_input("按对象 ID 筛选（留空显示全部）", value="")
+    
+    with st.spinner("加载审计日志..."):
+        with driver.session() as session:
+            query = """
+                MATCH (a:AuditEvent)
+                WHERE ($action_filter = '' OR a.action_type CONTAINS $action_filter)
+                AND ($object_filter = '' OR a.object_id CONTAINS $object_filter)
+                RETURN a.audit_event_id AS event_id,
+                       a.domain AS domain,
+                       a.action_type AS action_type,
+                       a.object_type AS object_type,
+                       a.object_id AS object_id,
+                       a.actor_id AS actor_id,
+                       a.occurred_at AS occurred_at,
+                       a.reason AS reason,
+                       a.before_snapshot AS before,
+                       a.after_snapshot AS after
+                ORDER BY a.occurred_at DESC
+                LIMIT 10
+            """
+            result = session.run(query, action_filter=filter_action, object_filter=filter_object)
+            logs = [dict(r) for r in result]
+    
+    if not logs:
+        st.info("暂无审计日志记录")
+    else:
+        st.write(f"共显示 {len(logs)} 条最新记录")
+        df_log = pd.DataFrame(logs)
+        display_cols = ["occurred_at", "domain", "action_type", "object_type", "object_id", "actor_id", "reason"]
+        df_display = df_log[display_cols].copy()
+        # 修复 Neo4j DateTime 转换问题
+        df_display['occurred_at'] = df_display['occurred_at'].apply(
+            lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x)
+        )
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+        with st.expander("查看详细变更（快照）"):
+            for log in logs[:10]:
+                # 同样处理 occurred_at 显示
+                time_str = log['occurred_at'].isoformat() if hasattr(log['occurred_at'], 'isoformat') else str(log['occurred_at'])
+                st.write(f"**{time_str} - {log['action_type']}**")
+                if log['before']:
+                    st.write("变更前:", log['before'])
+                if log['after']:
+                    st.write("变更后:", log['after'])
+                st.write("---")
 
 # ---------- 底部信息 ----------
 st.markdown("---")

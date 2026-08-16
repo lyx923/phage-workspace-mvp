@@ -1,9 +1,9 @@
-# src/retriever.py
+# src/scientific/retriever_service.py
 from typing import List, Dict, Optional
 from neo4j import Driver
-from src.data_loader import get_driver
+from src.scientific.import_service import get_driver
 import uuid
-from src.action_log import log_action
+from src.foundation.audit_service import log_action   # 改为从 audit_event 导入
 
 
 def find_matching_phages(
@@ -303,6 +303,8 @@ def analyze_and_persist_reuse(
                 "reuse_id": reuse_id
             }
         }
+
+
 # ==================== 知识复用事件改为待确认 ====================
 def confirm_knowledge_reuse(
     driver: Driver,
@@ -322,9 +324,10 @@ def confirm_knowledge_reuse(
         if not event:
             raise ValueError(f"未找到状态为 detected 的复用事件 {reuse_event_id}")
 
-        # 创建 Review
+        # 创建 Review 并建立 REVIEWS 关系
         review_id = f"REV-{uuid.uuid4().hex[:8].upper()}"
         session.run("""
+            MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
             CREATE (r:Review {
                 review_id: $review_id,
                 target_domain: 'scientific',
@@ -337,6 +340,7 @@ def confirm_knowledge_reuse(
                 reviewed_at: datetime(),
                 created_at: datetime()
             })
+            CREATE (r)-[:REVIEWS]->(kre)
         """, review_id=review_id, reuse_event_id=reuse_event_id,
         reviewer_id=reviewer_id, decision=decision, comment=comment)
 
@@ -350,7 +354,16 @@ def confirm_knowledge_reuse(
                 kre.reviewer_id = $reviewer_id
         """, reuse_event_id=reuse_event_id, new_status=new_status, reviewer_id=reviewer_id)
 
-        # 审计日志
-        log_action(driver, f"KNOWLEDGE_REUSE_{new_status.upper()}", "KnowledgeReuseEvent", reuse_event_id,
-                   {"decision": decision, "reviewer": reviewer_id}, performed_by=reviewer_id)
+        # 审计日志（使用 AuditEvent）
+        log_action(
+            driver,
+            domain="scientific",
+            action_type=f"KNOWLEDGE_REUSE_{new_status.upper()}",
+            object_type="KnowledgeReuseEvent",
+            object_id=reuse_event_id,
+            actor_id=reviewer_id,
+            before_snapshot={"status": "detected"},
+            after_snapshot={"status": new_status},
+            reason=comment or f"知识复用事件被 {decision}"
+        )
     return review_id

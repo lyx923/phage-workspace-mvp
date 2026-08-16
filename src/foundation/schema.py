@@ -1,4 +1,4 @@
-# src/schema.py
+# src/foundation/schema.py
 from config import get_driver
 from neo4j import GraphDatabase
 
@@ -39,6 +39,11 @@ def create_schema(driver):
         # 证据升级提案
         session.run("CREATE CONSTRAINT proposal_id_unique IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) REQUIRE p.proposal_id IS UNIQUE;")
         session.run("CREATE INDEX proposal_status_idx IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) ON (p.status);")
+        
+        # -------- AuditEvent 约束与索引 --------
+        session.run("CREATE CONSTRAINT audit_event_id_unique IF NOT EXISTS FOR (ae:AuditEvent) REQUIRE ae.audit_event_id IS UNIQUE;")
+        session.run("CREATE INDEX audit_event_correlation_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.correlation_id);")
+        session.run("CREATE INDEX audit_event_domain_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.domain);")
 
         print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网）")
 

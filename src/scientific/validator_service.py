@@ -1,3 +1,4 @@
+# src/scientific/validator_service.py
 """
 配型效果验证工具
 支持 L1-L5 五级证据等级（基于新模型 LysisAssay + HostStrain）
@@ -5,7 +6,7 @@
 from typing import List, Dict, Optional
 import pandas as pd
 from config import get_driver
-from src.package_builder import build_evidence_package_from_db
+from src.scientific.evidence_package_service import build_evidence_package_from_db
 
 # 证据等级排序映射（L5 最高）
 EVIDENCE_ORDER = {'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5, 'GOLDEN_RULE': 0}

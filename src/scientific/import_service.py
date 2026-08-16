@@ -1,4 +1,4 @@
-# src/data_loader.py
+# src/scientific/import_service.py
 import pandas as pd
 from config import config, get_driver
 import os
@@ -600,7 +600,7 @@ def clear_database():
 
 # ================== 黄金配型（保持不变） ==================
 def import_golden_rules() -> str:
-    from src.data_loader import get_driver
+    from src.scientific.import_service import get_driver
     validated_rules = [
         {
             "rule_id": "RULE_CRAB_KL2",
