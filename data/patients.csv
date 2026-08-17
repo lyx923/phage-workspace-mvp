@@ -1,0 +1,17 @@
+patient_id,age_group,gender,comorbidities,admission_date,source_artifact_id
+PAT-LGD-001,70-80,Male,"Bladder stones,BPH,Rectal cancer post-op,Hypertension,Varicose veins",2026-05-16,SRC-LGD-ADM
+PAT-YX-001,70-80,Male,"高血压,糖尿病,慢性肾功能不全",2026-02-25,SRC-YX-ADM
+PAT-002,70-80,Male,"高血压,糖尿病,慢性肾功能不全",2026-06-15,
+PAT-003,70-80,Male,"高血压,糖尿病",2026-07-03,
+PAT-PUB-001,60-70,Male,"Type 2 diabetes, Hypertension",2024-06-01,
+PAT-PUB-002,60-70,Male,"Diabetes",2021-11-01,
+PAT-PUB-003,60-70,Unknown,"Unknown",2020-05-01,
+PAT-PUB-004,30-40,Male,"None",2022-08-01,
+PAT-PUB-005,40-50,Female,"Immunosuppressed",2026-03-01,
+PAT-PUB-006,70-80,Male,"None",2025-09-08,
+PAT-PUB-007,70-80,Male,"Peritoneal dialysis",2026-02-07,
+PAT-PUB-008,60-70,Male,"Diabetes",2021-07-01,
+PAT-PUB-009,50-60,Male,"Aortic valve disease",2025-01-17,
+PAT-PUB-010,40-50,Male,"Viral encephalitis",2026-07-27,
+PAT-CLIN-001,60-70,Male,"Bronchiectasis,COPD,Interstitial fibrosis",2025-01-01,
+PAT-CLIN-002,70-80,Male,"ICU,多重耐药菌感染",2025-01-01,

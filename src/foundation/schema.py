@@ -49,6 +49,8 @@ def create_schema(driver):
         session.run("CREATE INDEX audit_event_correlation_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.correlation_id);")
         session.run("CREATE INDEX audit_event_domain_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.domain);")
 
+        session.run("CREATE CONSTRAINT patient_id_unique IF NOT EXISTS FOR (p:Patient) REQUIRE p.patient_id IS UNIQUE;")
+        
         print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网）")
 
 def create_ontology_modules(driver):
