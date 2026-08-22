@@ -17,7 +17,25 @@ LEVEL_UPGRADE_MAP = {
 
 
 # =============================================================
-# 新增：证据升级提案相关函数（替代自动升级）
+# 新增：ID 生成辅助函数（符合 PRD 7.2）
+# =============================================================
+def _generate_proposal_id() -> str:
+    """生成符合 PRD 7.2 的 EvidenceUpgradeProposal ID：SCI:PROPOSAL:<LOCAL_ID>"""
+    local_id = uuid.uuid4().hex[:8].upper()
+    return f"SCI:PROPOSAL:{local_id}"
+
+def _generate_review_id(review_type: str) -> str:
+    """
+    生成符合 PRD 7.2 的 Review ID：FOUNDATION:REVIEW:<REVIEW_TYPE>-<LOCAL_ID>
+    REVIEW_TYPE 取前8个字符，如 evidence_upgrade 取 EVIDENCE。
+    """
+    type_prefix = review_type[:8].upper()
+    local_id = uuid.uuid4().hex[:8].upper()
+    return f"FOUNDATION:REVIEW:{type_prefix}-{local_id}"
+
+
+# =============================================================
+# 证据升级提案相关函数（替代自动升级）
 # =============================================================
 
 def create_evidence_upgrade_proposal(
@@ -26,15 +44,12 @@ def create_evidence_upgrade_proposal(
     source_case_id: str,
     proposed_level: str,
     reason: str,
-    proposed_by: str = "system"
+    proposed_by: str = "system",
+    policy_version: str = "v1.0"
 ) -> str:
-    """
-    创建证据升级提案，状态为 pending_review。
-    如果该 assay 已有 pending 提案，则抛出异常。
-    """
-    proposal_id = f"PROP-{uuid.uuid4().hex[:8].upper()}"
+    """创建证据升级提案，状态为 pending_review。"""
+    proposal_id = _generate_proposal_id()
     with driver.session() as session:
-        # 检查是否已有待审核提案（pending_review 或 needs_revision 都视为未完成）
         existing = session.run("""
             MATCH (p:EvidenceUpgradeProposal {assay_id: $assay_id})
             WHERE p.status IN ['pending_review', 'needs_revision']
@@ -42,14 +57,11 @@ def create_evidence_upgrade_proposal(
         """, assay_id=assay_id).single()
         if existing:
             raise ValueError(f"该 LysisAssay ({assay_id}) 已有待审核或需修改的升级提案")
-
-        # 获取当前证据等级
         current = session.run("""
             MATCH (a:LysisAssay {assay_id: $assay_id})
             RETURN a.evidence_level AS current_level
         """, assay_id=assay_id).single()
         current_level = current['current_level'] if current else None
-
         session.run("""
             CREATE (p:EvidenceUpgradeProposal {
                 proposal_id: $proposal_id,
@@ -61,10 +73,12 @@ def create_evidence_upgrade_proposal(
                 status: 'pending_review',
                 proposed_by: $proposed_by,
                 proposed_at: datetime(),
-                created_at: datetime()
+                created_at: datetime(),
+                policy_version: $policy_version
             })
         """, proposal_id=proposal_id, assay_id=assay_id, source_case_id=source_case_id,
-        current_level=current_level, proposed_level=proposed_level, reason=reason, proposed_by=proposed_by)
+        current_level=current_level, proposed_level=proposed_level, reason=reason,
+        proposed_by=proposed_by, policy_version=policy_version)
     return proposal_id
 
 
@@ -76,10 +90,10 @@ def review_evidence_upgrade_proposal(
     comment: str = None
 ) -> str:
     """
-    审核提案：
-    - approved: 执行升级并记录审计
-    - rejected: 更新状态为 rejected，记录审计
-    - needs_revision: 更新状态为 needs_revision，记录审计（不升级）
+    审核证据升级提案：
+    - approved: 执行升级并记录审计，提案状态变为 executed
+    - rejected: 提案状态变为 rejected
+    - needs_revision: 提案状态变为 needs_revision
     返回 review_id。
     """
     with driver.session() as session:
@@ -102,19 +116,20 @@ def review_evidence_upgrade_proposal(
         current_level = proposal['current_level']
         source_case_id = proposal['source_case_id']
 
-        # 2. 创建 Review 记录并建立 REVIEWS 关系
-        review_id = f"REV-{uuid.uuid4().hex[:8].upper()}"
+        # 2. 创建 Review 记录并建立 REVIEWS 关系（ID 符合 PRD 7.2）
+        review_id = _generate_review_id("evidence_upgrade")
         session.run("""
             MATCH (p:EvidenceUpgradeProposal {proposal_id: $proposal_id})
             CREATE (r:Review {
                 review_id: $review_id,
+                review_type: 'evidence_upgrade',
                 target_domain: 'scientific',
                 target_object_type: 'EvidenceUpgradeProposal',
                 target_object_id: $proposal_id,
                 reviewer_id: $reviewer_id,
                 decision: $decision,
                 comment: $comment,
-                policy_version: 'v1',
+                review_policy_version: 'v1.0',
                 reviewed_at: datetime(),
                 created_at: datetime()
             })
@@ -130,9 +145,9 @@ def review_evidence_upgrade_proposal(
                 p.reviewer_id = $reviewer_id
         """, proposal_id=proposal_id, decision=decision, reviewer_id=reviewer_id)
 
-        # 4. 根据决策执行不同操作（以下代码保持不变，仅示意）
+        # 4. 根据决策执行不同操作
         if decision == 'approved':
-            # 更新 LysisAssay
+            # 更新 LysisAssay 等级
             session.run("""
                 MATCH (a:LysisAssay {assay_id: $assay_id})
                 SET a.evidence_level = $proposed_level,
@@ -143,7 +158,13 @@ def review_evidence_upgrade_proposal(
                     a.last_upgraded_at = datetime()
             """, assay_id=assay_id, proposed_level=proposed_level, case_id=source_case_id)
 
-            # 记录审计日志（使用 AuditEvent）
+            # 提案状态改为 executed
+            session.run("""
+                MATCH (p:EvidenceUpgradeProposal {proposal_id: $proposal_id})
+                SET p.status = 'executed'
+            """, proposal_id=proposal_id)
+
+            # 审计日志
             log_action(
                 driver,
                 domain="scientific",
@@ -153,10 +174,9 @@ def review_evidence_upgrade_proposal(
                 actor_id=reviewer_id,
                 before_snapshot={"evidence_level": current_level},
                 after_snapshot={"evidence_level": proposed_level},
-                reason=f"升级提案 {proposal_id} 已批准"
+                reason=f"升级提案 {proposal_id} 已批准并执行"
             )
         elif decision == 'rejected':
-            # 记录拒绝审计
             log_action(
                 driver,
                 domain="scientific",
@@ -169,7 +189,6 @@ def review_evidence_upgrade_proposal(
                 reason=comment or f"提案 {proposal_id} 被拒绝"
             )
         elif decision == 'needs_revision':
-            # 记录需要修改的审计
             log_action(
                 driver,
                 domain="scientific",
@@ -188,7 +207,140 @@ def review_evidence_upgrade_proposal(
 
 
 # =============================================================
-# 保留原有函数，但修改其行为：不再自动升级，而是创建提案
+# 新增：其他 Review 类型审核函数（PRD 7.5）
+# =============================================================
+
+def review_scientific_evidence_package(
+    driver: Driver,
+    package_id: str,
+    reviewer_id: str,
+    decision: str,  # 'approved' or 'rejected' or 'needs_revision'
+    comment: str = None
+) -> str:
+    """
+    审核 ScientificEvidencePackage（scientific_package_review 类型）
+    """
+    with driver.session() as session:
+        # 检查包是否存在
+        pkg = session.run("""
+            MATCH (p:ScientificEvidencePackage {package_id: $package_id})
+            RETURN p
+        """, package_id=package_id).single()
+        if not pkg:
+            raise ValueError(f"证据包 {package_id} 不存在")
+        
+        review_id = _generate_review_id("package_review")
+        session.run("""
+            MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+            CREATE (r:Review {
+                review_id: $review_id,
+                review_type: 'scientific_package_review',
+                target_domain: 'scientific',
+                target_object_type: 'ScientificEvidencePackage',
+                target_object_id: $package_id,
+                reviewer_id: $reviewer_id,
+                decision: $decision,
+                comment: $comment,
+                review_policy_version: 'v1.0',
+                reviewed_at: datetime(),
+                created_at: datetime()
+            })
+            CREATE (r)-[:REVIEWS]->(pkg)
+        """, review_id=review_id, package_id=package_id,
+        reviewer_id=reviewer_id, decision=decision, comment=comment)
+        
+        # 更新包状态
+        new_status = 'approved' if decision == 'approved' else 'rejected'
+        if decision == 'needs_revision':
+            # 保持为 pending，但可记录评论
+            pass
+        else:
+            session.run("""
+                MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+                SET pkg.status = $new_status,
+                    pkg.review_status = $new_status,
+                    pkg.updated_at = datetime()
+            """, package_id=package_id, new_status=new_status)
+        
+        # 记录审计
+        log_action(
+            driver,
+            domain="scientific",
+            action_type=f"PACKAGE_REVIEW_{decision.upper()}",
+            object_type="ScientificEvidencePackage",
+            object_id=package_id,
+            actor_id=reviewer_id,
+            before_snapshot={"status": "draft"},
+            after_snapshot={"status": new_status},
+            reason=comment or f"证据包审核 {decision}"
+        )
+    return review_id
+
+
+def review_assay_qc(
+    driver: Driver,
+    assay_id: str,
+    reviewer_id: str,
+    decision: str,  # 'passed' or 'failed'
+    comment: str = None
+) -> str:
+    """
+    审核 LysisAssay QC（assay_qc 类型）
+    """
+    with driver.session() as session:
+        assay = session.run("""
+            MATCH (a:LysisAssay {assay_id: $assay_id})
+            RETURN a
+        """, assay_id=assay_id).single()
+        if not assay:
+            raise ValueError(f"LysisAssay {assay_id} 不存在")
+        
+        review_id = _generate_review_id("assay_qc")
+        session.run("""
+            MATCH (a:LysisAssay {assay_id: $assay_id})
+            CREATE (r:Review {
+                review_id: $review_id,
+                review_type: 'assay_qc',
+                target_domain: 'scientific',
+                target_object_type: 'LysisAssay',
+                target_object_id: $assay_id,
+                reviewer_id: $reviewer_id,
+                decision: $decision,
+                comment: $comment,
+                review_policy_version: 'v1.0',
+                reviewed_at: datetime(),
+                created_at: datetime()
+            })
+            CREATE (r)-[:REVIEWS]->(a)
+        """, review_id=review_id, assay_id=assay_id,
+        reviewer_id=reviewer_id, decision=decision, comment=comment)
+        
+        # 更新 QC 状态
+        new_qc_status = 'passed' if decision == 'passed' else 'failed'
+        session.run("""
+            MATCH (a:LysisAssay {assay_id: $assay_id})
+            SET a.qc_status = $new_qc_status,
+                a.updated_at = datetime()
+        """, assay_id=assay_id, new_qc_status=new_qc_status)
+        
+        # 记录审计
+        log_action(
+            driver,
+            domain="scientific",
+            action_type=f"ASSAY_QC_{decision.upper()}",
+            object_type="LysisAssay",
+            object_id=assay_id,
+            actor_id=reviewer_id,
+            before_snapshot={"qc_status": assay["qc_status"]},
+            after_snapshot={"qc_status": new_qc_status},
+            reason=comment or f"QC 审核 {decision}"
+        )
+    return review_id
+
+
+# =============================================================
+# 保留原有函数（curate_case_outcome, curate_case_by_id, batch_curate_cases）
+# 这些函数已经修改过，无需改动，但为了完整性保留
 # =============================================================
 
 def curate_case_outcome(
@@ -229,7 +381,7 @@ def curate_case_outcome(
                     microbiological_outcome=outcome.get('microbiological_outcome', ''))
         summary.append(f"✅ 病例 {case_id} 已更新结局")
 
-    # 查找符合条件的 LysisAssay（使用名称匹配，避免 ID 不一致pending/passed）
+    # 查找符合条件的 LysisAssay（使用名称匹配，避免 ID 不一致，同时允许 pending 或 passed）
     if treatment.get('phage_names'):
         phage_names = treatment['phage_names']
         find_query = f"""
@@ -249,7 +401,7 @@ def curate_case_outcome(
             records = session.run(find_query, case_id=case_id, phage_names=phage_names).data()
 
         if not records:
-            summary.append(f"⚠️ 未找到可升级的 LysisAssay（需要从 {source_levels_str} 升级到 {target_level}")
+            summary.append(f"⚠️ 未找到可升级的 LysisAssay（需要从 {source_levels_str} 升级到 {target_level}）")
         else:
             proposal_ids = []
             for rec in records:
@@ -262,7 +414,8 @@ def curate_case_outcome(
                         source_case_id=case_id,
                         proposed_level=target_level,
                         reason=f"基于病例 {case_id} 的临床结局 ({outcome.get('clinical_outcome')}) 和微生物学结局 ({outcome.get('microbiological_outcome')})，建议升级证据等级。",
-                        proposed_by="curation.py"
+                        proposed_by="curation.py",
+                        policy_version="v1.0"
                     )
                     proposal_ids.append(proposal_id)
                 except ValueError as e:
@@ -299,7 +452,7 @@ def curate_case_by_id(
             return f"⚠️ 病例 {case_id} 没有关联的噬菌体，请先通过 TREATED_WITH 关联。"
         
         phage_ids = record['phage_ids']
-        phage_names = record['phage_names']   # 新增
+        phage_names = record['phage_names']
     
     # 2. 查询该病例当前的 phage_treatment（用于 cocktail_name）
     with driver.session() as session:
@@ -316,7 +469,7 @@ def curate_case_by_id(
         case_id=case_id,
         treatment={
             "phage_ids": phage_ids,
-            "phage_names": phage_names,   # 新增
+            "phage_names": phage_names,
             "cocktail_name": treatment_name
         },
         outcome={

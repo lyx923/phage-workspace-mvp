@@ -24,13 +24,19 @@ from src.scientific.retriever_service import (
     find_matching_phages,
     find_similar_cases,
     analyze_and_persist_reuse,
-    confirm_knowledge_reuse          # 新增导入
+    confirm_knowledge_reuse
 )
 from src.scientific.evidence_upgrade_service import curate_case_by_id, review_evidence_upgrade_proposal
 from src.scientific.import_service import (
     load_phages_from_lysis_csv_simple,
-    import_golden_rules
+    import_golden_rules,
+    clear_database,
+    load_cases_from_csv,
+    load_phages_from_csv,
+    load_patients_from_csv
 )
+from src.foundation.schema import create_schema, create_ontology_modules, create_controlled_vocabularies
+from src.foundation.audit_service import log_action
 
 # ---------- 获取项目根目录 ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,16 +71,19 @@ with st.sidebar:
     
     if st.button("🔄 清空并重新导入全部数据", type="secondary"):
         with st.status("执行数据导入...", expanded=True) as status:
-            from src.scientific.import_service import clear_database, load_cases_from_csv, load_phages_from_csv
-            from src.foundation.schema import create_schema
-
             status.update(label="正在清空数据库...")
             clear_database()
             st.write("✅ 数据库已清空")
 
-            status.update(label="创建约束和索引...")
+            status.update(label="创建约束、索引及 Foundation 对象...")
             create_schema(driver)
-            st.write("✅ 约束和索引已创建")
+            create_ontology_modules(driver)
+            create_controlled_vocabularies(driver)
+            st.write("✅ 约束、索引、OntologyModule、ControlledVocabulary 已创建")
+
+            status.update(label="导入患者主数据...")
+            load_patients_from_csv(os.path.join(BASE_DIR, "data", "patients.csv"))
+            st.write("✅ 患者主数据导入完成")
 
             status.update(label="导入噬菌体互作...")
             load_phages_from_csv(os.path.join(BASE_DIR, "data", "phage_interactions.csv"))
@@ -89,8 +98,8 @@ with st.sidebar:
             st.write(f"✅ 裂解谱导入完成，新增 {result['positive_interactions']} 条记录")
 
             status.update(label="导入黄金配型知识库...")
-            result = import_golden_rules()
-            st.write(f"✅ 黄金配型知识库导入完成")
+            import_golden_rules()
+            st.write("✅ 黄金配型知识库导入完成")
 
             status.update(label="全部完成！", state="complete")
         st.success("🎉 所有数据已重新导入！")
@@ -326,7 +335,7 @@ with tab3:
     if "ep_result" in st.session_state:
         st.json(st.session_state.ep_result)
 
-# ================== 标签页 4：跨病例知识复用（含审核复用事件） ==================
+# ================== 标签页 4：跨病例知识复用 ==================
 with tab4:
     st.subheader("跨病例复用分析")
     col1, col2 = st.columns(2)
@@ -347,7 +356,7 @@ with tab4:
     if "reuse_result" in st.session_state:
         st.json(st.session_state.reuse_result["analysis"])
     
-    # ===== 新增：审核待确认的复用事件 =====
+    # 审核待确认的复用事件
     st.markdown("---")
     st.markdown("#### 🧾 审核待确认的复用事件")
     
@@ -581,9 +590,9 @@ with tab5:
             else:
                 st.warning("请先运行聚类，生成簇分布。")
 
-# ================== 标签页 6：知识策展（含审核提案） ==================
+# ================== 标签页 6：知识策展 ==================
 with tab6:
-    # ----- 步骤 1：查找可升级的互作记录 -----
+        # ----- 步骤 1：查找可升级的互作记录 -----
     st.markdown("#### 🔍 步骤 1：查找可升级的互作记录")
     
     target_level_selector = st.selectbox(
@@ -615,7 +624,7 @@ with tab6:
         
         if records:
             df = pd.DataFrame(records)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df[["case_id", "phage_name", "evidence_level"]], use_container_width=True)
         else:
             st.info(f"当前没有 {', '.join(source_levels)} → {target_level_selector} 可升级记录")
 
@@ -657,7 +666,7 @@ with tab6:
             )
         st.success(summary)
     
-    # ===== 审核 EvidenceUpgradeProposal 面板 =====
+    # ----- 审核 EvidenceUpgradeProposal -----
     st.markdown("---")
     st.markdown("#### 🧾 步骤 3：审核待处理的升级提案")
     
@@ -720,8 +729,8 @@ with tab6:
                             st.rerun()
                         except Exception as e:
                             st.error(f"操作失败: {e}")
-
-    # ----- 步骤 3：验证升级结果 -----
+    
+    # ----- 验证升级结果 -----
     st.markdown("---")
     st.markdown("#### ✅ 步骤 4：验证升级结果")
     
@@ -766,7 +775,7 @@ with tab6:
         else:
             st.warning("未找到该病例的互作记录")
     
-    # ----- L3 证据查询（折叠） -----
+    # ----- L3 证据查询 -----
     with st.expander("📊 查看 L3 证据"):
         with st.spinner("查询中..."):
             records = query_l3_evidence()
@@ -775,7 +784,7 @@ with tab6:
             st.dataframe(df, use_container_width=True)
         else:
             st.info("暂无 L3 临床验证记录")
-            
+    
     # ----- 管理病例-噬菌体治疗关系 -----
     with st.expander("📌 病例-噬菌体关联"):
         st.caption("选择病例，查看并编辑其使用的噬菌体（可多选添加或删除）")
@@ -868,9 +877,26 @@ with tab6:
             else:
                 st.info("所有噬菌体均已关联，无更多可添加")
 
-# ================== 新增标签页 7：审计日志 ==================
+# ================== 标签页 7：审计日志 ==================
 with tab7:
     st.subheader("📋 审计日志")
+    
+    # 生成测试审计事件
+    if st.button("📝 生成测试审计事件"):
+        with st.spinner("生成审计事件..."):
+            event_id = log_action(
+                driver,
+                domain="scientific",
+                action_type="DEMO_ACTION",
+                object_type="ClinicalCase",
+                object_id="DEMO-001",
+                actor_id="demo_user",
+                before_snapshot={"status": "before"},
+                after_snapshot={"status": "after"},
+                reason="演示审计事件"
+            )
+            st.success(f"✅ 已生成测试审计事件: {event_id}")
+            st.rerun()
     
     col_filter1, col_filter2 = st.columns(2)
     with col_filter1:
@@ -915,7 +941,6 @@ with tab7:
         
         with st.expander("查看详细变更（快照）"):
             for log in logs[:10]:
-                # 同样处理 occurred_at 显示
                 time_str = log['occurred_at'].isoformat() if hasattr(log['occurred_at'], 'isoformat') else str(log['occurred_at'])
                 st.write(f"**{time_str} - {log['action_type']}**")
                 if log['before']:

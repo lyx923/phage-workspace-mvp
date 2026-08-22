@@ -1,10 +1,13 @@
-# src/scientific/import_service.py（完整修改版）
+# src/scientific/import_service.py
 import pandas as pd
 from config import config, get_driver
 import os
 import argparse
 import uuid
+import json
+import hashlib
 from typing import List, Dict, Optional
+from datetime import date
 
 # ================== 必填字段定义 ==================
 REQUIRED_CASE_FIELDS = [
@@ -22,6 +25,7 @@ def _get_or_create_host_strain(tx, strain_label: str) -> str:
     return result.single()["id"]
 
 def _get_or_create_evidence_source(tx, source_ref: str, source_type: str = "unknown") -> str:
+    # 保留旧函数以防兼容，但新导入不再使用
     ev_id = f"EVID-{source_ref.replace(':', '_').replace('/', '_')}"
     result = tx.run("""
         MERGE (e:EvidenceSource {evidence_id: $evidence_id})
@@ -39,11 +43,27 @@ def _get_or_create_source_artifact(
     source_type: str = "unknown", 
     source_domain: str = "scientific",
     title: str = None,
-    access_level: str = "internal"
+    access_level: str = "internal",
+    uri_or_path: str = None,
+    publisher_or_owner: str = None,
+    published_at: str = None,
+    document_hash: str = None
 ) -> str:
-    source_id = f"SRC-{source_ref.replace(':', '_').replace('/', '_').replace(' ', '_')}"
+    """
+    获取或创建 SourceArtifact 节点，补全 PRD 7.4 所需字段
+    """
+    # 生成稳定的 source_id（使用 SHA256 哈希确保唯一性）
+    hash_input = f"{source_ref}:{source_type}:{source_domain}"
+    hash_id = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
+    source_id = f"SRC-{hash_id}"   # 保持与现有 ID 风格一致，可后续统一格式
+    
     if not title:
         title = source_ref
+    
+    # 如果提供了 URI 或路径且未提供 document_hash，自动计算
+    if uri_or_path and not document_hash:
+        document_hash = hashlib.sha256(uri_or_path.encode()).hexdigest()[:16]
+    
     result = tx.run("""
         MERGE (s:SourceArtifact {source_id: $source_id})
         ON CREATE SET 
@@ -52,19 +72,32 @@ def _get_or_create_source_artifact(
             s.title = $title,
             s.access_level = $access_level,
             s.review_status = 'pending',
+            s.uri_or_path = $uri_or_path,
+            s.publisher_or_owner = $publisher_or_owner,
+            s.published_at = $published_at,
+            s.document_hash = $document_hash,
             s.retrieved_at = datetime(),
             s.created_at = datetime(),
             s.updated_at = datetime(),
             s.schema_version = '1.0.0'
         ON MATCH SET 
-            s.updated_at = datetime()
+            s.updated_at = datetime(),
+            s.uri_or_path = COALESCE($uri_or_path, s.uri_or_path),
+            s.publisher_or_owner = COALESCE($publisher_or_owner, s.publisher_or_owner),
+            s.published_at = COALESCE($published_at, s.published_at),
+            s.document_hash = COALESCE($document_hash, s.document_hash)
         RETURN s.source_id AS id
     """, 
     source_id=source_id, 
     source_domain=source_domain, 
     source_type=source_type, 
     title=title,
-    access_level=access_level)
+    access_level=access_level,
+    uri_or_path=uri_or_path,
+    publisher_or_owner=publisher_or_owner,
+    published_at=published_at,
+    document_hash=document_hash)
+    
     return result.single()["id"]
 
 def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
@@ -78,12 +111,8 @@ def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
                 return strain
     return None
 
-# ================== 患者主数据导入（新增） ==================
+# ================== 患者主数据导入 ==================
 def load_patients_from_csv(csv_path: str) -> int:
-    """
-    从 CSV 导入患者主数据（Patient 节点）
-    CSV 必须包含字段：patient_id, age_group, gender, comorbidities, admission_date, source_artifact_id
-    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
@@ -128,7 +157,7 @@ def load_patients_from_csv(csv_path: str) -> int:
             print(f"✅ 成功导入 {count} 个患者")
             return count
 
-# ================== 病例导入（修改：增加 patient_id 关联） ==================
+# ================== 病例导入 ==================
 def validate_case_row(row):
     missing = []
     for field in REQUIRED_CASE_FIELDS:
@@ -139,23 +168,37 @@ def validate_case_row(row):
 def insert_pathogen(tx, data):
     query = """
     MERGE (p:Pathogen {pathogen_id: $pathogen_id})
-    SET p.species = $species,
+    SET p.created_at = coalesce(p.created_at, datetime()),
+        p.updated_at = datetime(),
+        p.species = $species,
         p.resistance_mechanism = $resistance_mechanism,
         p.resistance_genes = $resistance_genes,
-        p.verification_status = $verification_status
+        p.verification_status = $verification_status,
+        p.taxonomy_id = $taxonomy_id,
+        p.aliases = $aliases
     RETURN p.pathogen_id
     """
-    result = tx.run(query, **data)
+    result = tx.run(query,
+        pathogen_id=data.get("pathogen_id"),
+        species=data.get("species"),
+        resistance_mechanism=data.get("resistance_mechanism"),
+        resistance_genes=data.get("resistance_genes", []),
+        verification_status=data.get("verification_status"),
+        taxonomy_id=data.get("taxonomy_id"),
+        aliases=data.get("aliases")
+    )
     return result.single()[0]
 
 def insert_clinical_case(tx, data):
-    # 1. 插入 Pathogen
+    # 1. 插入 Pathogen（传递扩展字段）
     insert_pathogen(tx, {
         "pathogen_id": data["pathogen_id"],
         "species": data["species"],
         "resistance_mechanism": data["resistance_mechanism"],
         "resistance_genes": data.get("resistance_genes", "").split(",") if isinstance(data.get("resistance_genes"), str) else [],
-        "verification_status": data["verification_status"]
+        "verification_status": data["verification_status"],
+        "taxonomy_id": data.get("taxonomy_id"),
+        "aliases": data.get("aliases")
     })
     
     # 2. 创建 ClinicalCase
@@ -216,7 +259,7 @@ def insert_clinical_case(tx, data):
         MERGE (c)-[:HAS_ISOLATE]->(h)
     """, case_id=case_id, host_strain_id=host_strain_id)
 
-    # 5. 关联 Patient（新增日志）
+    # 5. 关联 Patient
     patient_id = data.get('patient_id')
     if patient_id and pd.notna(patient_id) and str(patient_id).strip():
         patient_check = tx.run("MATCH (p:Patient {patient_id: $pid}) RETURN p", pid=patient_id).single()
@@ -261,7 +304,7 @@ def load_cases_from_csv(csv_path):
                 optional_fields = [
                     'phage_treatment', 'microbiological_outcome', 'curated_by', 'curation_date',
                     'patient_age_group', 'comorbidities', 'prior_antibiotics',
-                    'host_strain', 'patient_id'
+                    'host_strain', 'patient_id', 'taxonomy_id', 'aliases'
                 ]
                 for field in optional_fields:
                     if pd.isna(row_dict.get(field)):
@@ -283,7 +326,7 @@ def load_cases_from_csv(csv_path):
     print(f"\n🎯 导入完成！成功 {success_count} 例，跳过 {skip_count} 例。")
     return success_count
 
-# ================== 噬菌体互作数据导入（原函数保持不变） ==================
+# ================== 噬菌体互作数据导入 ==================
 def load_phages_from_csv(csv_path):
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
@@ -327,17 +370,25 @@ def load_phages_from_csv(csv_path):
                         success_count += 1
                         continue
 
+                    # 创建 LysisAssay（包含 PRD 要求的全部字段）
                     session.run("""
                         MATCH (ph:Phage {phage_id: $phage_id})
                         CREATE (a:LysisAssay {
                             assay_id: $assay_id,
                             pathogen_id: $pathogen_id,
+                            assay_type: 'lysis_assay',
                             result: $infection_result,
                             result_value: $infection_probability,
+                            result_unit: 'probability',
                             evidence_level: $evidence_level,
                             evidence_ref: $evidence_ref,
                             qc_status: 'pending',
-                            created_at: datetime()
+                            validation_status: 'unreviewed',
+                            evidence_policy_version: 'v1.0',
+                            source_domain: 'scientific',
+                            created_at: datetime(),
+                            updated_at: datetime(),
+                            version: 1
                         })
                         CREATE (ph)-[:USED_IN]->(a)
                         RETURN a.assay_id AS aid
@@ -363,6 +414,7 @@ def load_phages_from_csv(csv_path):
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=row['pathogen_id'])
 
+                    # 关联 SourceArtifact（传递扩展字段）
                     for ref in evidence_ref_list:
                         if ref and str(ref).strip():
                             source_type = "literature" if ref.startswith("PMID") else "clinical_case"
@@ -372,7 +424,10 @@ def load_phages_from_csv(csv_path):
                                 source_type=source_type,
                                 source_domain="scientific",
                                 title=ref,
-                                access_level="internal"
+                                access_level="internal",
+                                uri_or_path=None,  # 可从其他列获取，暂缺
+                                publisher_or_owner=None,
+                                published_at=None
                             )
                             session.run("""
                                 MATCH (a:LysisAssay {assay_id: $assay_id})
@@ -408,7 +463,9 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
         with driver.session() as session:
             session.run("""
                 MERGE (p:Pathogen {pathogen_id: $pathogen_id})
-                SET p.species = 'Klebsiella pneumoniae',
+                SET p.created_at = coalesce(p.created_at, datetime()),
+                    p.updated_at = datetime(),
+                    p.species = 'Klebsiella pneumoniae',
                     p.resistance_mechanism = 'Unknown',
                     p.verification_status = 'MICROBIOLOGY_LAB_VERIFIED'
             """, pathogen_id=pathogen_id)
@@ -441,17 +498,25 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                             continue
 
                         evidence_ref = ["合作方裂解谱数据"]
+                        # 创建 LysisAssay（包含 PRD 要求的全部字段）
                         session.run("""
                             MATCH (ph:Phage {phage_id: $phage_id})
                             CREATE (a:LysisAssay {
                                 assay_id: $assay_id,
                                 pathogen_id: $pathogen_id,
+                                assay_type: 'lysis_assay',
                                 result: 'Lytic',
                                 result_value: 1.0,
+                                result_unit: 'probability',
                                 evidence_level: 'L2',
                                 evidence_ref: $evidence_ref,
                                 qc_status: 'pending',
-                                created_at: datetime()
+                                validation_status: 'unreviewed',
+                                evidence_policy_version: 'v1.0',
+                                source_domain: 'scientific',
+                                created_at: datetime(),
+                                updated_at: datetime(),
+                                version: 1
                             })
                             CREATE (ph)-[:USED_IN]->(a)
                             WITH a
@@ -470,13 +535,17 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=pathogen_id)
 
+                        # 关联 SourceArtifact（传递扩展字段）
                         source_id = _get_or_create_source_artifact(
                             session,
                             source_ref="合作方裂解谱数据",
                             source_type="lysis_assay_file",
                             source_domain="scientific",
                             title="合作方裂解谱数据",
-                            access_level="internal"
+                            access_level="internal",
+                            uri_or_path=csv_path,
+                            publisher_or_owner=None,
+                            published_at=None
                         )
                         session.run("""
                             MATCH (a:LysisAssay {assay_id: $assay_id})
@@ -671,7 +740,7 @@ def clear_database():
             session.run("MATCH (n) DETACH DELETE n")
     print("✅ 数据库已清空")
 
-# ================== 黄金配型 ==================
+# ================== 黄金配型（修改：ScientificKnowledgeRule，补全字段） ==================
 def import_golden_rules() -> str:
     from src.scientific.import_service import get_driver
     validated_rules = [
@@ -682,7 +751,10 @@ def import_golden_rules() -> str:
             "phage_name": "ΦK2-v3",
             "treatment": "ΦK2-v3 单用",
             "outcome": "第14天微生物清除，第6个月未复发",
-            "evidence_from": "肖易倍团队第N次配型"
+            "evidence_from": "肖易倍团队第N次配型",
+            "applicability": {"species": "Acinetobacter baumannii", "strain_type": "KL2"},
+            "required_attributes": ["species", "strain_type"],
+            "exclusion_conditions": {}
         },
         {
             "rule_id": "RULE_CRKP_KL47",
@@ -691,7 +763,10 @@ def import_golden_rules() -> str:
             "phage_name": "ΦK47-w7",
             "treatment": "ΦK47-w7 + 碳青霉烯类",
             "outcome": "第3个月未复发",
-            "evidence_from": "肖易倍团队第N次配型"
+            "evidence_from": "肖易倍团队第N次配型",
+            "applicability": {"species": "Klebsiella pneumoniae", "strain_type": "KL47"},
+            "required_attributes": ["species", "strain_type"],
+            "exclusion_conditions": {}
         },
         {
             "rule_id": "RULE_ECOLI_O25",
@@ -700,7 +775,10 @@ def import_golden_rules() -> str:
             "phage_name": "CP-p-EC-23086",
             "treatment": "膀胱灌注（局部递送）",
             "outcome": "48小时内细菌计数断崖式下降",
-            "evidence_from": "临床验证（结合CASE-001及既往数据）"
+            "evidence_from": "临床验证（结合CASE-001及既往数据）",
+            "applicability": {"species": "Escherichia coli", "strain_type": "O25"},
+            "required_attributes": ["species", "strain_type"],
+            "exclusion_conditions": {}
         }
     ]
     success_count = 0
@@ -708,14 +786,24 @@ def import_golden_rules() -> str:
         with driver.session() as session:
             for rule in validated_rules:
                 result = session.run("""
-                    MERGE (r:KnowledgeRule {rule_id: $rule_id})
+                    MERGE (r:ScientificKnowledgeRule {rule_id: $rule_id})
                     SET r.strain_type = $strain_type,
                         r.treatment = $treatment,
                         r.outcome = $outcome,
-                        r.evidence_from = $evidence_from
+                        r.evidence_from = $evidence_from,
+                        r.rule_type = 'clinical_validation',
+                        r.status = 'active',
+                        r.applicability = $applicability,
+                        r.required_attributes = $required_attributes,
+                        r.exclusion_conditions = $exclusion_conditions,
+                        r.review_status = 'pending',
+                        r.valid_from = date(),
+                        r.policy_version = 'v1.0'
                     WITH r
                     MERGE (p:Pathogen {species: $pathogen_species})
-                    ON CREATE SET p.resistance_mechanism = 'Unknown'
+                    SET p.created_at = coalesce(p.created_at, datetime()),
+                        p.updated_at = datetime(),
+                        p.resistance_mechanism = coalesce(p.resistance_mechanism, 'Unknown')
                     MERGE (p)-[:HAS_VALIDATED_RULE]->(r)
                     WITH r
                     MERGE (ph:Phage {name: $phage_name})
@@ -729,7 +817,10 @@ def import_golden_rules() -> str:
                 phage_name=rule["phage_name"],
                 treatment=rule["treatment"],
                 outcome=rule["outcome"],
-                evidence_from=rule["evidence_from"])
+                evidence_from=rule["evidence_from"],
+                applicability=json.dumps(rule.get("applicability", {})),
+                required_attributes=rule.get("required_attributes", []),
+                exclusion_conditions=json.dumps(rule.get("exclusion_conditions", {})))
                 if result.single():
                     success_count += 1
     return f"✅ 成功导入 {success_count} 条黄金规则"

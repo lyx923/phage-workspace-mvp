@@ -226,11 +226,12 @@ def analyze_and_persist_reuse(
     driver: Driver,
     case_a_id: str,
     case_b_id: str,
-    target_package_id: str = "EP-DEMO-001"
+    target_package_id: str = "EP-DEMO-001"  # 建议传入真实的 id：build_evidence_package_from_db的结果
 ) -> Dict:
     """
     一站式函数：分析跨病例复用并持久化为 KnowledgeReuseEvent。
     返回包含分析结果和持久化状态的字典。
+
     """
     # 1. 分析复用
     result = analyze_cross_case_reuse(driver, case_a_id, case_b_id)
@@ -268,9 +269,12 @@ def analyze_and_persist_reuse(
             }
         }
     
-    # 3. 持久化
+    # 3. 持久化（完整字段 + 完整关系）
     with driver.session() as session:
         reuse_id = f"REUSE-{uuid.uuid4().hex[:8].upper()}"
+        detection_method = "cross_case_phage_overlap"
+        
+        # 3.1 创建 KnowledgeReuseEvent 节点（包含 detection_method）
         session.run("""
             CREATE (kre:KnowledgeReuseEvent {
                 reuse_event_id: $reuse_id,
@@ -278,22 +282,42 @@ def analyze_and_persist_reuse(
                 source_object_id: $source_id,
                 target_package_id: $target_package_id,
                 reuse_type: $reuse_type,
+                detection_method: $detection_method,
                 status: 'detected',
                 expert_assessment: 'pending',
                 retrieval_reason: $reason,
                 created_at: datetime()
             })
-            WITH kre
-            UNWIND $phage_names AS pname
-            MATCH (ph:Phage {name: pname})-[:USED_IN]->(a:LysisAssay)
-            CREATE (kre)-[:REUSES]->(a)
         """,
         reuse_id=reuse_id,
         source_id=case_a_id,
         target_package_id=target_package_id,
         reuse_type=result['reuse_type'],
-        reason=result['explanation'],
-        phage_names=phage_names)
+        detection_method=detection_method,
+        reason=result['explanation'])
+        
+        # 3.2 建立 SOURCE_CASE → ClinicalCase 关系
+        session.run("""
+            MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
+            MATCH (c:ClinicalCase {case_id: $source_id})
+            CREATE (kre)-[:SOURCE_CASE]->(c)
+        """, reuse_id=reuse_id, source_id=case_a_id)
+        
+        # 3.3 建立 TARGETS_PACKAGE → ScientificEvidencePackage 关系
+        session.run("""
+            MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
+            MATCH (pkg:ScientificEvidencePackage {package_id: $target_package_id})
+            CREATE (kre)-[:TARGETS_PACKAGE]->(pkg)
+        """, reuse_id=reuse_id, target_package_id=target_package_id)
+        
+        # 3.4 建立 REUSES → LysisAssay 关系
+        if phage_names:
+            session.run("""
+                MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
+                UNWIND $phage_names AS pname
+                MATCH (ph:Phage {name: pname})-[:USED_IN]->(a:LysisAssay)
+                CREATE (kre)-[:REUSES]->(a)
+            """, reuse_id=reuse_id, phage_names=phage_names)
         
         return {
             "analysis": result,
@@ -330,13 +354,14 @@ def confirm_knowledge_reuse(
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
             CREATE (r:Review {
                 review_id: $review_id,
+                review_type: 'knowledge_reuse_review',
                 target_domain: 'scientific',
                 target_object_type: 'KnowledgeReuseEvent',
                 target_object_id: $reuse_event_id,
                 reviewer_id: $reviewer_id,
                 decision: $decision,
                 comment: $comment,
-                policy_version: 'v1',
+                review_policy_version: 'v1.0',
                 reviewed_at: datetime(),
                 created_at: datetime()
             })
