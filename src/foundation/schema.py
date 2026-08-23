@@ -48,6 +48,7 @@ def create_schema(driver):
         session.run("CREATE INDEX org_name_idx IF NOT EXISTS FOR (o:Organization) ON (o.canonical_name);")
         session.run("CREATE INDEX program_name_idx IF NOT EXISTS FOR (d:DevelopmentProgram) ON (d.canonical_name);")
         session.run("CREATE INDEX event_type_idx IF NOT EXISTS FOR (e:IntelligenceEvent) ON (e.event_type);")
+        session.run("CREATE INDEX event_dedup_key_idx IF NOT EXISTS FOR (e:IntelligenceEvent) ON (e.deduplication_key);")
 
         # 证据升级提案
         session.run("CREATE CONSTRAINT proposal_id_unique IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) REQUIRE p.proposal_id IS UNIQUE;")
@@ -81,8 +82,45 @@ def create_schema(driver):
         session.run("CREATE CONSTRAINT term_id_unique IF NOT EXISTS FOR (t:ControlledTerm) REQUIRE t.term_id IS UNIQUE;")
         session.run("CREATE INDEX IF NOT EXISTS FOR (t:ControlledTerm) ON (t.code);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (t:ControlledTerm) ON (t.vocabulary_id);")
-        
-        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网）")
+
+        # -------- 新增 CI 对象（工程情报、决策支持） --------
+        session.run("CREATE CONSTRAINT indication_id_unique IF NOT EXISTS FOR (ci:ClinicalIndication) REQUIRE ci.indication_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT patent_family_id_unique IF NOT EXISTS FOR (pf:PatentFamily) REQUIRE pf.patent_family_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT comp_assessment_id_unique IF NOT EXISTS FOR (ca:CompetitorAssessment) REQUIRE ca.assessment_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT construct_id_unique IF NOT EXISTS FOR (ec:EngineeredPhageConstruct) REQUIRE ec.construct_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT strategy_id_unique IF NOT EXISTS FOR (es:EngineeringStrategy) REQUIRE es.strategy_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT modification_id_unique IF NOT EXISTS FOR (em:EngineeringModification) REQUIRE em.modification_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT claim_id_unique IF NOT EXISTS FOR (tc:TechnicalClaim) REQUIRE tc.claim_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT result_id_unique IF NOT EXISTS FOR (tr:TechnicalResult) REQUIRE tr.result_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT tech_assessment_id_unique IF NOT EXISTS FOR (ta:TechnologyAssessment) REQUIRE ta.technology_assessment_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT question_id_unique IF NOT EXISTS FOR (iq:IntelligenceQuestion) REQUIRE iq.question_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT brief_id_unique IF NOT EXISTS FOR (db:DecisionBrief) REQUIRE db.brief_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT decision_record_id_unique IF NOT EXISTS FOR (dr:DecisionRecord) REQUIRE dr.decision_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT decision_option_id_unique IF NOT EXISTS FOR (do:DecisionOption) REQUIRE do.option_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT watchlist_item_id_unique IF NOT EXISTS FOR (wi:WatchlistItem) REQUIRE wi.watchlist_item_id IS UNIQUE;")
+
+        # -------- 新增索引（提升查询性能） --------
+        session.run("CREATE INDEX indication_name_idx IF NOT EXISTS FOR (ci:ClinicalIndication) ON (ci.name);")
+        session.run("CREATE INDEX patent_family_title_idx IF NOT EXISTS FOR (pf:PatentFamily) ON (pf.title);")
+        session.run("CREATE INDEX construct_name_idx IF NOT EXISTS FOR (ec:EngineeredPhageConstruct) ON (ec.public_name);")
+        session.run("CREATE INDEX strategy_type_idx IF NOT EXISTS FOR (es:EngineeringStrategy) ON (es.strategy_type);")
+        session.run("CREATE INDEX claim_type_idx IF NOT EXISTS FOR (tc:TechnicalClaim) ON (tc.claim_type);")
+        session.run("CREATE INDEX result_type_idx IF NOT EXISTS FOR (tr:TechnicalResult) ON (tr.result_type);")
+        session.run("CREATE INDEX brief_type_idx IF NOT EXISTS FOR (db:DecisionBrief) ON (db.brief_type);")
+        session.run("CREATE INDEX decision_type_idx IF NOT EXISTS FOR (dr:DecisionRecord) ON (dr.decision_type);")
+        session.run("CREATE INDEX comp_assessment_subject_idx IF NOT EXISTS FOR (ca:CompetitorAssessment) ON (ca.subject_type);")
+        session.run("CREATE INDEX tech_assessment_subject_idx IF NOT EXISTS FOR (ta:TechnologyAssessment) ON (ta.subject_type);")
+
+         # -------- 工程化噬菌体情报关系类型索引 --------
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:CLAIMS_ABOUT]-() ON (r.claim_type);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:RESULT_FOR]-() ON (r.result_type);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:REPORTED_IN]-() ON (r.source_id);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:IMPLEMENTS]-() ON (r.strategy_id);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:SUPPORTED_BY]-() ON (r.source_id);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:USES_CONSTRUCT]-() ON (r.program_id);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:ASSESSES]-() ON (r.subject_type);")
+
+        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网 + 工程情报 + 决策支持）")
 
 
 def create_ontology_modules(driver):
@@ -210,6 +248,144 @@ def create_controlled_vocabularies(driver):
                 {"code": "internal", "display": "内部", "description": "仅内部使用"},
                 {"code": "restricted", "display": "受限", "description": "需特殊授权"}
             ]
+        },
+        # -------- 新增 CI 受控词表 --------
+        {
+            "id": "VOC-ENGINEERING-STRATEGY",
+            "name": "engineering_strategy",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "host_range_expansion", "display": "宿主范围扩展", "description": "扩展宿主范围"},
+                {"code": "tail_fiber_engineering", "display": "尾纤维工程", "description": "改造尾纤维或受体结合蛋白"},
+                {"code": "receptor_binding_engineering", "display": "受体结合工程", "description": "改变受体结合特异性"},
+                {"code": "lysis_enhancement", "display": "裂解能力增强", "description": "增强裂解活性或裂解模块优化"},
+                {"code": "lysogeny_removal", "display": "溶原性去除", "description": "移除溶原性基因"},
+                {"code": "biofilm_disruption", "display": "生物膜破坏", "description": "生物膜相关工程"},
+                {"code": "payload_delivery", "display": "递送载荷", "description": "递送抗耐药或抗毒力载荷"},
+                {"code": "anti_resistance_payload", "display": "抗耐药载荷", "description": "递送抗耐药基因的载荷"},
+                {"code": "anti_virulence_payload", "display": "抗毒力载荷", "description": "递送抗毒力基因的载荷"},
+                {"code": "immune_modulation", "display": "免疫调节", "description": "调节宿主免疫应答"},
+                {"code": "phage_display", "display": "噬菌体展示", "description": "展示外源蛋白"},
+                {"code": "genome_minimization", "display": "基因组精简", "description": "去除冗余基因"},
+                {"code": "manufacturability_optimization", "display": "可制造性优化", "description": "提高生产稳定性"},
+                {"code": "stability_optimization", "display": "稳定性优化", "description": "提高噬菌体稳定性"},
+                {"code": "delivery_optimization", "display": "递送优化", "description": "优化递送方式"},
+                {"code": "other", "display": "其他", "description": "未分类策略"}
+            ]
+        },
+        {
+            "id": "VOC-EVENT-TYPE",
+            "name": "intelligence_event_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "pipeline_update", "display": "管线更新", "description": "研发管线状态变更"},
+                {"code": "clinical_trial_update", "display": "临床试验更新", "description": "临床试验进展或结果"},
+                {"code": "regulatory_update", "display": "监管事件", "description": "监管审批、法规变化"},
+                {"code": "publication", "display": "论文发表", "description": "学术论文或会议发布"},
+                {"code": "patent_event", "display": "专利事件", "description": "专利申请、授权或争议"},
+                {"code": "partnership", "display": "合作事件", "description": "合作、许可或联盟"},
+                {"code": "funding", "display": "融资事件", "description": "融资、投资或补贴"},
+                {"code": "acquisition", "display": "并购事件", "description": "收购、合并或剥离"},
+                {"code": "leadership_change", "display": "领导层变动", "description": "高管任命或离职"},
+                {"code": "manufacturing_update", "display": "制造更新", "description": "生产或供应链变化"},
+                {"code": "commercial_launch", "display": "商业上市", "description": "产品上市或商业化"},
+                {"code": "program_discontinuation", "display": "项目终止", "description": "研发项目终止或暂停"}
+            ]
+        },
+        {
+            "id": "VOC-PROGRAM-STAGE",
+            "name": "development_stage",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "discovery", "display": "发现阶段", "description": "早期研究"},
+                {"code": "preclinical", "display": "临床前", "description": "临床前研究"},
+                {"code": "phase_1", "display": "I期临床", "description": "I期临床试验"},
+                {"code": "phase_2", "display": "II期临床", "description": "II期临床试验"},
+                {"code": "phase_3", "display": "III期临床", "description": "III期临床试验"},
+                {"code": "phase_4", "display": "IV期临床", "description": "上市后研究"},
+                {"code": "approved", "display": "已批准", "description": "已获监管批准"},
+                {"code": "discontinued", "display": "已终止", "description": "项目已终止"}
+            ]
+        },
+        {
+            "id": "VOC-PROGRAM-TYPE",
+            "name": "program_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "therapeutic", "display": "治疗性", "description": "治疗产品"},
+                {"code": "diagnostic", "display": "诊断性", "description": "诊断产品"},
+                {"code": "platform", "display": "平台技术", "description": "技术平台"},
+                {"code": "research", "display": "研究工具", "description": "研究用试剂或工具"}
+            ]
+        },
+        {
+            "id": "VOC-MODALITY",
+            "name": "modality",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "natural_phage", "display": "天然噬菌体", "description": "天然分离噬菌体"},
+                {"code": "engineered_phage", "display": "工程化噬菌体", "description": "经改造的噬菌体"},
+                {"code": "cocktail", "display": "鸡尾酒", "description": "噬菌体混合物"}
+            ]
+        },
+        {
+            "id": "VOC-ORGANIZATION-TYPE",
+            "name": "organization_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "biotech", "display": "生物技术公司", "description": "专注生物技术"},
+                {"code": "pharma", "display": "制药公司", "description": "大型制药企业"},
+                {"code": "academic", "display": "学术机构", "description": "大学或研究所"},
+                {"code": "regulator", "display": "监管机构", "description": "政府监管机构"},
+                {"code": "hospital", "display": "医院", "description": "医疗机构"},
+                {"code": "investor", "display": "投资机构", "description": "风险投资或基金"},
+                {"code": "partner", "display": "合作伙伴", "description": "合作方（通用）"}
+            ]
+        },
+        {
+            "id": "VOC-CLAIM-TYPE",
+            "name": "technical_claim_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "efficacy", "display": "有效性", "description": "治疗效果主张"},
+                {"code": "host_range", "display": "宿主范围", "description": "宿主范围扩展主张"},
+                {"code": "safety", "display": "安全性", "description": "安全性主张"},
+                {"code": "manufacturability", "display": "可制造性", "description": "生产可行性主张"},
+                {"code": "mechanism", "display": "作用机制", "description": "机制相关主张"}
+            ]
+        },
+        {
+            "id": "VOC-RESULT-TYPE",
+            "name": "technical_result_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "host_range", "display": "宿主范围", "description": "宿主范围实验结果"},
+                {"code": "lysis", "display": "裂解活性", "description": "裂解实验结果"},
+                {"code": "biofilm", "display": "生物膜", "description": "生物膜抑制或清除结果"},
+                {"code": "safety", "display": "安全性", "description": "安全性评估结果"},
+                {"code": "in_vivo", "display": "体内实验", "description": "动物模型或人体结果"},
+                {"code": "computational", "display": "计算预测", "description": "计算机模拟或预测结果"}
+            ]
+        },
+        {
+            "id": "VOC-ASSESSMENT-TYPE",
+            "name": "competitor_assessment_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "threat", "display": "威胁", "description": "竞争威胁评估"},
+                {"code": "opportunity", "display": "机会", "description": "市场机会评估"},
+                {"code": "capability", "display": "能力", "description": "竞争对手能力评估"},
+                {"code": "uncertainty", "display": "不确定性", "description": "不确定性评估"}
+            ]
         }
     ]
     
@@ -241,4 +417,4 @@ def create_controlled_vocabularies(driver):
                 """, vocab_id=vocab["id"], term_id=term_id, code=term["code"],
                     display=term["display"], description=term["description"])
     
-    print("✅ ControlledVocabulary 受控词表已创建")
+    print("✅ ControlledVocabulary 受控词表已创建（含 CI 词表）")

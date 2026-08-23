@@ -2,12 +2,15 @@
 import pandas as pd
 from config import config, get_driver
 import os
-import argparse
-import uuid
 import json
 import hashlib
 from typing import List, Dict, Optional
 from datetime import date
+from neo4j import Driver
+from src.ci.organization_service import create_organization, get_organization_by_name
+from src.ci.program_service import create_development_program
+from src.ci.event_service import capture_intelligence_event
+from src.foundation.audit_service import log_action
 
 # ================== 必填字段定义 ==================
 REQUIRED_CASE_FIELDS = [
@@ -269,7 +272,6 @@ def insert_clinical_case(tx, data):
                 MATCH (p:Patient {patient_id: $patient_id})
                 MERGE (c)-[:BELONGS_TO_PATIENT]->(p)
             """, case_id=case_id, patient_id=patient_id)
-            print(f"   ✅ 病例 {case_id} 已关联患者 {patient_id}")
         else:
             print(f"   ⚠️ 警告：病例 {case_id} 关联的患者 {patient_id} 不存在，请先导入 patients.csv。")
     else:
@@ -825,27 +827,158 @@ def import_golden_rules() -> str:
                     success_count += 1
     return f"✅ 成功导入 {success_count} 条黄金规则"
 
-# ================== 主入口 ==================
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="导入病例和噬菌体数据（新模型）")
-    parser.add_argument("--clear", action="store_true", help="清空数据库再导入")
-    args = parser.parse_args()
 
-    if args.clear:
-        clear_database()
+def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
+    """
+    从 CSV 批量导入组织
+    CSV 列：canonical_name, organization_type, aliases, headquarters_country, website, description
+    """
+    if not os.path.exists(csv_path):
+        print(f"❌ 文件不存在: {csv_path}")
+        return 0
     
-    # 注意：调用顺序：先导入患者，再导入病例、噬菌体等
-    print("\n===== 开始导入患者主数据 =====")
-    load_patients_from_csv("data/patients.csv")
+    df = pd.read_csv(csv_path)
+    print(f"📂 读取到 {len(df)} 条组织记录")
     
-    print("\n===== 开始导入噬菌体互作 =====")
-    load_phages_from_csv(config.PHAGE_CSV)
+    count = 0
+    for _, row in df.iterrows():
+        try:
+            aliases = row.get('aliases', '')
+            if pd.notna(aliases) and str(aliases).strip():
+                aliases_list = [x.strip() for x in str(aliases).split(',') if x.strip()]
+            else:
+                aliases_list = []
+            
+            # 查重：如果已存在则跳过
+            existing = get_organization_by_name(driver, row['canonical_name'])
+            if existing:
+                print(f"   ⏭️ 组织 '{row['canonical_name']}' 已存在，跳过")
+                continue
+            
+            org_id = create_organization(
+                driver,
+                canonical_name=row['canonical_name'],
+                organization_type=row.get('organization_type', 'biotech'),
+                aliases=aliases_list,
+                headquarters_country=row.get('headquarters_country'),
+                website=row.get('website'),
+                description=row.get('description'),
+                actor_id="csv_importer"
+            )
+            count += 1
+        except Exception as e:
+            print(f"   ❌ 导入失败 (第 {_+2} 行): {e}")
+    
+    print(f"✅ 成功导入 {count} 个组织")
+    return count
 
-    print("\n===== 开始导入临床病例 =====")
-    load_cases_from_csv(config.CASES_CSV)
-
-    print("\n===== 开始导入裂解谱数据（新模型） =====")
-    result = load_phages_from_lysis_csv_simple()
-    print(result)
+def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
+    """
+    从 CSV 批量导入研发项目
+    CSV 列：program_id(可选), canonical_name, organization_name, program_type, development_stage, modality, target_pathogen_ids(逗号分隔)
+    """
+    if not os.path.exists(csv_path):
+        print(f"❌ 文件不存在: {csv_path}")
+        return 0
     
-    print("\n🎉 所有数据导入完成！")
+    df = pd.read_csv(csv_path)
+    print(f"📂 读取到 {len(df)} 条项目记录")
+    
+    count = 0
+    for _, row in df.iterrows():
+        try:
+            # 根据组织名称查找组织 ID
+            org_name = row['organization_name']
+            with driver.session() as session:
+                result = session.run("""
+                    MATCH (o:Organization)
+                    WHERE o.canonical_name = $name OR $name IN o.aliases
+                    RETURN o.organization_id AS id
+                """, name=org_name).single()
+                if not result:
+                    print(f"   ❌ 组织 '{org_name}' 不存在，请先导入")
+                    continue
+                org_id = result['id']
+            
+            # 解析病原体 ID 列表
+            pathogen_ids = []
+            if pd.notna(row.get('target_pathogen_ids')):
+                pathogen_ids = [x.strip() for x in str(row['target_pathogen_ids']).split(',') if x.strip()]
+            
+            prog_id = create_development_program(
+                driver,
+                organization_id=org_id,
+                canonical_name=row['canonical_name'],
+                program_type=row.get('program_type', 'therapeutic'),
+                development_stage=row.get('development_stage', 'discovery'),
+                modality=row.get('modality'),
+                target_pathogen_ids=pathogen_ids,
+                actor_id="csv_importer"
+            )
+            count += 1
+        except Exception as e:
+            print(f"   ❌ 导入失败 (第 {_+2} 行): {e}")
+    
+    print(f"✅ 成功导入 {count} 个项目")
+    return count
+
+def load_events_from_csv(driver: Driver, csv_path: str) -> int:
+    """
+    从 CSV 批量导入情报事件
+    CSV 列：event_type, title, factual_summary, organization_name, program_name(可选), event_date, published_at
+    """
+    if not os.path.exists(csv_path):
+        print(f"❌ 文件不存在: {csv_path}")
+        return 0
+    
+    df = pd.read_csv(csv_path)
+    print(f"📂 读取到 {len(df)} 条事件记录")
+    
+    count = 0
+    for _, row in df.iterrows():
+        try:
+            # 查找组织
+            org_name = row['organization_name']
+            with driver.session() as session:
+                org_result = session.run("""
+                    MATCH (o:Organization)
+                    WHERE o.canonical_name = $name OR $name IN o.aliases
+                    RETURN o.organization_id AS id
+                """, name=org_name).single()
+                if not org_result:
+                    print(f"   ❌ 组织 '{org_name}' 不存在，跳过")
+                    continue
+                org_id = org_result['id']
+            
+            # 查找项目（可选）
+            program_id = None
+            if pd.notna(row.get('program_name')) and str(row.get('program_name')).strip():
+                prog_name = row['program_name']
+                with driver.session() as session:
+                    prog_result = session.run("""
+                        MATCH (d:DevelopmentProgram {canonical_name: $name})
+                        RETURN d.program_id AS id
+                    """, name=prog_name).single()
+                    if prog_result:
+                        program_id = prog_result['id']
+                    else:
+                        print(f"   ⚠️ 项目 '{prog_name}' 未找到，事件将不关联项目")
+            
+            event_id = capture_intelligence_event(
+                driver,
+                event_type=row['event_type'],
+                title=row['title'],
+                factual_summary=row['factual_summary'],
+                organization_id=org_id,
+                program_id=program_id,
+                event_date=row.get('event_date'),
+                published_at=row.get('published_at'),
+                source_ids=[],
+                actor_id="csv_importer"
+            )
+            count += 1
+        except Exception as e:
+            print(f"   ❌ 导入失败 (第 {_+2} 行): {e}")
+    
+    print(f"✅ 成功导入 {count} 个事件")
+    return count
