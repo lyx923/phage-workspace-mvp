@@ -12,25 +12,35 @@ def generate_decision_id() -> str:
 
 def create_decision_record(
     driver: Driver,
-    decision_type: str,  # monitor / evaluate / partner / deprioritize / IP_review / etc.
+    brief_id: str,                     # 改为必填，不再允许 None
+    decision_type: str,                # monitor / evaluate / partner / deprioritize / IP_review / etc.
     decision_summary: str,
     rationale: str,
     decision_owner: str,
-    brief_id: Optional[str] = None,  # 关联的 DecisionBrief ID（可选）
     review_date: Optional[str] = None,  # YYYY-MM-DD，建议复核日期
     affected_program_id: Optional[str] = None,  # 受影响的内部项目 ID
     actor_id: str = "system",
 ) -> str:
     """
     PRD 10.3: 记录内部决策
-
     将情报（评估/简报）与组织行动连接起来。
-    这是 Palantir-style Ontology 区别于普通情报数据库的关键。
+    brief_id 必填，且必须对应一个存在的 IntelligenceProduct 节点。
     """
     decision_id = generate_decision_id()
 
     with driver.session() as session:
-        # 1. 创建决策节点
+        # 1. 检查 brief_id 对应的 IntelligenceProduct 是否存在
+        brief_check = session.run(
+            """
+            MATCH (b:IntelligenceProduct {brief_id: $bid})
+            RETURN b
+            """,
+            bid=brief_id,
+        ).single()
+        if not brief_check:
+            raise ValueError(f"简报 {brief_id} 不存在，无法创建决策记录。请确保简报已生成并审核通过。")
+
+        # 2. 创建决策节点
         session.run(
             """
             CREATE (dr:DecisionRecord {
@@ -54,31 +64,39 @@ def create_decision_record(
             review_date=review_date,
         )
 
-        # 2. 如果提供了 brief_id，建立 BASED_ON 关系
-        if brief_id:
-            session.run(
-                """
-                MATCH (dr:DecisionRecord {decision_id: $did})
-                MATCH (db:DecisionBrief {brief_id: $bid})
-                CREATE (dr)-[:BASED_ON]->(db)
-                """,
-                did=decision_id,
-                bid=brief_id,
-            )
+        # 3. 建立 BASED_ON 关系（指向 IntelligenceProduct）
+        session.run(
+            """
+            MATCH (dr:DecisionRecord {decision_id: $did})
+            MATCH (b:IntelligenceProduct {brief_id: $bid})
+            CREATE (dr)-[:BASED_ON]->(b)
+            """,
+            did=decision_id,
+            bid=brief_id,
+        )
 
-        # 3. 如果提供了受影响的内部项目，建立 AFFECTS_INTERNAL_PROGRAM 关系
+        # 4. 如果提供了受影响的内部项目，建立 AFFECTS_INTERNAL_PROGRAM 关系
         if affected_program_id:
-            session.run(
-                """
-                MATCH (dr:DecisionRecord {decision_id: $did})
-                MATCH (d:DevelopmentProgram {program_id: $pid})
-                CREATE (dr)-[:AFFECTS_INTERNAL_PROGRAM]->(d)
-                """,
-                did=decision_id,
+            # 检查项目是否存在
+            prog_check = session.run(
+                "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d",
                 pid=affected_program_id,
-            )
+            ).single()
+            if prog_check:
+                session.run(
+                    """
+                    MATCH (dr:DecisionRecord {decision_id: $did})
+                    MATCH (d:DevelopmentProgram {program_id: $pid})
+                    CREATE (dr)-[:AFFECTS_INTERNAL_PROGRAM]->(d)
+                    """,
+                    did=decision_id,
+                    pid=affected_program_id,
+                )
+            else:
+                # 若项目不存在，仅警告，不影响决策创建
+                print(f"⚠️ 警告: 受影响的内部项目 {affected_program_id} 不存在，跳过关系创建。")
 
-        # 4. 审计日志
+        # 5. 审计日志
         log_action(
             driver,
             domain="ci",
@@ -145,11 +163,11 @@ def get_decision_record(driver: Driver, decision_id: str) -> Optional[Dict]:
         result = session.run(
             """
             MATCH (dr:DecisionRecord {decision_id: $did})
-            OPTIONAL MATCH (dr)-[:BASED_ON]->(db:DecisionBrief)
+            OPTIONAL MATCH (dr)-[:BASED_ON]->(b:IntelligenceProduct)
             OPTIONAL MATCH (dr)-[:AFFECTS_INTERNAL_PROGRAM]->(d:DevelopmentProgram)
             RETURN dr,
-                   db.brief_id AS brief_id,
-                   db.title AS brief_title,
+                   b.brief_id AS brief_id,
+                   b.title AS brief_title,
                    d.program_id AS affected_program_id,
                    d.canonical_name AS affected_program_name
             """,
@@ -172,7 +190,7 @@ def get_decisions_by_brief(driver: Driver, brief_id: str) -> List[Dict]:
     with driver.session() as session:
         result = session.run(
             """
-            MATCH (dr:DecisionRecord)-[:BASED_ON]->(db:DecisionBrief {brief_id: $bid})
+            MATCH (dr:DecisionRecord)-[:BASED_ON]->(b:IntelligenceProduct {brief_id: $bid})
             RETURN dr
             ORDER BY dr.decided_at DESC
             """,

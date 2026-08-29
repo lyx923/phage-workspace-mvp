@@ -17,7 +17,8 @@ from src.scientific.validator_service import (
 )
 from src.scientific.evidence_package_service import (
     build_evidence_package_from_db,
-    rule_based_evidence_package
+    rule_based_evidence_package,
+    verify_llm_effectiveness
 )
 from src.scientific.retriever_service import (
     analyze_cross_case_reuse_simple,
@@ -26,7 +27,12 @@ from src.scientific.retriever_service import (
     analyze_and_persist_reuse,
     confirm_knowledge_reuse
 )
-from src.scientific.evidence_upgrade_service import curate_case_by_id, review_evidence_upgrade_proposal
+from src.scientific.evidence_upgrade_service import (
+    curate_case_by_id,
+    review_evidence_upgrade_proposal,
+    review_scientific_evidence_package,
+    review_assay_qc
+)
 from src.scientific.import_service import (
     load_phages_from_lysis_csv_simple,
     import_golden_rules,
@@ -47,27 +53,38 @@ st.title("噬菌体配型智能助手")
 st.markdown("基于知识图谱的循证噬菌体推荐，支持裂解谱数据 + 临床验证（新模型 LysisAssay + HostStrain）")
 
 # ---------- 缓存数据库连接 ----------
+@st.cache_resource
 def get_db():
     return get_driver()
 
-driver = get_db()
+try:
+    driver = get_db()
+    # 测试数据库连接
+    with driver.session() as session:
+        session.run("RETURN 1")
+except Exception as e:
+    st.error(f"⚠️ 无法连接 Neo4j 数据库，请检查 config.py 配置。错误: {str(e)}")
+    st.stop()
 
 # ---------- 侧边栏 ----------
 with st.sidebar:
     st.header("📊 数据总览")
     
-    with driver.session() as session:
-        stats = session.run("""
-            MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
-            WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
-            RETURN count(DISTINCT ph) AS phage_count,
-                   count(DISTINCT h.strain_label) AS host_count,
-                   count(a) AS interaction_count
-        """).single()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("噬菌体", stats["phage_count"])
-        col2.metric("菌株", stats["host_count"])
-        col3.metric("互作关系", stats["interaction_count"])
+    try:
+        with driver.session() as session:
+            stats = session.run("""
+                MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+                WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
+                RETURN count(DISTINCT ph) AS phage_count,
+                       count(DISTINCT h.strain_label) AS host_count,
+                       count(a) AS interaction_count
+            """).single()
+            col1, col2, col3 = st.columns(3)
+            col1.metric("噬菌体", stats["phage_count"])
+            col2.metric("菌株", stats["host_count"])
+            col3.metric("互作关系", stats["interaction_count"])
+    except Exception as e:
+        st.error(f"⚠️ 数据总览加载失败: {str(e)}")
     
     if st.button("🔄 清空并重新导入全部数据", type="secondary"):
         with st.status("执行数据导入...", expanded=True) as status:
@@ -315,7 +332,7 @@ with tab2:
 
 # ================== 标签页 3：证据包生成 ==================
 with tab3:
-    st.subheader("生成 Evidence Package (LLM)")
+    st.subheader("生成 Evidence Package")
     col1, col2 = st.columns(2)
     with col1:
         species = st.text_input("病原菌物种", value="Acinetobacter baumannii")
@@ -323,17 +340,64 @@ with tab3:
     with col2:
         infection_type = st.text_input("感染类型", value="Pneumonia")
         use_llm = st.checkbox("使用 LLM (DeepSeek)", value=True)
-    if st.button("生成证据包"):
+    
+    # 修复 Bug 1：使用关键字参数显式传参，避免参数顺序错误
+    if st.button("生成证据包", type="primary"):
         with st.spinner("生成中..."):
             resistance_val = resistance.strip() if resistance.strip() else None
             if use_llm:
-                result = build_evidence_package_from_db(species, resistance_val, infection_type)
+                result = build_evidence_package_from_db(
+                    species=species,
+                    resistance=resistance_val,
+                    infection_type=infection_type
+                )
                 st.session_state.ep_result = result
             else:
-                result = rule_based_evidence_package(species, resistance_val, infection_type)
+                result = rule_based_evidence_package(
+                    species=species,
+                    resistance=resistance_val,
+                    infection_type=infection_type
+                )
                 st.session_state.ep_result = result
     if "ep_result" in st.session_state:
         st.json(st.session_state.ep_result)
+    
+    st.markdown("---")
+    
+    # ===== 新功能 4：LLM 推荐效果验证 =====
+    st.markdown("#### 🎯 LLM 推荐效果验证")
+    st.caption("对比 LLM 推荐结果 vs 真实临床方案，评估推荐覆盖率")
+    
+    verify_case_id_input = st.text_input("验证病例 ID", value="CASE-001", key="verify_llm_case")
+    
+    if st.button("验证 LLM 推荐效果", key="verify_llm_btn"):
+        with st.spinner("验证中..."):
+            try:
+                result = verify_llm_effectiveness(verify_case_id_input)
+                st.session_state.verify_result = result
+            except Exception as e:
+                st.error(f"验证失败: {e}")
+    
+    if "verify_result" in st.session_state and st.session_state.verify_result:
+        v_result = st.session_state.verify_result
+        if "error" in v_result:
+            st.warning(v_result["error"])
+        else:
+            verification = v_result.get("_verification", {})
+            if verification:
+                coverage = verification.get("coverage", "none")
+                if coverage == "full":
+                    st.success(f"✅ 覆盖率: **完整** — LLM 推荐完全覆盖实际情况")
+                elif coverage == "partial":
+                    st.warning(f"⚠️ 覆盖率: **部分** — 匹配到 {verification.get('matched_phages', [])}")
+                else:
+                    st.error(f"❌ 覆盖率: **无** — LLM 推荐未匹配到实际情况")
+                st.write(f"实际治疗: {verification.get('actual_treatment', 'N/A')}")
+                st.write(f"实际结局: {verification.get('actual_outcome', 'N/A')}")
+                if verification.get("rule_cited"):
+                    st.success("✅ 黄金规则引用正确")
+            st.subheader("📄 完整验证结果")
+            st.json(v_result)
 
 # ================== 标签页 4：跨病例知识复用 ==================
 with tab4:
@@ -344,14 +408,40 @@ with tab4:
     with col2:
         case_b = st.text_input("病例 B ID", value="CASE-003")
     
+    # 修复 Bug 3：动态获取可用的 ScientificEvidencePackage
+    try:
+        with driver.session() as session:
+            pkg_result = session.run("""
+                MATCH (p:ScientificEvidencePackage)
+                RETURN p.package_id AS package_id
+                ORDER BY p.created_at DESC
+                LIMIT 10
+            """)
+            available_packages = [r["package_id"] for r in pkg_result]
+    except Exception:
+        available_packages = []
+    
+    if available_packages:
+        target_pkg = st.selectbox(
+            "目标证据包 (TARGETS_PACKAGE)",
+            available_packages,
+            key="target_pkg_select"
+        )
+    else:
+        st.warning("⚠️ 数据库中没有已生成的证据包，请先在【证据包生成】页生成一个用于关联。")
+        target_pkg = None
+    
     if st.button("分析并持久化复用", type="primary"):
-        with st.spinner("分析中..."):
-            result = analyze_and_persist_reuse(driver, case_a, case_b)
-            st.session_state.reuse_result = result
-            if result['persistence']['success']:
-                st.success(result['persistence']['message'])
-            else:
-                st.info(result['persistence']['message'])
+        if not target_pkg:
+            st.error("请先生成一个证据包再进行跨病例复用分析")
+        else:
+            with st.spinner("分析中..."):
+                result = analyze_and_persist_reuse(driver, case_a, case_b, target_package_id=target_pkg)
+                st.session_state.reuse_result = result
+                if result['persistence']['success']:
+                    st.success(result['persistence']['message'])
+                else:
+                    st.info(result['persistence']['message'])
     
     if "reuse_result" in st.session_state:
         st.json(st.session_state.reuse_result["analysis"])
@@ -730,9 +820,146 @@ with tab6:
                         except Exception as e:
                             st.error(f"操作失败: {e}")
     
+        # ===== 新功能 1：证据包审核面板 =====
+    st.markdown("---")
+    st.markdown("#### 📦 步骤 4：审核生成的证据包")
+    st.caption("对 ScientificEvidencePackage 执行批准/拒绝操作")
+    
+    try:
+        with driver.session() as session:
+            pending_pkgs = session.run("""
+                MATCH (p:ScientificEvidencePackage)
+                WHERE p.review_status = 'pending' OR p.status = 'draft'
+                RETURN p.package_id AS package_id,
+                       p.package_type AS package_type,
+                       p.generated_by AS generated_by,
+                       p.created_at AS created_at,
+                       p.summary AS summary
+                ORDER BY p.created_at DESC
+                LIMIT 20
+            """)
+            pkg_list = [dict(r) for r in pending_pkgs]
+    except Exception as e:
+        st.warning(f"无法加载证据包列表: {e}")
+        pkg_list = []
+    
+    if not pkg_list:
+        st.info("✅ 当前没有待审核的证据包")
+    else:
+        st.write(f"共 **{len(pkg_list)}** 个证据包待审核")
+        for pkg in pkg_list:
+            with st.container(border=True):
+                cols = st.columns([3, 1, 1])
+                with cols[0]:
+                    st.write(f"**{pkg['package_id']}**")
+                    st.write(f"类型: {pkg['package_type']}  生成者: {pkg['generated_by']}")
+                    summary_text = pkg.get('summary') or '无摘要'
+                    st.caption(f"摘要: {summary_text[:100]}{'...' if len(summary_text) > 100 else ''}")
+                    created_at = pkg.get('created_at')
+                    time_str = created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at)
+                    st.caption(f"创建于: {time_str}")
+                with cols[1]:
+                    if st.button("✅ 批准", key=f"approve_pkg_{pkg['package_id']}"):
+                        try:
+                            review_id = review_scientific_evidence_package(
+                                driver, pkg['package_id'], "expert_001", "approved", "界面审核通过"
+                            )
+                            st.success(f"已批准，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"审核失败: {e}")
+                with cols[2]:
+                    if st.button("❌ 拒绝", key=f"reject_pkg_{pkg['package_id']}"):
+                        try:
+                            review_id = review_scientific_evidence_package(
+                                driver, pkg['package_id'], "expert_001", "rejected", "界面审核拒绝"
+                            )
+                            st.success(f"已拒绝，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"审核失败: {e}")
+    
+    # ===== 新功能 2：Assay QC 审核面板 =====
+    st.markdown("---")
+    st.markdown("#### 🧪 步骤 5：Assay QC 审核")
+    st.caption("对 LysisAssay 实验进行质量审核（passed/failed）")
+    
+    try:
+        with driver.session() as session:
+            pending_assays = session.run("""
+                MATCH (a:LysisAssay)
+                WHERE a.qc_status = 'pending' OR a.validation_status = 'unreviewed'
+                RETURN a.assay_id AS assay_id,
+                       a.pathogen_id AS pathogen_id,
+                       a.evidence_level AS evidence_level,
+                       a.qc_status AS qc_status,
+                       a.created_at AS created_at
+                ORDER BY a.created_at DESC
+                LIMIT 20
+            """)
+            assay_list = [dict(r) for r in pending_assays]
+    except Exception as e:
+        st.warning(f"无法加载待审核实验列表: {e}")
+        assay_list = []
+    
+    if not assay_list:
+        st.info("✅ 当前没有待审核的实验")
+    else:
+        st.write(f"共 **{len(assay_list)}** 个实验待审核（显示前 10 条）")
+        for assay in assay_list[:10]:
+            with st.container(border=True):
+                cols = st.columns([3, 1, 1, 1])
+                with cols[0]:
+                    st.write(f"**{assay['assay_id']}**")
+                    st.write(f"Pathogen: `{assay['pathogen_id']}`  证据等级: {assay['evidence_level']}")
+                    created_at = assay.get('created_at')
+                    time_str = created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at)
+                    st.caption(f"QC 状态: {assay['qc_status']}  创建于: {time_str}")
+                with cols[1]:
+                    if st.button("✅ 通过", key=f"qc_pass_{assay['assay_id']}"):
+                        try:
+                            review_id = review_assay_qc(
+                                driver, assay['assay_id'], "expert_001", "passed", "QC 审核通过"
+                            )
+                            st.success(f"已通过，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"操作失败: {e}")
+                with cols[2]:
+                    if st.button("❌ 未通过", key=f"qc_fail_{assay['assay_id']}"):
+                        try:
+                            review_id = review_assay_qc(
+                                driver, assay['assay_id'], "expert_001", "failed", "QC 审核未通过"
+                            )
+                            st.success(f"已标记失败，Review ID: {review_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"操作失败: {e}")
+                with cols[3]:
+                    if st.button("🔍 详情", key=f"qc_detail_{assay['assay_id']}"):
+                        try:
+                            with driver.session() as session:
+                                detail = session.run("""
+                                    MATCH (a:LysisAssay {assay_id: $assay_id})
+                                    OPTIONAL MATCH (ph:Phage)-[:USED_IN]->(a)
+                                    OPTIONAL MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
+                                    RETURN a.assay_id AS assay_id,
+                                           ph.name AS phage_name,
+                                           h.strain_label AS host_strain,
+                                           a.result_value AS probability,
+                                           a.evidence_ref AS evidence_ref,
+                                           a.qc_status AS qc_status
+                                """, assay_id=assay['assay_id']).single()
+                            if detail:
+                                st.json(dict(detail))
+                            else:
+                                st.warning("未找到该实验的详细信息")
+                        except Exception as e:
+                            st.error(f"加载详情失败: {e}")
+    
     # ----- 验证升级结果 -----
     st.markdown("---")
-    st.markdown("#### ✅ 步骤 4：验证升级结果")
+    st.markdown("#### ✅ 步骤 6：验证升级结果")
     
     col1, col2 = st.columns(2)
     with col1:

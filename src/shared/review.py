@@ -20,6 +20,7 @@ TARGET_ID_MAP = {
     "TechnologyAssessment": "technology_assessment_id",
     "DecisionRecord": "decision_id",
     "DecisionBrief": "brief_id",
+    "IntelligenceProduct": "brief_id",
     "ScientificEvidencePackage": "package_id",
     "LysisAssay": "assay_id",
     "ClinicalCase": "case_id",
@@ -59,6 +60,7 @@ def create_review(
 
     id_prop = TARGET_ID_MAP.get(target_object_type)
     if not id_prop:
+        # 如果未在映射中，则尝试用小写+_id 的规则（兼容旧代码）
         id_prop = f"{target_object_type.lower()}_id"
 
     review_id = generate_review_id()

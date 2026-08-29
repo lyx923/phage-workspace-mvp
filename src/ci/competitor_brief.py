@@ -1,30 +1,113 @@
 # src/ci/competitor_brief.py
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from neo4j import Driver
 from datetime import datetime
 from src.ci.competitor_profile import build_competitor_profile
-from src.ci.organization_service import detect_material_changes
+from src.ci.organization_service import detect_material_changes, _calculate_event_impact
+from src.ci.intelligence_product_service import create_intelligence_product
 
+
+# ==================== P1-2 新增常量 ====================
+EVENT_SIGNAL_MAP = {
+    "acquisition": "threat",
+    "merger": "threat",
+    "regulatory_approval": "threat",
+    "ipo": "threat",
+    "funding": "threat",
+    "clinical_milestone": "threat",
+    "regulatory_setback": "opportunity",
+    "clinical_failure": "opportunity",
+    "partnership": "uncertainty",
+    "regulatory_update": "uncertainty",
+    "publication": "uncertainty",
+    "conference": "uncertainty",
+    "personnel_change": "uncertainty",
+}
+
+
+def _aggregate_competitive_signals(
+    events: List[Dict],
+    claims: List[Dict] = None,
+    assessments: List[Dict] = None
+) -> Dict:
+    """
+    基于已检索的结构化对象，规则聚合竞争信号。
+    不调用 LLM，不创造事实。
+    """
+    threats = []
+    opportunities = []
+    uncertainties = []
+
+    # 来自 IntelligenceEvent
+    for evt in events:
+        event_type = evt.get("event_type", "")
+        direction = EVENT_SIGNAL_MAP.get(event_type, "uncertainty")
+        signal_entry = {
+            "signal_text": evt.get("title", "")[:120],
+            "signal_date": evt.get("event_date", ""),
+            "source_object": "IntelligenceEvent",
+            "source_id": evt.get("event_id", ""),
+            "impact_level": _calculate_event_impact(evt),
+            "confidence": "medium",
+            "basis": f"event_type={event_type}",
+            "requires_review": True
+        }
+        if direction == "threat":
+            threats.append(signal_entry)
+        elif direction == "opportunity":
+            opportunities.append(signal_entry)
+        else:
+            uncertainties.append(signal_entry)
+
+    # MVP 阶段暂不处理 claims 和 assessments（留空）
+    # 后续可扩展
+
+    return {
+        "threats": threats,
+        "opportunities": opportunities,
+        "uncertainties": uncertainties,
+        "signal_count": len(threats) + len(opportunities) + len(uncertainties),
+        "aggregation_method": "rule_based_no_llm",
+        "aggregation_version": "0.5.0",
+        "requires_expert_review": True,
+        "auto_generated_note": (
+            "以上竞争信号由规则引擎自动聚合，基于图谱中已有的结构化对象，"
+            "不包含 AI 推断内容。须由情报分析师审核后方可引用。"
+        )
+    }
+
+
+# ==================== 原 generate_competitor_brief 修改 ====================
 def generate_competitor_brief(
     driver: Driver,
     organization_id: str,
     days_back: int = 90,
-    include_all_programs: bool = True
+    include_all_programs: bool = True,
+    persist: bool = True,
 ) -> Dict:
     """
     PRD 16.1: 生成竞争者情报简报（Competitor Intelligence Brief）
-    整合档案、变化检测和评估，输出结构化 JSON
+    整合档案、变化检测和评估，输出结构化 JSON。
+    若 persist=True，则将简报持久化为 IntelligenceProduct 节点，并返回 brief_id。
     """
     # 1. 获取档案
     profile = build_competitor_profile(driver, organization_id)
     if "error" in profile:
         return profile
-    
+
     # 2. 获取变化检测
     changes = detect_material_changes(driver, organization_id, days_back=days_back)
-    
-    # 3. 生成简报
-    brief = {
+
+    # 3. 查询 citations
+    citations = _fetch_citations_for_organization(driver, organization_id)
+
+    # 4. 聚合竞争信号（P1-2）
+    competitive_assessment = _aggregate_competitive_signals(
+        events=profile.get("recent_events", [])
+    )
+
+    # 5. 构建简报数据
+    brief_data = {
         "brief_type": "competitor",
         "as_of_date": datetime.now().strftime("%Y-%m-%d"),
         "generated_at": datetime.now().isoformat(),
@@ -40,11 +123,7 @@ def generate_competitor_brief(
         },
         "active_programs": [],
         "recent_events": [],
-        "competitive_assessment": {
-            "opportunities": [],
-            "threats": [],
-            "uncertainties": []
-        },
+        "competitive_assessment": competitive_assessment,   # 替换为聚合结果
         "changes_summary": {
             "new_events": changes.get("total_new_events", 0),
             "new_programs": changes.get("total_new_programs", 0),
@@ -53,14 +132,14 @@ def generate_competitor_brief(
         },
         "data_gaps": profile.get("data_gaps", []),
         "recommended_next_steps": [],
-        "citations": [],
+        "citations": citations,
         "review_status": "pending"
     }
-    
-    # 4. 填充项目信息（带病原体）
+
+    # 6. 填充项目信息
     for prog in profile.get("active_programs", []):
         pathogens = [p["species"] for p in prog.get("target_pathogens", []) if p.get("species")]
-        brief["active_programs"].append({
+        brief_data["active_programs"].append({
             "name": prog["name"],
             "stage": prog.get("stage", "unknown"),
             "status": prog.get("status", "active"),
@@ -68,10 +147,10 @@ def generate_competitor_brief(
             "target_pathogens": pathogens,
             "program_type": prog.get("program_type", "unknown")
         })
-    
-    # 5. 填充事件信息
-    for evt in profile.get("recent_events", [])[:10]:  # 最多10条
-        brief["recent_events"].append({
+
+    # 7. 填充事件信息
+    for evt in profile.get("recent_events", [])[:10]:
+        brief_data["recent_events"].append({
             "date": evt.get("event_date"),
             "type": evt.get("event_type"),
             "title": evt.get("title"),
@@ -80,42 +159,80 @@ def generate_competitor_brief(
             "materiality": evt.get("materiality", "medium"),
             "affected_program": evt.get("affected_program")
         })
-    
-    # 6. 生成竞争评估（基于事件和项目）
-    if changes.get("total_high_impact_events", 0) > 0:
-        brief["competitive_assessment"]["threats"].append(
-            f"近期有 {changes['total_high_impact_events']} 个高影响事件，需关注其战略影响"
-        )
-    
-    if len(profile.get("active_programs", [])) == 0:
-        brief["competitive_assessment"]["opportunities"].append(
-            "该组织无公开研发管线，可能为非竞争性或早期阶段"
-        )
-    elif len(profile.get("active_programs", [])) <= 2:
-        brief["competitive_assessment"]["uncertainties"].append(
-            "管线较窄，产品或技术集中度较高，可能对特定靶点依赖性强"
-        )
-    
-    if not profile.get("target_pathogens"):
-        brief["data_gaps"].append("未明确该组织靶向的病原体谱")
-    
-    # 7. 推荐下一步
+
+    # 8. 生成推荐下一步（原有逻辑保留）
     if changes.get("has_material_change", False):
-        brief["recommended_next_steps"].append("建议跟进近期重大事件，评估对内部战略的影响")
+        brief_data["recommended_next_steps"].append("建议跟进近期重大事件，评估对内部战略的影响")
     if profile.get("data_gaps"):
-        brief["recommended_next_steps"].append("补充数据缺口，完善竞争对手档案")
-    
-    return brief
+        brief_data["recommended_next_steps"].append("补充数据缺口，完善竞争对手档案")
+
+    # 9. 持久化
+    if persist:
+        brief_id = create_intelligence_product(
+            driver,
+            brief_type="competitor",
+            title=f"竞争情报简报 - {profile['organization']['name']}",
+            executive_summary="; ".join([t["signal_text"] for t in competitive_assessment.get("threats", [])[:3]]),
+            organization_id=organization_id,
+            as_of_date=brief_data["as_of_date"],
+            citations=citations,
+            competitive_assessment=competitive_assessment,
+            data_gaps=brief_data["data_gaps"],
+            recommended_next_steps=brief_data["recommended_next_steps"],
+            actor_id="system",
+        )
+        brief_data["brief_id"] = brief_id
+    else:
+        brief_data["brief_id"] = None
+
+    return brief_data
 
 
+def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> List[Dict]:
+    """查询组织相关的 SourceArtifact，返回 citations 列表（保持原有实现）"""
+    with driver.session() as session:
+        result = session.run(
+            """
+            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
+            MATCH (e)-[:HAS_SOURCE]->(s:SourceArtifact)
+            RETURN DISTINCT s.source_id AS source_id,
+                   s.source_type AS source_type,
+                   s.title AS title,
+                   s.url AS url,
+                   s.published_date AS published_date,
+                   s.credibility_tier AS credibility_tier,
+                   e.event_id AS referenced_by_event_id
+            UNION
+            MATCH (o:Organization {organization_id: $oid})<-[:DEVELOPS]-(:DevelopmentProgram)-[:TARGETS_PATHOGEN]->(:Pathogen)<-[:TARGETS]-(:EngineeredPhageConstruct)-[:CLAIMS_ABOUT]->(tc:TechnicalClaim)
+            MATCH (tc)-[:SUPPORTED_BY]->(s:SourceArtifact)
+            RETURN DISTINCT s.source_id AS source_id,
+                   s.source_type AS source_type,
+                   s.title AS title,
+                   s.url AS url,
+                   s.published_date AS published_date,
+                   s.credibility_tier AS credibility_tier,
+                   null AS referenced_by_event_id
+            """,
+            oid=organization_id,
+        )
+        citations = []
+        for record in result:
+            citations.append({
+                "source_id": record["source_id"],
+                "source_type": record["source_type"],
+                "title": record["title"],
+                "url": record["url"],
+                "published_date": record["published_date"],
+                "credibility_tier": record["credibility_tier"],
+                "referenced_by_event_id": record["referenced_by_event_id"],
+            })
+        return citations
+
+
+# 保留原 generate_technology_brief（占位）
 def generate_technology_brief(
     driver: Driver,
     strategy_id: Optional[str] = None,
     construct_id: Optional[str] = None
 ) -> Dict:
-    """
-    PRD 16.2: 生成技术简报（Technology Brief）
-    整合工程策略、构建体、主张和结果
-    """
-    # TODO: 下一阶段实现
     return {"message": "Technology Brief - 待实现"}

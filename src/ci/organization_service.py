@@ -6,8 +6,38 @@ from neo4j import Driver
 from src.foundation.audit_service import log_action
 from datetime import datetime, timedelta
 
+# ==================== P1-1 新增常量 ====================
+EVENT_BASE_IMPACT = {
+    "acquisition": "critical",
+    "merger": "critical",
+    "ipo": "high",
+    "regulatory_approval": "high",
+    "clinical_milestone": "high",
+    "partnership": "medium",           # 默认中，可升级
+    "regulatory_update": "medium",
+    "funding": "medium",               # 可按金额升级
+    "publication": "low",
+    "conference": "low",
+    "personnel_change": "low",
+}
+
+# 噬菌体领域关键词（用于语义升级）
+PHAGE_DOMAIN_KEYWORDS = [
+    "phage", "bacteriophage", "antimicrobial", "antibiotic resistance",
+    "ESKAPE", "phage therapy", "phage bank", "phage cocktail",
+    "噬菌体", "抗菌", "耐药"
+]
+
+# 融资金额升级阈值（美元）
+FUNDING_HIGH_THRESHOLD_USD = 30_000_000      # ≥3000 万 → high
+FUNDING_CRITICAL_THRESHOLD = 100_000_000     # ≥1 亿 → critical
+
+# =========================================================
+
+
 def generate_org_id() -> str:
     return f"CI:ORG:{uuid.uuid4().hex[:8].upper()}"
+
 
 def create_organization(
     driver: Driver,
@@ -65,6 +95,7 @@ def create_organization(
         
         return org_id
 
+
 def get_organization_by_name(driver: Driver, name: str):
     """根据规范名称或别名模糊查询"""
     with driver.session() as session:
@@ -75,6 +106,42 @@ def get_organization_by_name(driver: Driver, name: str):
         """, name=name)
         return [record['o'] for record in result]
 
+
+# ==================== P1-1 新增辅助函数 ====================
+def _calculate_event_impact(event: dict) -> str:
+    """
+    计算单个事件的影响级别。
+    返回 'critical' | 'high' | 'medium' | 'low'
+    """
+    event_type = event.get("event_type", "")
+    title = (event.get("title", "") + " " + event.get("factual_summary", "")).lower()
+    
+    base_impact = EVENT_BASE_IMPACT.get(event_type, "low")
+    
+    # 规则1：partnership 中包含噬菌体领域关键词 → 升级为 high
+    if event_type == "partnership":
+        if any(kw in title for kw in PHAGE_DOMAIN_KEYWORDS):
+            base_impact = "high"
+    
+    # 规则2：funding 按金额升级
+    if event_type == "funding":
+        amount = event.get("funding_amount_usd", 0) or 0
+        if amount >= FUNDING_CRITICAL_THRESHOLD:
+            base_impact = "critical"
+        elif amount >= FUNDING_HIGH_THRESHOLD_USD:
+            base_impact = "high"
+    
+    return base_impact
+
+
+def _is_high_impact(event: dict) -> bool:
+    """判断事件是否为高影响（critical 或 high）"""
+    return _calculate_event_impact(event) in ("critical", "high")
+
+
+# ===========================================================
+
+
 def detect_material_changes(
     driver: Driver,
     organization_id: str,
@@ -84,15 +151,7 @@ def detect_material_changes(
     """
     PRD 13.3: detect_material_changes
     检测组织在指定时间范围内的重大变化
-    
-    Args:
-        driver: Neo4j 驱动
-        organization_id: 组织ID
-        since_date: 起始日期（格式 YYYY-MM-DD），如果为 None 则使用 days_back
-        days_back: 回溯天数，默认90天
-    
-    Returns:
-        Dict: 包含各类变化的汇总
+    返回的 new_events 条目中增加 impact_level 和 impact_basis 字段
     """
     if since_date is None:
         since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -113,6 +172,7 @@ def detect_material_changes(
             RETURN e.event_id AS event_id,
                    e.event_type AS event_type,
                    e.title AS title,
+                   e.factual_summary AS factual_summary,
                    e.event_date AS event_date,
                    e.materiality AS materiality,
                    e.confidence AS confidence
@@ -120,7 +180,25 @@ def detect_material_changes(
         """, oid=organization_id, since_date=since_date)
         new_events_list = [dict(record) for record in new_events]
         
-        # 3. 检测新项目（在 since_date 之后创建）
+        # 3. 为每个事件计算 impact_level 和 impact_basis
+        enhanced_events = []
+        high_impact_events = []
+        for evt in new_events_list:
+            impact_level = _calculate_event_impact(evt)
+            impact_basis = f"event_type={evt.get('event_type')}"
+            if evt.get('event_type') == 'funding' and evt.get('funding_amount_usd'):
+                impact_basis += f", funding_amount={evt.get('funding_amount_usd')}"
+            elif evt.get('event_type') == 'partnership' and any(kw in (evt.get('title','')+evt.get('factual_summary','')).lower() for kw in PHAGE_DOMAIN_KEYWORDS):
+                impact_basis += ", phage_keyword_match"
+            # 添加增强字段
+            evt_with_impact = evt.copy()
+            evt_with_impact["impact_level"] = impact_level
+            evt_with_impact["impact_basis"] = impact_basis
+            enhanced_events.append(evt_with_impact)
+            if impact_level in ("critical", "high"):
+                high_impact_events.append(evt_with_impact)
+        
+        # 4. 检测新项目（在 since_date 之后创建）
         new_programs = session.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
             WHERE d.created_at >= datetime($since_date)
@@ -133,15 +211,14 @@ def detect_material_changes(
         """, oid=organization_id, since_date=since_date)
         new_programs_list = [dict(record) for record in new_programs]
         
-        # 4. 检测状态变化的项目（需要查询历史状态，暂时通过事件推断）
-        # 通过查找包含 "status" 相关的事件来推断状态变化
+        # 5. 检测状态变化的项目（通过事件推断）
         status_changes = session.run("""
             MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
             WHERE e.event_date >= $since_date
               AND (e.event_type = 'pipeline_update' 
                    OR e.event_type = 'program_discontinuation'
                    OR e.event_type = 'clinical_trial_update')
-              AND e.title CONTAINS 'status' OR e.title CONTAINS 'phase' OR e.title CONTAINS 'update'
+              AND (e.title CONTAINS 'status' OR e.title CONTAINS 'phase' OR e.title CONTAINS 'update')
             RETURN e.event_id AS event_id,
                    e.title AS title,
                    e.event_type AS event_type,
@@ -151,42 +228,27 @@ def detect_material_changes(
         """, oid=organization_id, since_date=since_date)
         status_changes_list = [dict(record) for record in status_changes]
         
-        # 5. 检测新合作/融资/监管事件（高重要性）
-        high_impact_events = session.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
-            WHERE e.event_date >= $since_date
-              AND e.event_type IN ['partnership', 'funding', 'regulatory_update', 'acquisition']
-              AND (e.materiality = 'high' OR e.materiality IS NULL)
-            RETURN e.event_id AS event_id,
-                   e.event_type AS event_type,
-                   e.title AS title,
-                   e.event_date AS event_date,
-                   e.materiality AS materiality
-            ORDER BY e.event_date DESC
-        """, oid=organization_id, since_date=since_date)
-        high_impact_list = [dict(record) for record in high_impact_events]
-        
-        # 6. 统计与汇总
+        # 6. 汇总结果
         summary = {
             "organization_name": org["name"],
             "organization_id": org["id"],
             "since_date": since_date,
             "detected_at": datetime.now().isoformat(),
-            "total_new_events": len(new_events_list),
+            "total_new_events": len(enhanced_events),
             "total_new_programs": len(new_programs_list),
             "total_status_changes": len(status_changes_list),
-            "total_high_impact_events": len(high_impact_list),
+            "total_high_impact_events": len(high_impact_events),
             "changes": {
-                "new_events": new_events_list,
+                "new_events": enhanced_events,           # 包含 impact_level 和 impact_basis
                 "new_programs": new_programs_list,
                 "status_changes": status_changes_list,
-                "high_impact_events": high_impact_list
+                "high_impact_events": high_impact_events  # 已经筛选并增强
             },
             "has_material_change": (
-                len(new_events_list) > 0 or 
+                len(enhanced_events) > 0 or 
                 len(new_programs_list) > 0 or 
                 len(status_changes_list) > 0 or 
-                len(high_impact_list) > 0
+                len(high_impact_events) > 0
             )
         }
         
@@ -200,14 +262,6 @@ def get_organizations_with_recent_changes(
 ) -> List[Dict]:
     """
     获取所有在指定天数内有变化的组织
-    
-    Args:
-        driver: Neo4j 驱动
-        days_back: 回溯天数
-        min_changes: 最少变化数量阈值
-    
-    Returns:
-        List[Dict]: 有变化的组织列表
     """
     since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     
