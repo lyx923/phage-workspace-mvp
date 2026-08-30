@@ -3,7 +3,7 @@ from typing import Dict, Optional, List
 from neo4j import Driver
 from datetime import datetime
 from src.ci.competitor_profile import build_competitor_profile
-from src.ci.organization_service import detect_material_changes, _calculate_event_impact
+from src.ci import organization_service          # 改为导入整个模块
 from src.ci.intelligence_product_service import create_intelligence_product
 
 
@@ -47,7 +47,7 @@ def _aggregate_competitive_signals(
             "signal_date": evt.get("event_date", ""),
             "source_object": "IntelligenceEvent",
             "source_id": evt.get("event_id", ""),
-            "impact_level": _calculate_event_impact(evt),
+            "impact_level": organization_service._calculate_event_impact(evt),   # 改用模块调用
             "confidence": "medium",
             "basis": f"event_type={event_type}",
             "requires_review": True
@@ -60,7 +60,6 @@ def _aggregate_competitive_signals(
             uncertainties.append(signal_entry)
 
     # MVP 阶段暂不处理 claims 和 assessments（留空）
-    # 后续可扩展
 
     return {
         "threats": threats,
@@ -96,7 +95,7 @@ def generate_competitor_brief(
         return profile
 
     # 2. 获取变化检测
-    changes = detect_material_changes(driver, organization_id, days_back=days_back)
+    changes = organization_service.detect_material_changes(driver, organization_id, days_back=days_back)
 
     # 3. 查询 citations
     citations = _fetch_citations_for_organization(driver, organization_id)
@@ -123,7 +122,7 @@ def generate_competitor_brief(
         },
         "active_programs": [],
         "recent_events": [],
-        "competitive_assessment": competitive_assessment,   # 替换为聚合结果
+        "competitive_assessment": competitive_assessment,
         "changes_summary": {
             "new_events": changes.get("total_new_events", 0),
             "new_programs": changes.get("total_new_programs", 0),
@@ -160,7 +159,7 @@ def generate_competitor_brief(
             "affected_program": evt.get("affected_program")
         })
 
-    # 8. 生成推荐下一步（原有逻辑保留）
+    # 8. 生成推荐下一步
     if changes.get("has_material_change", False):
         brief_data["recommended_next_steps"].append("建议跟进近期重大事件，评估对内部战略的影响")
     if profile.get("data_gaps"):
@@ -189,7 +188,7 @@ def generate_competitor_brief(
 
 
 def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> List[Dict]:
-    """查询组织相关的 SourceArtifact，返回 citations 列表（保持原有实现）"""
+    """查询组织相关的 SourceArtifact，返回 citations 列表"""
     with driver.session() as session:
         result = session.run(
             """

@@ -1,11 +1,16 @@
 canonical_name,organization_type,aliases,headquarters_country,website,description
-Adaptive Phage Therapeutics,biotech,"APT",USA,https://www.adaptivephage.com,临床阶段生物技术公司，拥有PhageBank™噬菌体库平台，针对多重耐药菌感染[reference:0][reference:1]
-Armata Pharmaceuticals,biotech,"Armata",USA,https://www.armatapharma.com,临床阶段噬菌体治疗公司，聚焦抗生素耐药性感染[reference:2][reference:3]
-Locus Biosciences,biotech,"Locus",USA,https://www.locus-bio.com,临床阶段生物技术公司，利用AI和CRISPR-Cas3平台开发工程化噬菌体疗法[reference:4][reference:5]
-BiomX,biotech,"BiomX",Israel,https://www.biomx.com,微生物组公司，开发定制化噬菌体疗法靶向慢性疾病中的有害细菌[reference:6]
-Intralytix,biotech,"Intralytix",USA,https://www.intralytix.com,成立于1998年，全球首家获得FDA噬菌体食品安全产品批准的公司[reference:7][reference:8]
-PHAXIAM Therapeutics,biotech,"PHAXIAM",France,https://www.phaxiam.com,临床阶段噬菌体治疗公司，专注于严重和耐药性细菌感染[reference:9][reference:10]
-Phagelux,biotech,"Phagelux",China,https://www.phagelux.com,中国噬菌体治疗公司，开发噬菌体产品用于人类健康和食品安全[reference:11][reference:12]
-青岛诺安百特,biotech,"诺安百特",China,https://www.phagepharm.com,中国噬菌体耐药菌综合解决方案公司，拥有国内最大的噬菌体产业化菌毒株库[reference:13]
-创噬纪,biotech,"CreatiPhage",China,https://www.cphage.com,中国噬菌体研究联盟副理事长单位，开发天然和人工噬菌体创新药物[reference:14]
-格瑞农生物,biotech,"格瑞农",China,https://www.grnbiotech.com,噬菌体生物制造企业，2025年完成近亿元Pre-B轮融资[reference:15]
+Adaptive Phage Therapeutics,biotech,"APT",USA,https://www.adaptivephage.com,临床阶段生物技术公司，拥有PhageBank™噬菌体库平台，针对多重耐药菌感染
+Armata Pharmaceuticals,biotech,"Armata",USA,https://www.armatapharma.com,临床阶段噬菌体治疗公司，聚焦抗生素耐药性感染
+Locus Biosciences,biotech,"Locus",USA,https://www.locus-bio.com,临床阶段生物技术公司，利用AI和CRISPR-Cas3平台开发工程化噬菌体疗法
+BiomX,biotech,"BiomX",Israel,https://www.biomx.com,微生物组公司，开发定制化噬菌体疗法靶向慢性疾病中的有害细菌
+Intralytix,biotech,"Intralytix",USA,https://www.intralytix.com,成立于1998年，全球首家获得FDA噬菌体食品安全产品批准的公司
+PHAXIAM Therapeutics,biotech,"PHAXIAM",France,https://www.phaxiam.com,临床阶段噬菌体治疗公司，专注于严重和耐药性细菌感染
+Phagelux,biotech,"Phagelux",China,https://www.phagelux.com,中国噬菌体治疗公司，开发噬菌体产品用于人类健康和食品安全
+青岛诺安百特,biotech,"诺安百特",China,https://www.phagepharm.com,中国噬菌体耐药菌综合解决方案公司，拥有国内最大的噬菌体产业化菌毒株库
+创噬纪,biotech,"CreatiPhage",China,https://www.cphage.com,中国噬菌体研究联盟副理事长单位，开发天然和人工噬菌体创新药物
+格瑞农生物,biotech,"格瑞农",China,https://www.grnbiotech.com,噬菌体生物制造企业，2025年完成近亿元Pre-B轮融资
+Novartis,pharma,"诺华",Switzerland,https://www.novartis.com,全球制药巨头，通过 Palantir Foundry 整合 7 亿患者生命数据与约 100 万试验患者数据，构建 Data42 平台实现自然语言跨域队列查询
+Sanofi,pharma,"赛诺菲",France,https://www.sanofi.com,全球制药企业，利用 Palantir 平台从 1700 万患者、2500 特征、7 年病史的 RWE 队列中识别 patient cluster，10 周内发现 5 个新适应症
+Merck KGaA,pharma,"默克,EMD",Germany,https://www.emdgroup.com,德国制药与科技公司，2017 年启动 Syntropy 项目，后与 Palantir 成立 50-50 合资企业 Athinia，首家发布 Foundry 开源代码库的客户
+Parexel,CRO,"精鼎医药",USA,https://www.parexel.com,全球领先的临床研究组织（CRO），利用 Palantir Foundry 将临床试验申报材料准备时间从 10-12 周缩短至 3-4 周（缩短 50% 以上）
+Dewpoint Therapeutics,biotech,"Dewpoint",USA,https://www.dewpointx.com,生物技术公司，专注凝聚体生物学，用 Palantir Foundry 做「研发环境数字孪生」，整合实验数据、文献和数据库辅助化合物/靶点可行性决策
