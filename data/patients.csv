@@ -1,6 +1,6 @@
 patient_id,age_group,gender,comorbidities,admission_date,source_artifact_id
-PAT-LGD-001,70-80,Male,"Bladder stones,BPH,Rectal cancer post-op,Hypertension,Varicose veins",2026-05-16,SRC-LGD-ADM
-PAT-YX-001,70-80,Male,"高血压,糖尿病,慢性肾功能不全",2026-02-25,SRC-YX-ADM
+PAT-LGD-001,70-80,Male,"Bladder stones,BPH,Rectal cancer post-op,Hypertension,Varicose veins",2026-05-16,
+PAT-YX-001,70-80,Male,"高血压,糖尿病,慢性肾功能不全",2026-02-25,
 PAT-002,70-80,Male,"高血压,糖尿病,慢性肾功能不全",2026-06-15,
 PAT-003,70-80,Male,"高血压,糖尿病",2026-07-03,
 PAT-PUB-001,60-70,Male,"Type 2 diabetes, Hypertension",2024-06-01,

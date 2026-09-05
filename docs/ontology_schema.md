@@ -36,7 +36,7 @@
 
 | 属性 | 类型 | 必填 | 说明 | 示例 |
 |------|------|------|------|------|
-| `source_id` | String | ✅ | 唯一标识 | `SRC-abc123` |
+| `source_id` | String | ✅ | 唯一标识 | `SRCabc123` |
 | `source_domain` | String | ✅ | 所属域 | `scientific` |
 | `source_type` | String | ✅ | 类型 | `literature` / `clinical_case` / `lysis_assay_file` |
 | `title` | String | ✅ | 标题或描述 | `PMID:12345678` |

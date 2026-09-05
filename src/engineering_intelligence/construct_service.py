@@ -3,6 +3,7 @@ import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
 from src.shared.audit_service import write_audit_event
+from src.shared.pathogen_service import get_or_create_pathogen  # 新增导入
 
 
 def generate_construct_id() -> str:
@@ -15,7 +16,8 @@ def create_engineered_construct(
     construct_code: Optional[str] = None,
     parent_phage_name: Optional[str] = None,
     intended_effects: Optional[List[str]] = None,
-    target_pathogen_ids: Optional[List[str]] = None,
+    target_pathogen_ids: Optional[List[str]] = None,       # 保留兼容，推荐使用 target_pathogen_species
+    target_pathogen_species: Optional[List[str]] = None,   # 新增：物种名称列表
     strategy_ids: Optional[List[str]] = None,
     construct_status: str = "proposed",
     first_public_date: Optional[str] = None,
@@ -24,11 +26,27 @@ def create_engineered_construct(
     """
     创建工程化噬菌体构建体（PRD 9.1）
     关联到亲本噬菌体（如果存在）、策略和靶向病原体
+
+    参数：
+        target_pathogen_ids: 已废弃，建议使用 target_pathogen_species
+        target_pathogen_species: 靶向病原体物种名称列表（如 ["Klebsiella pneumoniae"]）
     """
     construct_id = generate_construct_id()
     intended_effects = intended_effects or []
     target_pathogen_ids = target_pathogen_ids or []
+    target_pathogen_species = target_pathogen_species or []
     strategy_ids = strategy_ids or []
+
+    # 如果提供了 species，将其转换为 pathogen_id 并合并到 target_pathogen_ids
+    for species in target_pathogen_species:
+        pathogen_id = get_or_create_pathogen(
+            driver,
+            species=species,
+            pathogen_type="bacteria",
+            actor_id=actor_id,
+        )
+        if pathogen_id not in target_pathogen_ids:
+            target_pathogen_ids.append(pathogen_id)
 
     with driver.session() as session:
         # 创建构建体节点
@@ -87,7 +105,8 @@ def create_engineered_construct(
                 "public_name": public_name,
                 "construct_status": construct_status,
                 "strategy_ids": strategy_ids,
-                "target_pathogen_ids": target_pathogen_ids
+                "target_pathogen_ids": target_pathogen_ids,
+                "target_pathogen_species": target_pathogen_species,
             },
             reason=f"创建工程化构建体: {public_name or construct_code or construct_id}"
         )
@@ -213,7 +232,7 @@ def get_programs_by_strategy(driver: Driver, strategy_id: str) -> List[Dict]:
         result = session.run("""
             MATCH (ec:EngineeredPhageConstruct)-[:IMPLEMENTS]->(es:EngineeringStrategy {strategy_id: $sid})
             MATCH (d:DevelopmentProgram)-[:USES_CONSTRUCT]->(ec)
-            OPTIONAL MATCH (d)-[:TARGETS]->(p:Pathogen)
+            OPTIONAL MATCH (d)-[:TARGETS_PATHOGEN]->(p:Pathogen)
             OPTIONAL MATCH (ec)-[:DERIVED_FROM]->(ph:Phage)
             WITH d, ec, ph, COLLECT(DISTINCT p.species) AS target_pathogens
             RETURN d.program_id AS program_id,
