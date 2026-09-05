@@ -40,7 +40,7 @@ def build_competitor_profile(
         # 2. 获取研发项目（修改查询，避免 DISTINCT 问题）
         programs = session.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
-            OPTIONAL MATCH (d)-[:TARGETS]->(p:Pathogen)
+            OPTIONAL MATCH (d)-[:TARGETS_PATHOGEN]->(p:Pathogen)
             WITH d, COLLECT(DISTINCT {
                 pathogen_id: p.pathogen_id,
                 species: p.species

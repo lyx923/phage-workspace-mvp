@@ -45,7 +45,7 @@ from src.scientific.import_service import (
     load_events_from_csv
 )
 from src.foundation.schema import create_schema, create_ontology_modules, create_controlled_vocabularies
-from shared.audit_service import write_audit_event  # 修改点1：替换 log_action
+from src.shared.audit_service import write_audit_event  # 修改点1：替换 log_action
 
 # ---------- CI 相关导入 ----------
 from src.ci.organization_service import create_organization, detect_material_changes, get_organizations_with_recent_changes

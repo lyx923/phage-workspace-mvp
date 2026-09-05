@@ -2,7 +2,7 @@
 import uuid
 from typing import Dict, List, Optional
 from neo4j import Driver
-from shared.audit_service import write_audit_event
+from src.shared.audit_service import write_audit_event
 from datetime import datetime, timedelta
 
 # ==================== 常量定义 ====================

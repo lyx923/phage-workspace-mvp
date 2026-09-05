@@ -3,7 +3,7 @@ from typing import List, Dict, Optional
 from neo4j import Driver
 from src.scientific.import_service import get_driver
 import uuid
-from shared.audit_service import write_audit_event
+from src.shared.audit_service import write_audit_event
 
 
 def find_matching_phages(

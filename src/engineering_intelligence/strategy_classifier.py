@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from shared.audit_service import write_audit_event
+from src.shared.audit_service import write_audit_event
 
 # PRD 9.2 首版分类
 STRATEGY_TYPES = [

@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from shared.audit_service import write_audit_event
+from src.shared.audit_service import write_audit_event
 
 REVIEW_DECISIONS = ["approved", "rejected", "needs_revision", "confirmed", "unverified"]
 
