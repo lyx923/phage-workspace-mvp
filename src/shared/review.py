@@ -2,12 +2,10 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
-# 可用的审核决策（参考受控词表 VOC-REVIEW-DECISION）
 REVIEW_DECISIONS = ["approved", "rejected", "needs_revision", "confirmed", "unverified"]
 
-# 目标对象类型 -> ID 属性名映射（用于通用校验和状态更新）
 TARGET_ID_MAP = {
     "Organization": "organization_id",
     "DevelopmentProgram": "program_id",
@@ -31,7 +29,6 @@ TARGET_ID_MAP = {
 
 
 def generate_review_id() -> str:
-    """生成 Review ID：REV-<LOCAL_ID>"""
     return f"REV-{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -46,27 +43,16 @@ def create_review(
     actor_id: str = "system",
     update_target_status: bool = True,
 ) -> str:
-    """
-    创建一条审核记录（Review）。
-
-    核心功能：
-    1. 检查目标对象是否存在。
-    2. 创建 Review 节点并建立 (:Review)-[:REVIEWS]->(target) 关系。
-    3. 可选地，自动更新目标对象的 review_status 属性（若存在）。
-    4. 记录审计日志。
-    """
     if decision not in REVIEW_DECISIONS:
         raise ValueError(f"decision 必须是 {REVIEW_DECISIONS} 之一")
 
     id_prop = TARGET_ID_MAP.get(target_object_type)
     if not id_prop:
-        # 如果未在映射中，则尝试用小写+_id 的规则（兼容旧代码）
         id_prop = f"{target_object_type.lower()}_id"
 
     review_id = generate_review_id()
 
     with driver.session() as session:
-        # 1. 检查目标对象是否存在
         check_query = (
             f"MATCH (n:{target_object_type} {{`{id_prop}`: $oid}}) RETURN n"
         )
@@ -76,7 +62,6 @@ def create_review(
                 f"目标对象 {target_object_type} (ID: {target_object_id}) 不存在"
             )
 
-        # 2. 创建 Review 节点并建立关系
         session.run(
             f"""
             MATCH (n:{target_object_type} {{`{id_prop}`: $oid}})
@@ -103,7 +88,6 @@ def create_review(
             comment=comment,
         )
 
-        # 3. 可选：更新目标对象的 review_status
         if update_target_status:
             try:
                 has_status = session.run(
@@ -122,18 +106,17 @@ def create_review(
                         decision=decision,
                     )
             except Exception as e:
-                # 静默失败，不影响主流程
                 print(f"⚠️ 更新目标对象 review_status 失败: {e}")
 
-        # 4. 审计日志
-        log_action(
+        # 审核分为 approve 和 reject
+        action_type = "REVIEW_APPROVE" if decision == "approved" else "REVIEW_REJECT"
+        write_audit_event(
             driver,
-            domain="foundation",
-            action_type="CREATE_REVIEW",
+            action_type=action_type,
             object_type="Review",
             object_id=review_id,
             actor_id=actor_id,
-            after_snapshot={
+            delta={
                 "review_type": review_type,
                 "target_object_type": target_object_type,
                 "target_object_id": target_object_id,
@@ -152,7 +135,6 @@ def get_reviews_for_object(
     target_object_id: str,
     limit: int = 50,
 ) -> List[Dict]:
-    """获取某个目标对象的所有审核记录（按时间倒序）"""
     with driver.session() as session:
         result = session.run(
             """
@@ -173,7 +155,6 @@ def get_latest_review(
     target_object_type: str,
     target_object_id: str,
 ) -> Optional[Dict]:
-    """获取某个目标对象的最新审核记录"""
     reviews = get_reviews_for_object(
         driver, target_object_type, target_object_id, limit=1
     )
@@ -187,7 +168,6 @@ def update_review_decision(
     actor_id: str = "system",
     comment: Optional[str] = None,
 ) -> bool:
-    """更新已有审核的决策（极少用，主要用于纠错）"""
     if new_decision not in REVIEW_DECISIONS:
         raise ValueError(f"decision 必须是 {REVIEW_DECISIONS} 之一")
 
@@ -211,15 +191,13 @@ def update_review_decision(
             comment=comment,
         )
 
-        log_action(
+        write_audit_event(
             driver,
-            domain="foundation",
-            action_type="UPDATE_REVIEW_DECISION",
+            action_type="STATUS_CHANGE",
             object_type="Review",
             object_id=review_id,
             actor_id=actor_id,
-            before_snapshot={"decision": old["dec"]},
-            after_snapshot={"decision": new_decision},
+            delta={"decision": {"before": old["dec"], "after": new_decision}},
             reason=comment or f"审核决策从 {old['dec']} 更新为 {new_decision}",
         )
 
@@ -227,7 +205,6 @@ def update_review_decision(
 
 
 def get_review_by_id(driver: Driver, review_id: str) -> Optional[Dict]:
-    """根据 ID 获取审核记录"""
     with driver.session() as session:
         result = session.run(
             "MATCH (r:Review {review_id: $rid}) RETURN r", rid=review_id

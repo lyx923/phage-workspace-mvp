@@ -2,10 +2,12 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
+
 
 def generate_claim_id() -> str:
     return f"ENG:CLAIM:{uuid.uuid4().hex[:8].upper()}"
+
 
 def generate_result_id() -> str:
     return f"ENG:RESULT:{uuid.uuid4().hex[:8].upper()}"
@@ -29,7 +31,7 @@ def create_technical_claim(
     PRD 9.4: 创建技术主张（TechnicalClaim）
     """
     claim_id = generate_claim_id()
-    
+
     with driver.session() as session:
         # 查重
         existing = session.run("""
@@ -39,7 +41,7 @@ def create_technical_claim(
         if existing:
             print(f"ℹ️ 主张已存在，ID: {existing['id']}")
             return existing['id']
-        
+
         # 创建主张节点
         session.run("""
             CREATE (tc:TechnicalClaim {
@@ -59,7 +61,7 @@ def create_technical_claim(
         """, claim_id=claim_id, claim_type=claim_type, claim_text=claim_text,
            exact_quote=exact_quote, claimant_type=claimant_type,
            evidence_context=evidence_context)
-        
+
         # 关联构建体
         if construct_id:
             session.run("""
@@ -67,7 +69,7 @@ def create_technical_claim(
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
                 CREATE (tc)-[:CLAIMS_ABOUT]->(ec)
             """, claim_id=claim_id, construct_id=construct_id)
-        
+
         # 关联策略
         if strategy_id:
             session.run("""
@@ -75,7 +77,7 @@ def create_technical_claim(
                 MATCH (es:EngineeringStrategy {strategy_id: $strategy_id})
                 CREATE (tc)-[:CLAIMS_ABOUT]->(es)
             """, claim_id=claim_id, strategy_id=strategy_id)
-        
+
         # 关联来源
         if source_id:
             session.run("""
@@ -83,11 +85,18 @@ def create_technical_claim(
                 MATCH (s:SourceArtifact {source_id: $source_id})
                 CREATE (tc)-[:SUPPORTED_BY]->(s)
             """, claim_id=claim_id, source_id=source_id)
-        
-        log_action(driver, domain="ci", action_type="CREATE_CLAIM",
-                   object_type="TechnicalClaim", object_id=claim_id,
-                   actor_id=actor_id, after_snapshot={"claim_type": claim_type})
-        
+
+        # 审计日志（新版）
+        write_audit_event(
+            driver,
+            action_type="CREATE",
+            object_type="TechnicalClaim",
+            object_id=claim_id,
+            actor_id=actor_id,
+            delta={"claim_type": claim_type, "claimant_type": claimant_type},
+            reason=f"创建技术主张: {claim_type}"
+        )
+
         return claim_id
 
 
@@ -113,7 +122,7 @@ def create_technical_result(
     PRD 9.5: 创建技术结果（TechnicalResult）
     """
     result_id = generate_result_id()
-    
+
     with driver.session() as session:
         # 创建结果节点
         session.run("""
@@ -139,7 +148,7 @@ def create_technical_result(
            metric_unit=metric_unit, comparator=comparator,
            sample_size=sample_size, limitation_summary=limitation_summary,
            reproducibility_status=reproducibility_status)
-        
+
         # 关联构建体
         if construct_id:
             session.run("""
@@ -147,7 +156,7 @@ def create_technical_result(
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
                 CREATE (tr)-[:RESULT_FOR]->(ec)
             """, result_id=result_id, construct_id=construct_id)
-        
+
         # 关联来源
         if source_id:
             session.run("""
@@ -155,11 +164,18 @@ def create_technical_result(
                 MATCH (s:SourceArtifact {source_id: $source_id})
                 CREATE (tr)-[:REPORTED_IN]->(s)
             """, result_id=result_id, source_id=source_id)
-        
-        log_action(driver, domain="ci", action_type="CREATE_RESULT",
-                   object_type="TechnicalResult", object_id=result_id,
-                   actor_id=actor_id, after_snapshot={"result_type": result_type})
-        
+
+        # 审计日志（新版）
+        write_audit_event(
+            driver,
+            action_type="CREATE",
+            object_type="TechnicalResult",
+            object_id=result_id,
+            actor_id=actor_id,
+            delta={"result_type": result_type, "study_context": study_context},
+            reason=f"创建技术结果: {result_type}"
+        )
+
         return result_id
 
 
@@ -227,11 +243,11 @@ def detect_claim_evidence_gaps(driver: Driver, construct_id: str) -> Dict:
         record = result.single()
         if not record:
             return {"error": f"构建体 {construct_id} 不存在"}
-        
+
         # 分析缺口
         claims = [dict(c) for c in record['claims']]
         results = [dict(r) for r in record['results']]
-        
+
         gaps = []
         for claim in claims:
             claim_type = claim.get('claim_type')
@@ -256,7 +272,7 @@ def detect_claim_evidence_gaps(driver: Driver, construct_id: str) -> Dict:
                             "missing_validation_stage": result.get('study_context', 'unknown'),
                             "gap_severity": "medium"
                         })
-        
+
         return {
             "construct_id": construct_id,
             "construct_name": record['name'],

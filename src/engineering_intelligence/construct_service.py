@@ -2,10 +2,12 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
+
 
 def generate_construct_id() -> str:
     return f"ENG:CONST:{uuid.uuid4().hex[:8].upper()}"
+
 
 def create_engineered_construct(
     driver: Driver,
@@ -27,7 +29,7 @@ def create_engineered_construct(
     intended_effects = intended_effects or []
     target_pathogen_ids = target_pathogen_ids or []
     strategy_ids = strategy_ids or []
-    
+
     with driver.session() as session:
         # 创建构建体节点
         session.run("""
@@ -45,7 +47,7 @@ def create_engineered_construct(
         """, construct_id=construct_id, public_name=public_name,
            construct_code=construct_code, construct_status=construct_status,
            intended_effects=intended_effects, first_public_date=first_public_date)
-        
+
         # 关联亲本噬菌体
         if parent_phage_name:
             result = session.run("""
@@ -57,7 +59,7 @@ def create_engineered_construct(
             """, parent_name=parent_phage_name, construct_id=construct_id)
             if not result.single():
                 print(f"⚠️ 亲本噬菌体 '{parent_phage_name}' 未找到，跳过关联")
-        
+
         # 关联策略
         for strategy_id in strategy_ids:
             session.run("""
@@ -65,7 +67,7 @@ def create_engineered_construct(
                 MATCH (es:EngineeringStrategy {strategy_id: $strategy_id})
                 CREATE (ec)-[:IMPLEMENTS]->(es)
             """, construct_id=construct_id, strategy_id=strategy_id)
-        
+
         # 关联靶向病原体
         for pathogen_id in target_pathogen_ids:
             session.run("""
@@ -73,12 +75,25 @@ def create_engineered_construct(
                 MATCH (p:Pathogen {pathogen_id: $pathogen_id})
                 CREATE (ec)-[:TARGETS]->(p)
             """, construct_id=construct_id, pathogen_id=pathogen_id)
-        
-        log_action(driver, domain="ci", action_type="CREATE_CONSTRUCT",
-                   object_type="EngineeredPhageConstruct", object_id=construct_id,
-                   actor_id=actor_id)
-        
+
+        # 审计日志（新版）
+        write_audit_event(
+            driver,
+            action_type="CREATE",
+            object_type="EngineeredPhageConstruct",
+            object_id=construct_id,
+            actor_id=actor_id,
+            delta={
+                "public_name": public_name,
+                "construct_status": construct_status,
+                "strategy_ids": strategy_ids,
+                "target_pathogen_ids": target_pathogen_ids
+            },
+            reason=f"创建工程化构建体: {public_name or construct_code or construct_id}"
+        )
+
         return construct_id
+
 
 def get_constructs_by_strategy(driver: Driver, strategy_id: str) -> List[Dict]:
     """获取使用某个策略的所有构建体"""
@@ -96,6 +111,7 @@ def get_constructs_by_strategy(driver: Driver, strategy_id: str) -> List[Dict]:
             ORDER BY ec.created_at DESC
         """, strategy_id=strategy_id)
         return [dict(record) for record in result]
+
 
 def link_program_to_construct(
     driver: Driver,
@@ -116,7 +132,7 @@ def link_program_to_construct(
         ).single()
         if not prog_check:
             raise ValueError(f"项目 {program_id} 不存在")
-        
+
         # 检查构建体是否存在
         const_check = session.run(
             "MATCH (ec:EngineeredPhageConstruct {construct_id: $cid}) RETURN ec",
@@ -124,7 +140,7 @@ def link_program_to_construct(
         ).single()
         if not const_check:
             raise ValueError(f"构建体 {construct_id} 不存在")
-        
+
         # 检查关系是否已存在
         existing = session.run("""
             MATCH (d:DevelopmentProgram {program_id: $pid})
@@ -132,22 +148,32 @@ def link_program_to_construct(
             OPTIONAL MATCH (d)-[r:USES_CONSTRUCT]->(ec)
             RETURN r IS NOT NULL AS exists
         """, pid=program_id, cid=construct_id).single()
-        
+
         if existing and existing['exists']:
             print(f"ℹ️ 关联已存在: {program_id} → {construct_id}")
             return True
-        
+
         # 创建关联
         session.run("""
             MATCH (d:DevelopmentProgram {program_id: $pid})
             MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
             CREATE (d)-[:USES_CONSTRUCT]->(ec)
         """, pid=program_id, cid=construct_id)
-        
-        log_action(driver, domain="ci", action_type="LINK_PROGRAM_CONSTRUCT",
-                   object_type="DevelopmentProgram", object_id=program_id,
-                   actor_id=actor_id, after_snapshot={"construct_id": construct_id})
-        
+
+        # 审计日志（新版）
+        write_audit_event(
+            driver,
+            action_type="LINK_CREATE",
+            object_type="DevelopmentProgram",
+            object_id=program_id,
+            actor_id=actor_id,
+            delta={
+                "relation": "USES_CONSTRUCT",
+                "construct_id": construct_id
+            },
+            reason=f"项目 {program_id} 关联构建体 {construct_id}"
+        )
+
         print(f"✅ 关联创建成功: {program_id} → {construct_id}")
         return True
 

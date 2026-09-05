@@ -10,7 +10,6 @@ from neo4j import Driver
 from src.ci.organization_service import create_organization, get_organization_by_name
 from src.ci.program_service import create_development_program
 from src.ci.event_service import capture_intelligence_event
-from src.foundation.audit_service import log_action
 
 # ================== 必填字段定义 ==================
 REQUIRED_CASE_FIELDS = [
@@ -55,11 +54,13 @@ def _get_or_create_source_artifact(
 ) -> str:
     """
     获取或创建 SourceArtifact 节点，确保所有属性（url, published_date, credibility_tier）都存在。
+    修改：统一 ID 格式为 SRC:XXXXXXXX （原为 SRC-）
     """
     # 生成稳定的 source_id（使用 SHA256 哈希确保唯一性）
     hash_input = f"{source_ref}:{source_type}:{source_domain}"
     hash_id = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
-    source_id = f"SRC-{hash_id}"   # 保持与现有 ID 风格一致，可后续统一格式
+    # 修改点：将 SRC- 改为 SRC:
+    source_id = f"SRC:{hash_id}"
     
     if not title:
         title = source_ref

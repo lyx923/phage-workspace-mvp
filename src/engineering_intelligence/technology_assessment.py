@@ -2,15 +2,17 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 # 受控值
 EVIDENCE_MATURITY_LEVELS = ["conceptual", "in_vitro", "in_vivo", "clinical"]
 RELEVANCE_LEVELS = ["high", "medium", "low", "unknown"]
 RISK_LEVELS = ["high", "medium", "low", "unknown"]
 
+
 def generate_assessment_id() -> str:
     return f"ENG:ASSESS:{uuid.uuid4().hex[:8].upper()}"
+
 
 def create_technology_assessment(
     driver: Driver,
@@ -35,9 +37,9 @@ def create_technology_assessment(
         raise ValueError(f"证据成熟度必须是以下之一: {EVIDENCE_MATURITY_LEVELS}")
     if technical_relevance not in RELEVANCE_LEVELS:
         raise ValueError(f"技术相关性必须是以下之一: {RELEVANCE_LEVELS}")
-    
+
     assessment_id = generate_assessment_id()
-    
+
     with driver.session() as session:
         # 检查主题是否存在
         if subject_type == "construct":
@@ -52,10 +54,10 @@ def create_technology_assessment(
             ).single()
         else:
             raise ValueError("subject_type 必须是 'construct' 或 'strategy'")
-        
+
         if not check:
             raise ValueError(f"{subject_type} {subject_id} 不存在")
-        
+
         # 创建评估节点
         session.run("""
             CREATE (ta:TechnologyAssessment {
@@ -83,7 +85,7 @@ def create_technology_assessment(
            ip_relevance=ip_relevance,
            internal_capability_gap=internal_capability_gap,
            assessment_summary=assessment_summary)
-        
+
         # 建立 ASSESSES 关系
         if subject_type == "construct":
             session.run("""
@@ -97,12 +99,25 @@ def create_technology_assessment(
                 MATCH (es:EngineeringStrategy {strategy_id: $subject_id})
                 CREATE (ta)-[:ASSESSES]->(es)
             """, assessment_id=assessment_id, subject_id=subject_id)
-        
-        log_action(driver, domain="ci", action_type="CREATE_TECH_ASSESSMENT",
-                   object_type="TechnologyAssessment", object_id=assessment_id,
-                   actor_id=actor_id)
-        
+
+        # 审计日志（新版）
+        write_audit_event(
+            driver,
+            action_type="CREATE",
+            object_type="TechnologyAssessment",
+            object_id=assessment_id,
+            actor_id=actor_id,
+            delta={
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "evidence_maturity": evidence_maturity,
+                "technical_relevance": technical_relevance
+            },
+            reason=f"创建技术评估: {subject_type} {subject_id}"
+        )
+
         return assessment_id
+
 
 def get_assessment_for_subject(driver: Driver, subject_type: str, subject_id: str) -> Optional[Dict]:
     """获取某个主题的最新技术评估"""
@@ -125,6 +140,7 @@ def get_assessment_for_subject(driver: Driver, subject_type: str, subject_id: st
         """, subject_type=subject_type, subject_id=subject_id)
         record = result.single()
         return dict(record) if record else None
+
 
 def get_assessments_by_strategy(driver: Driver, strategy_type: str) -> List[Dict]:
     """
@@ -151,6 +167,7 @@ def get_assessments_by_strategy(driver: Driver, strategy_type: str) -> List[Dict
         """, strategy_type=strategy_type)
         return [dict(record) for record in result]
 
+
 def suggest_assessment_from_evidence(
     driver: Driver,
     construct_id: str
@@ -174,9 +191,9 @@ def suggest_assessment_from_evidence(
         record = result.single()
         if not record:
             return {"error": f"构建体 {construct_id} 不存在"}
-        
+
         data = dict(record)
-        
+
         # 根据证据自动推断成熟度
         study_contexts = data.get('study_contexts', [])
         if 'clinical' in study_contexts:
@@ -191,7 +208,7 @@ def suggest_assessment_from_evidence(
             evidence_maturity = 'conceptual'
         else:
             evidence_maturity = 'conceptual'
-        
+
         # 根据结果方向推断技术相关性
         outcomes = data.get('outcomes', [])
         if 'positive' in outcomes:
@@ -200,7 +217,7 @@ def suggest_assessment_from_evidence(
             technical_relevance = 'medium'
         else:
             technical_relevance = 'medium'
-        
+
         return {
             "construct_id": construct_id,
             "construct_name": data.get('name'),

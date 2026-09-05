@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 
 def generate_assessment_id() -> str:
@@ -12,31 +12,24 @@ def generate_assessment_id() -> str:
 
 def create_competitor_assessment(
     driver: Driver,
-    assessment_type: str,  # threat / opportunity / capability / uncertainty
-    subject_type: str,     # organization / program / event
+    assessment_type: str,
+    subject_type: str,
     subject_id: str,
-    impact_area: str,      # market / technology / clinical / IP / BD
-    impact_level: str,     # high / medium / low
+    impact_area: str,
+    impact_level: str,
     assessment_summary: str,
-    confidence: str = "medium",  # high / medium / low
+    confidence: str = "medium",
     analyst_id: str = "unknown",
-    time_horizon: Optional[str] = None,  # short / medium / long
+    time_horizon: Optional[str] = None,
     assumptions: Optional[List[str]] = None,
     unknowns: Optional[List[str]] = None,
-    valid_until: Optional[str] = None,   # YYYY-MM-DD
+    valid_until: Optional[str] = None,
     actor_id: str = "system"
 ) -> str:
-    """
-    PRD 8.3 / 12.6: 创建竞争影响评估
-
-    记录内部分析人员对竞争对手、项目或事件的判断。
-    所有输入必须基于已审核事实，外部展示时需标记 'Internal assessment'。
-    """
     assessment_id = generate_assessment_id()
     assumptions = assumptions or []
     unknowns = unknowns or []
 
-    # subject_type 到 Neo4j 标签和 ID 属性的映射
     subject_map = {
         "organization": ("Organization", "organization_id"),
         "program": ("DevelopmentProgram", "program_id"),
@@ -49,13 +42,11 @@ def create_competitor_assessment(
     label, id_prop = subject_map[subject_type]
 
     with driver.session() as session:
-        # 1. 检查目标对象是否存在
         check_query = f"MATCH (n:{label} {{`{id_prop}`: $sid}}) RETURN n"
         target = session.run(check_query, sid=subject_id).single()
         if not target:
             raise ValueError(f"{subject_type} 对象 {subject_id} 不存在")
 
-        # 2. 创建评估节点
         session.run(
             f"""
             CREATE (ca:CompetitorAssessment {{
@@ -93,7 +84,6 @@ def create_competitor_assessment(
             valid_until=valid_until,
         )
 
-        # 3. 建立评估与目标对象的关系
         session.run(
             f"""
             MATCH (ca:CompetitorAssessment {{assessment_id: $assessment_id}})
@@ -104,15 +94,13 @@ def create_competitor_assessment(
             subject_id=subject_id,
         )
 
-        # 4. 审计日志
-        log_action(
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="CREATE_COMPETITOR_ASSESSMENT",
+            action_type="CREATE",
             object_type="CompetitorAssessment",
             object_id=assessment_id,
             actor_id=actor_id,
-            after_snapshot={
+            delta={
                 "assessment_type": assessment_type,
                 "subject_type": subject_type,
                 "subject_id": subject_id,
@@ -125,7 +113,6 @@ def create_competitor_assessment(
 
 
 def get_assessment(driver: Driver, assessment_id: str) -> Optional[Dict]:
-    """根据 ID 获取单个评估"""
     with driver.session() as session:
         result = session.run(
             """
@@ -143,7 +130,6 @@ def get_assessments_for_subject(
     subject_id: str,
     limit: int = 50,
 ) -> List[Dict]:
-    """获取某个主题的所有评估（按时间倒序）"""
     with driver.session() as session:
         result = session.run(
             """
@@ -162,18 +148,16 @@ def get_assessments_for_subject(
 def update_assessment_review_status(
     driver: Driver,
     assessment_id: str,
-    new_status: str,  # draft / reviewed / approved
+    new_status: str,
     reviewer_id: str,
     comment: Optional[str] = None,
     actor_id: str = "system",
 ) -> bool:
-    """更新评估的审核状态（通常由 shared.review 自动触发，也可手动调用）"""
     valid_statuses = ["draft", "reviewed", "approved"]
     if new_status not in valid_statuses:
         raise ValueError(f"状态必须是 {valid_statuses} 之一")
 
     with driver.session() as session:
-        # 检查是否存在
         check = session.run(
             "MATCH (ca:CompetitorAssessment {assessment_id: $aid}) RETURN ca",
             aid=assessment_id,
@@ -196,14 +180,13 @@ def update_assessment_review_status(
             comment=comment,
         )
 
-        log_action(
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="UPDATE_ASSESSMENT_REVIEW",
+            action_type="STATUS_CHANGE",
             object_type="CompetitorAssessment",
             object_id=assessment_id,
             actor_id=actor_id,
-            after_snapshot={"review_status": new_status, "reviewer_id": reviewer_id},
+            delta={"review_status": new_status, "reviewer_id": reviewer_id},
             reason=comment or f"审核状态更新为 {new_status}",
         )
 

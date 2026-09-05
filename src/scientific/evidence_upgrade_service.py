@@ -3,12 +3,9 @@ import uuid
 import json
 from typing import Dict, List, Optional
 from neo4j import Driver
-from src.foundation.audit_service import log_action   # 改为从 audit_event 导入
+from src.foundation.audit_service import write_audit_event
 
 # 证据等级升级映射
-# L1/L2 → L3（单例临床验证）
-# L3 → L4（多中心临床验证）
-# L4 → L5（组织学习闭环）
 LEVEL_UPGRADE_MAP = {
     'L3': ['L1', 'L2'],
     'L4': ['L3'],
@@ -16,13 +13,11 @@ LEVEL_UPGRADE_MAP = {
 }
 
 
-# =============================================================
-# 新增：ID 生成辅助函数（符合 PRD 7.2）
-# =============================================================
 def _generate_proposal_id() -> str:
     """生成符合 PRD 7.2 的 EvidenceUpgradeProposal ID：SCI:PROPOSAL:<LOCAL_ID>"""
     local_id = uuid.uuid4().hex[:8].upper()
     return f"SCI:PROPOSAL:{local_id}"
+
 
 def _generate_review_id(review_type: str) -> str:
     """
@@ -33,10 +28,6 @@ def _generate_review_id(review_type: str) -> str:
     local_id = uuid.uuid4().hex[:8].upper()
     return f"FOUNDATION:REVIEW:{type_prefix}-{local_id}"
 
-
-# =============================================================
-# 证据升级提案相关函数（替代自动升级）
-# =============================================================
 
 def create_evidence_upgrade_proposal(
     driver: Driver,
@@ -116,7 +107,7 @@ def review_evidence_upgrade_proposal(
         current_level = proposal['current_level']
         source_case_id = proposal['source_case_id']
 
-        # 2. 创建 Review 记录并建立 REVIEWS 关系（ID 符合 PRD 7.2）
+        # 2. 创建 Review 记录并建立 REVIEWS 关系
         review_id = _generate_review_id("evidence_upgrade")
         session.run("""
             MATCH (p:EvidenceUpgradeProposal {proposal_id: $proposal_id})
@@ -165,39 +156,33 @@ def review_evidence_upgrade_proposal(
             """, proposal_id=proposal_id)
 
             # 审计日志
-            log_action(
+            write_audit_event(
                 driver,
-                domain="scientific",
-                action_type="EVIDENCE_UPGRADE_APPROVED",
+                action_type="DATA_CORRECTION",
                 object_type="LysisAssay",
                 object_id=assay_id,
                 actor_id=reviewer_id,
-                before_snapshot={"evidence_level": current_level},
-                after_snapshot={"evidence_level": proposed_level},
+                delta={"evidence_level": {"before": current_level, "after": proposed_level}},
                 reason=f"升级提案 {proposal_id} 已批准并执行"
             )
         elif decision == 'rejected':
-            log_action(
+            write_audit_event(
                 driver,
-                domain="scientific",
-                action_type="EVIDENCE_UPGRADE_REJECTED",
+                action_type="STATUS_CHANGE",
                 object_type="EvidenceUpgradeProposal",
                 object_id=proposal_id,
                 actor_id=reviewer_id,
-                before_snapshot={"status": "pending_review"},
-                after_snapshot={"status": "rejected"},
+                delta={"status": {"before": "pending_review", "after": "rejected"}},
                 reason=comment or f"提案 {proposal_id} 被拒绝"
             )
         elif decision == 'needs_revision':
-            log_action(
+            write_audit_event(
                 driver,
-                domain="scientific",
-                action_type="EVIDENCE_UPGRADE_NEEDS_REVISION",
+                action_type="STATUS_CHANGE",
                 object_type="EvidenceUpgradeProposal",
                 object_id=proposal_id,
                 actor_id=reviewer_id,
-                before_snapshot={"status": "pending_review"},
-                after_snapshot={"status": "needs_revision"},
+                delta={"status": {"before": "pending_review", "after": "needs_revision"}},
                 reason=comment or f"提案 {proposal_id} 需要补充数据"
             )
         else:
@@ -206,22 +191,17 @@ def review_evidence_upgrade_proposal(
     return review_id
 
 
-# =============================================================
-# 新增：其他 Review 类型审核函数（PRD 7.5）
-# =============================================================
-
 def review_scientific_evidence_package(
     driver: Driver,
     package_id: str,
     reviewer_id: str,
-    decision: str,  # 'approved' or 'rejected' or 'needs_revision'
+    decision: str,
     comment: str = None
 ) -> str:
     """
     审核 ScientificEvidencePackage（scientific_package_review 类型）
     """
     with driver.session() as session:
-        # 检查包是否存在
         pkg = session.run("""
             MATCH (p:ScientificEvidencePackage {package_id: $package_id})
             RETURN p
@@ -252,7 +232,6 @@ def review_scientific_evidence_package(
         # 更新包状态
         new_status = 'approved' if decision == 'approved' else 'rejected'
         if decision == 'needs_revision':
-            # 保持为 pending，但可记录评论
             pass
         else:
             session.run("""
@@ -262,16 +241,14 @@ def review_scientific_evidence_package(
                     pkg.updated_at = datetime()
             """, package_id=package_id, new_status=new_status)
         
-        # 记录审计
-        log_action(
+        # 审计日志
+        write_audit_event(
             driver,
-            domain="scientific",
-            action_type=f"PACKAGE_REVIEW_{decision.upper()}",
+            action_type="STATUS_CHANGE",
             object_type="ScientificEvidencePackage",
             object_id=package_id,
             actor_id=reviewer_id,
-            before_snapshot={"status": "draft"},
-            after_snapshot={"status": new_status},
+            delta={"status": {"before": "draft", "after": new_status}},
             reason=comment or f"证据包审核 {decision}"
         )
     return review_id
@@ -281,7 +258,7 @@ def review_assay_qc(
     driver: Driver,
     assay_id: str,
     reviewer_id: str,
-    decision: str,  # 'passed' or 'failed'
+    decision: str,
     comment: str = None
 ) -> str:
     """
@@ -315,7 +292,6 @@ def review_assay_qc(
         """, review_id=review_id, assay_id=assay_id,
         reviewer_id=reviewer_id, decision=decision, comment=comment)
         
-        # 更新 QC 状态
         new_qc_status = 'passed' if decision == 'passed' else 'failed'
         session.run("""
             MATCH (a:LysisAssay {assay_id: $assay_id})
@@ -323,31 +299,23 @@ def review_assay_qc(
                 a.updated_at = datetime()
         """, assay_id=assay_id, new_qc_status=new_qc_status)
         
-        # 记录审计
-        log_action(
+        write_audit_event(
             driver,
-            domain="scientific",
-            action_type=f"ASSAY_QC_{decision.upper()}",
+            action_type="STATUS_CHANGE",
             object_type="LysisAssay",
             object_id=assay_id,
             actor_id=reviewer_id,
-            before_snapshot={"qc_status": assay["qc_status"]},
-            after_snapshot={"qc_status": new_qc_status},
+            delta={"qc_status": {"before": assay["qc_status"], "after": new_qc_status}},
             reason=comment or f"QC 审核 {decision}"
         )
     return review_id
 
 
-# =============================================================
-# 保留原有函数（curate_case_outcome, curate_case_by_id, batch_curate_cases）
-# 这些函数已经修改过，无需改动，但为了完整性保留
-# =============================================================
-
 def curate_case_outcome(
     driver: Driver,
     case_id: str,
-    treatment: Dict,   # {phage_ids: List[str], phage_names: List[str], cocktail_name: str}
-    outcome: Dict,     # {clinical_outcome: str, microbiological_outcome: str}
+    treatment: Dict,
+    outcome: Dict,
     target_level: str = 'L3',
     reviewer_id: str = "domain_expert_01"
 ) -> str:
@@ -381,7 +349,7 @@ def curate_case_outcome(
                     microbiological_outcome=outcome.get('microbiological_outcome', ''))
         summary.append(f"✅ 病例 {case_id} 已更新结局")
 
-    # 查找符合条件的 LysisAssay（使用名称匹配，避免 ID 不一致，同时允许 pending 或 passed）
+    # 查找符合条件的 LysisAssay
     if treatment.get('phage_names'):
         phage_names = treatment['phage_names']
         find_query = f"""
@@ -481,7 +449,6 @@ def curate_case_by_id(
     )
 
 
-# ==================== 便捷函数：批量策展 ====================
 def batch_curate_cases(
     driver: Driver,
     cases: List[Dict],

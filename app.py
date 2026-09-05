@@ -40,12 +40,12 @@ from src.scientific.import_service import (
     load_cases_from_csv,
     load_phages_from_csv,
     load_patients_from_csv,
-    load_organizations_from_csv,   # 新增
-    load_programs_from_csv,        # 新增
-    load_events_from_csv           # 新增
+    load_organizations_from_csv,
+    load_programs_from_csv,
+    load_events_from_csv
 )
 from src.foundation.schema import create_schema, create_ontology_modules, create_controlled_vocabularies
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event  # 修改点1：替换 log_action
 
 # ---------- CI 相关导入 ----------
 from src.ci.organization_service import create_organization, detect_material_changes, get_organizations_with_recent_changes
@@ -114,19 +114,16 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    # ---- 美化纵向单选按钮（模式切换，无图标） ----
+    # ---- 美化纵向单选按钮（模式切换） ----
     st.markdown("""
     <style>
-    /* 隐藏 radio 的 label 文字 */
     div[data-testid="stRadio"] > label {
         display: none !important;
     }
-    /* 让 radio 选项纵向排列，更紧凑 */
     div[data-testid="stRadio"] > div {
         flex-direction: column !important;
         gap: 0.5rem !important;
     }
-    /* 每个选项卡片样式 */
     div[data-testid="stRadio"] > div > label {
         display: flex !important;
         align-items: center;
@@ -143,24 +140,20 @@ with st.sidebar:
         width: 100%;
         box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }
-    /* 隐藏默认的圆形选择器 */
     div[data-testid="stRadio"] > div > label > div:first-child {
         display: none !important;
     }
-    /* 未选中状态文字颜色 */
     div[data-testid="stRadio"] > div > label[data-baseweb="radio"] {
         background-color: #f8f9fa;
         border-color: #dee2e6;
         color: #495057;
     }
-    /* 选中状态（高亮蓝色） */
     div[data-testid="stRadio"] > div > label[data-baseweb="radio"][aria-checked="true"] {
         background-color: #0068c9 !important;
         border-color: #0068c9 !important;
         color: white !important;
         box-shadow: 0 4px 8px rgba(0,104,201,0.25);
     }
-    /* 鼠标悬停效果 */
     div[data-testid="stRadio"] > div > label:hover:not([aria-checked="true"]) {
         background-color: #e9ecef;
         border-color: #adb5bd;
@@ -169,9 +162,8 @@ with st.sidebar:
     </style>
     """, unsafe_allow_html=True)
 
-    # 模式切换 - 无图标纯文本
     mode = st.radio(
-        label="",   # 空字符串，被 CSS 隐藏
+        label="",
         options=["噬菌体配型", "CI竞争情报"],
         index=0,
         key="app_mode"
@@ -179,7 +171,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 根据 mode 显示侧边栏内容
     if mode == "噬菌体配型":
         st.header("📊 数据总览")
         try:
@@ -230,7 +221,6 @@ with st.sidebar:
                 import_golden_rules()
                 st.write("✅ 黄金配型知识库导入完成")
 
-                # ---------- 新增 CI 数据导入 ----------
                 status.update(label="导入组织...")
                 load_organizations_from_csv(driver, os.path.join(BASE_DIR, "data", "ci_organizations.csv"))
                 st.write("✅ 组织导入完成")
@@ -321,14 +311,13 @@ with st.sidebar:
         except:
             st.caption("⚠️ 无法读取配置")
     else:
-        # CI 模式侧边栏 - 显示横向指标
+        # CI 模式侧边栏
         st.header("📊 数据总览")
         try:
             with driver.session() as session:
                 org_count = session.run("MATCH (o:Organization) RETURN count(o) AS cnt").single()['cnt']
                 event_count = session.run("MATCH (e:IntelligenceEvent) RETURN count(e) AS cnt").single()['cnt']
                 brief_count = session.run("MATCH (b:IntelligenceProduct) RETURN count(b) AS cnt").single()['cnt']
-                # 横向排列三个指标
                 c1, c2, c3 = st.columns(3)
                 c1.metric("组织数", org_count)
                 c2.metric("事件数", event_count)
@@ -350,7 +339,6 @@ if mode == "噬菌体配型":
     ])
 
     with tab1:
-        # 原有内容（略，保持原样）
         st.subheader("单个菌株配型查询")
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -1230,15 +1218,14 @@ if mode == "噬菌体配型":
         st.subheader("📋 审计日志")
         if st.button("📝 生成测试审计事件"):
             with st.spinner("生成审计事件..."):
-                event_id = log_action(
+                # 修改点2：使用 write_audit_event 替代 log_action
+                event_id = write_audit_event(
                     driver,
-                    domain="scientific",
-                    action_type="DEMO_ACTION",
+                    action_type="CREATE",
                     object_type="ClinicalCase",
                     object_id="DEMO-001",
                     actor_id="demo_user",
-                    before_snapshot={"status": "before"},
-                    after_snapshot={"status": "after"},
+                    delta={"before": {"status": "before"}, "after": {"status": "after"}},
                     reason="演示审计事件"
                 )
                 st.success(f"✅ 已生成测试审计事件: {event_id}")
@@ -1252,21 +1239,20 @@ if mode == "噬菌体配型":
 
         with st.spinner("加载审计日志..."):
             with driver.session() as session:
+                # 修改点3：适配实际 AuditEvent 属性
                 query = """
                     MATCH (a:AuditEvent)
                     WHERE ($action_filter = '' OR a.action_type CONTAINS $action_filter)
                     AND ($object_filter = '' OR a.object_id CONTAINS $object_filter)
-                    RETURN a.audit_event_id AS event_id,
-                           a.domain AS domain,
+                    RETURN a.audit_id AS event_id,
                            a.action_type AS action_type,
                            a.object_type AS object_type,
                            a.object_id AS object_id,
                            a.actor_id AS actor_id,
-                           a.occurred_at AS occurred_at,
+                           a.timestamp AS occurred_at,
                            a.reason AS reason,
-                           a.before_snapshot AS before,
-                           a.after_snapshot AS after
-                    ORDER BY a.occurred_at DESC
+                           a.delta AS delta
+                    ORDER BY a.timestamp DESC
                     LIMIT 10
                 """
                 result = session.run(query, action_filter=filter_action, object_filter=filter_object)
@@ -1277,7 +1263,7 @@ if mode == "噬菌体配型":
         else:
             st.write(f"共显示 {len(logs)} 条最新记录")
             df_log = pd.DataFrame(logs)
-            display_cols = ["occurred_at", "domain", "action_type", "object_type", "object_id", "actor_id", "reason"]
+            display_cols = ["occurred_at", "action_type", "object_type", "object_id", "actor_id", "reason"]
             df_display = df_log[display_cols].copy()
             df_display['occurred_at'] = df_display['occurred_at'].apply(
                 lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x)
@@ -1288,15 +1274,18 @@ if mode == "噬菌体配型":
                 for log in logs[:10]:
                     time_str = log['occurred_at'].isoformat() if hasattr(log['occurred_at'], 'isoformat') else str(log['occurred_at'])
                     st.write(f"**{time_str} - {log['action_type']}**")
-                    if log['before']:
-                        st.write("变更前:", log['before'])
-                    if log['after']:
-                        st.write("变更后:", log['after'])
+                    if log['delta']:
+                        # 解析 JSON 字符串
+                        try:
+                            delta_obj = json.loads(log['delta']) if isinstance(log['delta'], str) else log['delta']
+                            st.json(delta_obj)
+                        except:
+                            st.write(log['delta'])
                     st.write("---")
 
 # ================== CI 竞争情报模块 ==================
 else:
-    # CI 模式主界面 - 拆分为两个 Tab：流程和查询
+    # CI 模式主界面
     if "ci_context" not in st.session_state:
         st.session_state.ci_context = {
             "org_ids": {},
@@ -1525,6 +1514,14 @@ else:
                     if not org_id:
                         st.error("请先执行步骤1创建组织")
                     else:
+                        # 修改点4：获取组织名称用于摘要
+                        with driver.session() as session:
+                            result = session.run(
+                                "MATCH (o:Organization {organization_id: $oid}) RETURN o.canonical_name AS name",
+                                oid=org_id
+                            ).single()
+                            org_name = result["name"] if result else org_id
+
                         brief = generate_competitor_brief(driver, org_id, days_back=365, persist=True)
                         brief_id = brief.get("brief_id")
                         if not brief_id:
@@ -1546,6 +1543,7 @@ else:
                             )
                             st.write(f"✅ 简报审核通过，Review ID: {review_brief_id}")
 
+                            # 创建竞争评估（使用组织名称）
                             assess_id = create_competitor_assessment(
                                 driver,
                                 assessment_type="threat",
@@ -1553,7 +1551,7 @@ else:
                                 subject_id=org_id,
                                 impact_area="market",
                                 impact_level="high",
-                                assessment_summary=f"{org_id} 近期在噬菌体领域取得进展，可能形成竞争。",
+                                assessment_summary=f"{org_name} 近期在噬菌体领域取得进展，可能形成竞争。",
                                 confidence="medium",
                                 analyst_id="analyst_zhang",
                                 time_horizon="short",
@@ -1575,11 +1573,12 @@ else:
                             )
                             st.write(f"✅ 评估审核通过，Review ID: {review_id}")
 
+                            # 创建决策记录（使用组织名称）
                             dec_id = create_decision_record(
                                 driver,
                                 brief_id=brief_id,
                                 decision_type="monitor",
-                                decision_summary=f"将 {org_id} 列入年度重点监控名单，每季度更新管线进展",
+                                decision_summary=f"将 {org_name} 列入年度重点监控名单，每季度更新管线进展",
                                 rationale="基于竞争评估和专家审核结论",
                                 decision_owner="VP_Strategy",
                                 review_date="2027-01-01",
@@ -1666,7 +1665,7 @@ else:
             except Exception as e:
                 st.error(f"验证失败: {e}")
 
-    # ========== 情报查询 Tab（修正缩进） ==========
+    # ========== 情报查询 Tab ==========
     with ci_tab2:
         # ---- 组织列表 ----
         st.markdown("#### 组织列表")
@@ -1722,7 +1721,7 @@ else:
                     font-size: 0.85rem;
                     border: 1px solid #e0e4e8;
                     border-radius: 10px;
-                    overflow: visible;   /* 允许弹出层溢出 */
+                    overflow: visible;
                 }}
                 .org-table th,
                 .org-table td {{
@@ -1744,8 +1743,6 @@ else:
                 .org-table tr:hover td {{
                     background: #f8faff;
                 }}
-
-                /* 列宽比例 */
                 .org-table th:nth-child(1),
                 .org-table td:nth-child(1) {{ width: 40%; }}
                 .org-table th:nth-child(2),
@@ -1754,7 +1751,6 @@ else:
                 .org-table td:nth-child(3) {{ width: 18%; }}
                 .org-table th:nth-child(4),
                 .org-table td:nth-child(4) {{ width: 24%; }}
-
                 .detail-trigger {{
                     display: inline-block;
                     background: #eef2ff;
@@ -1768,7 +1764,6 @@ else:
                     z-index: 1;
                     white-space: nowrap;
                 }}
-
                 .detail-popup {{
                     visibility: hidden;
                     opacity: 0;
@@ -1786,11 +1781,10 @@ else:
                     font-size: 0.78rem;
                     line-height: 1.5;
                     white-space: normal;
-                    z-index: 9999;          /* 足够高，确保在最上层 */
+                    z-index: 9999;
                     transition: opacity 0.2s ease, visibility 0.2s ease;
                     pointer-events: none;
                 }}
-
                 .detail-trigger:hover + .detail-popup,
                 .detail-trigger:focus + .detail-popup {{
                     visibility: visible;
@@ -1815,16 +1809,14 @@ else:
                     </tbody>
                 </table>
                 """
-
                 from streamlit.components.v1 import html
-                html(table_html, height=400, scrolling=True)   # 高度增加，避免底部裁剪
-
+                html(table_html, height=400, scrolling=True)
         except Exception as e:
             st.error(f"加载组织列表失败: {e}")
 
         st.markdown("---")
 
-        # ---- 最新事件（带中文表头） ----
+        # ---- 最新事件 ----
         st.markdown("#### 最新情报事件")
         try:
             with driver.session() as session:

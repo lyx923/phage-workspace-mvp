@@ -3,10 +3,16 @@ import uuid
 import json
 from typing import Optional, Dict, List, Any
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 
 def generate_brief_id() -> str:
+    """
+    生成情报简报 ID。
+    
+    Returns:
+        str: 格式为 CI:BRIEF:XXXXXXXX 的简报唯一标识符
+    """
     return f"CI:BRIEF:{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -14,7 +20,7 @@ def create_intelligence_product(
     driver: Driver,
     brief_type: str,
     title: str,
-    executive_summary: Any,  # 可以是字符串或列表，但最终存为字符串
+    executive_summary: Any,
     organization_id: Optional[str] = None,
     as_of_date: str = None,
     citations: Optional[List[Dict]] = None,
@@ -24,7 +30,25 @@ def create_intelligence_product(
     actor_id: str = "system",
 ) -> str:
     """
-    创建 IntelligenceProduct 节点，将复杂对象序列化为 JSON 字符串存储。
+    创建情报产品（简报）节点。
+    
+    将复杂对象（如 citations、competitive_assessment）序列化为 JSON 字符串存储。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        brief_type: 简报类型（如 competitor, technology）
+        title: 简报标题
+        executive_summary: 执行摘要（字符串或列表，列表会自动拼接）
+        organization_id: 可选，关联的组织 ID
+        as_of_date: 数据截止日期（YYYY-MM-DD）
+        citations: 引用来源列表
+        competitive_assessment: 竞争评估结果（威胁/机会/不确定性）
+        data_gaps: 数据缺口列表
+        recommended_next_steps: 建议下一步行动列表
+        actor_id: 操作者标识（默认 system）
+    
+    Returns:
+        str: 创建的简报 ID（CI:BRIEF:XXXXXXXX）
     """
     brief_id = generate_brief_id()
     citations = citations or []
@@ -32,19 +56,18 @@ def create_intelligence_product(
     data_gaps = data_gaps or []
     recommended_next_steps = recommended_next_steps or []
 
-    # 将复杂对象转为 JSON 字符串（确保是字符串格式）
     citations_json = json.dumps(citations, ensure_ascii=False)
     assessment_json = json.dumps(competitive_assessment, ensure_ascii=False)
     gaps_json = json.dumps(data_gaps, ensure_ascii=False)
     steps_json = json.dumps(recommended_next_steps, ensure_ascii=False)
-    
-    # executive_summary 如果是列表，转为字符串
+
     if isinstance(executive_summary, list):
         summary_str = " ".join(str(item) for item in executive_summary)
     else:
         summary_str = str(executive_summary)
 
     with driver.session() as session:
+        # 创建简报节点
         session.run(
             """
             CREATE (b:IntelligenceProduct {
@@ -75,6 +98,7 @@ def create_intelligence_product(
             steps_json=steps_json,
         )
 
+        # 关联组织
         if organization_id:
             session.run(
                 """
@@ -86,14 +110,14 @@ def create_intelligence_product(
                 oid=organization_id,
             )
 
-        log_action(
+        # 审计日志
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="CREATE_INTELLIGENCE_PRODUCT",
+            action_type="CREATE",
             object_type="IntelligenceProduct",
             object_id=brief_id,
             actor_id=actor_id,
-            after_snapshot={
+            delta={
                 "brief_type": brief_type,
                 "title": title,
                 "organization_id": organization_id,
@@ -105,7 +129,16 @@ def create_intelligence_product(
 
 
 def get_intelligence_product(driver: Driver, brief_id: str) -> Optional[Dict]:
-    """查询简报，自动反序列化 JSON 字段"""
+    """
+    根据 ID 查询简报，自动反序列化 JSON 字段。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        brief_id: 简报 ID
+    
+    Returns:
+        Optional[Dict]: 简报数据字典，若不存在则返回 None
+    """
     with driver.session() as session:
         result = session.run(
             """
@@ -118,7 +151,6 @@ def get_intelligence_product(driver: Driver, brief_id: str) -> Optional[Dict]:
         if not result:
             return None
         data = dict(result["b"])
-        # 反序列化 JSON 字段
         data["citations"] = json.loads(data.get("citations", "[]"))
         data["competitive_assessment"] = json.loads(data.get("competitive_assessment", "{}"))
         data["data_gaps"] = json.loads(data.get("data_gaps", "[]"))
@@ -134,6 +166,21 @@ def update_intelligence_product_review_status(
     new_status: str,
     actor_id: str = "system",
 ) -> bool:
+    """
+    更新简报的审核状态。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        brief_id: 简报 ID
+        new_status: 新状态（pending / approved / rejected）
+        actor_id: 操作者标识（默认 system）
+    
+    Returns:
+        bool: 更新成功返回 True
+    
+    Raises:
+        ValueError: 当状态不合法或简报不存在时抛出
+    """
     valid_statuses = ["pending", "approved", "rejected"]
     if new_status not in valid_statuses:
         raise ValueError(f"状态必须是 {valid_statuses} 之一")
@@ -155,13 +202,13 @@ def update_intelligence_product_review_status(
             status=new_status,
         )
 
-        log_action(
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="UPDATE_BRIEF_REVIEW_STATUS",
+            action_type="STATUS_CHANGE",
             object_type="IntelligenceProduct",
             object_id=brief_id,
             actor_id=actor_id,
-            after_snapshot={"review_status": new_status},
+            delta={"review_status": new_status},
+            reason=f"简报审核状态更新为 {new_status}",
         )
         return True

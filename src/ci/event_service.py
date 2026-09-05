@@ -3,15 +3,32 @@ import uuid
 import hashlib
 from typing import Optional, List
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 
 def generate_event_id() -> str:
+    """
+    生成情报事件 ID。
+    
+    Returns:
+        str: 格式为 CI:EVT:XXXXXXXX 的事件唯一标识符
+    """
     return f"CI:EVT:{uuid.uuid4().hex[:8].upper()}"
 
 
 def _generate_dedup_key(event_type: str, organization_id: str, title: str, event_date: str) -> str:
-    """PRD 12.2 去重键生成"""
+    """
+    生成去重键，用于防止重复导入相同事件。
+    
+    Args:
+        event_type: 事件类型（如 acquisition, funding 等）
+        organization_id: 所属组织 ID
+        title: 事件标题
+        event_date: 事件发生日期
+    
+    Returns:
+        str: SHA256 哈希的前 16 位，作为去重键
+    """
     raw = f"{event_type}|{organization_id}|{title}|{event_date}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -25,12 +42,36 @@ def capture_intelligence_event(
     program_id: Optional[str] = None,
     event_date: Optional[str] = None,
     published_at: Optional[str] = None,
-    source_ids: Optional[List[str]] = None,   # 新增：支持来源ID列表
+    source_ids: Optional[List[str]] = None,
     actor_id: str = "system",
 ) -> str:
     """
-    PRD 12.2 Action: Capture Intelligence Event
-    自动生成去重键，检测重复，关联组织、项目，并关联 SourceArtifact (HAS_SOURCE)
+    捕获并存储情报事件（PRD 12.2）。
+    
+    核心功能：
+        1. 自动生成去重键，检测重复事件
+        2. 创建 IntelligenceEvent 节点，存储 organization_id 属性
+        3. 关联组织（CONCERNS）和项目（AFFECTS）
+        4. 关联来源文献（HAS_SOURCE）
+        5. 记录审计日志
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        event_type: 事件类型（受控词表 VOC-EVENT-TYPE）
+        title: 事件标题
+        factual_summary: 事实性摘要（不含推断）
+        organization_id: 所属组织 ID
+        program_id: 可选，关联的研发项目 ID
+        event_date: 事件发生日期（YYYY-MM-DD）
+        published_at: 发布日期（YYYY-MM-DD）
+        source_ids: 可选，来源文献 ID 列表（SRC:XXXXXXXX）
+        actor_id: 操作者标识（默认 system）
+    
+    Returns:
+        str: 创建的事件 ID（CI:EVT:XXXXXXXX）
+    
+    Raises:
+        ValueError: 当去重键重复或来源 ID 不存在时抛出
     """
     source_ids = source_ids or []
     dedup_key = _generate_dedup_key(event_type, organization_id, title, event_date or "")
@@ -64,7 +105,8 @@ def capture_intelligence_event(
                 confidence: 'medium',
                 materiality: 'medium',
                 review_status: 'pending',
-                deduplication_key: $dedup_key
+                deduplication_key: $dedup_key,
+                organization_id: $oid
             })
             WITH e
             MATCH (o:Organization {organization_id: $oid})
@@ -92,16 +134,13 @@ def capture_intelligence_event(
                 pid=program_id,
             )
 
-        # 4. 关联来源（SourceArtifact）—— 修改为 HAS_SOURCE
+        # 4. 关联来源文献
         for src_id in source_ids:
-            # 检查来源是否存在（可选，但建议严格）
             check = session.run(
                 "MATCH (s:SourceArtifact {source_id: $sid}) RETURN s",
                 sid=src_id,
             ).single()
             if not check:
-                # 按PRD设计，如果传入的source_id无效，应抛出错误还是静默跳过？
-                # 这里我们选择抛出错误，确保数据完整性。
                 raise ValueError(f"SourceArtifact {src_id} 不存在，无法关联事件")
             session.run(
                 """
@@ -114,14 +153,13 @@ def capture_intelligence_event(
             )
 
         # 5. 审计日志
-        log_action(
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="CAPTURE_EVENT",
+            action_type="CREATE",
             object_type="IntelligenceEvent",
             object_id=event_id,
             actor_id=actor_id,
-            after_snapshot={
+            delta={
                 "event_type": event_type,
                 "title": title,
                 "organization_id": organization_id,

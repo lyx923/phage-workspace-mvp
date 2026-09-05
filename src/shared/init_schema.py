@@ -16,7 +16,7 @@ def initialize_neo4j_schema(driver: Driver) -> None:
         ("Pathogen", "pathogen_id"),
         ("Organization", "organization_id"),
         ("Review", "review_id"),
-        ("AuditEvent", "audit_event_id"),   # 注意：PRD 中为 audit_id，但实际节点属性是 audit_event_id
+        ("AuditEvent", "audit_id"),           # 改为 audit_id（新版）
         ("OntologyModule", "module_id"),
         # CI Domain 层
         ("DevelopmentProgram", "program_id"),
@@ -36,7 +36,7 @@ def initialize_neo4j_schema(driver: Driver) -> None:
     INDEXES = [
         ("AuditEvent", "object_id"),
         ("AuditEvent", "actor_id"),
-        ("AuditEvent", "occurred_at"),      # 原 timestamp，实际属性是 occurred_at
+        ("AuditEvent", "timestamp"),           # 改为 timestamp（新版）
         ("IntelligenceEvent", "event_type"),
         ("IntelligenceEvent", "event_date"),
         ("Pathogen", "species"),

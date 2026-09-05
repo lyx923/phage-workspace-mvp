@@ -2,27 +2,49 @@
 import uuid
 from typing import Optional
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 
 def generate_use_event_id() -> str:
+    """
+    生成情报使用事件 ID。
+    
+    Returns:
+        str: 格式为 CI:USE:XXXXXXXX 的使用事件唯一标识符
+    """
     return f"CI:USE:{uuid.uuid4().hex[:8].upper()}"
 
 
 def record_intelligence_use(
     driver: Driver,
     product_id: str,
-    consumer_type: str,   # "IPD", "RD", "BD", "Clinical", "Strategy", "IP", "Management"
+    consumer_type: str,
     consumer_id: str,
-    use_purpose: str,     # "roadmap_planning", "go_no_go_decision", etc.
+    use_purpose: str,
     context_note: Optional[str] = None,
     referenced_decision_id: Optional[str] = None,
     actor_id: str = "system",
 ) -> str:
     """
-    记录情报产品的消费事件（IntelligenceUseEvent）
-    product_id 必须对应一个已存在的 IntelligenceProduct。
-    若提供了 referenced_decision_id，则建立 TRIGGERS 关系。
+    记录情报产品的消费事件（PRD 16.2）。
+    
+    追踪情报产品被哪些团队、出于什么目的使用，以及触发了哪些决策。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        product_id: 情报产品 ID（IntelligenceProduct.brief_id）
+        consumer_type: 消费方类型（IPD / RD / BD / Clinical / Strategy / IP / Management）
+        consumer_id: 消费方具体标识（如团队名称）
+        use_purpose: 使用目的（roadmap_planning / go_no_go_decision 等）
+        context_note: 上下文说明（可选）
+        referenced_decision_id: 触发的决策 ID（可选）
+        actor_id: 操作者标识（默认 system）
+    
+    Returns:
+        str: 创建的使用事件 ID（CI:USE:XXXXXXXX）
+    
+    Raises:
+        ValueError: 当情报产品不存在时抛出
     """
     use_event_id = generate_use_event_id()
 
@@ -35,7 +57,7 @@ def record_intelligence_use(
         if not product:
             raise ValueError(f"情报产品 {product_id} 不存在，无法记录使用事件。")
 
-        # 2. 创建 IntelligenceUseEvent 节点
+        # 2. 创建使用事件节点
         session.run(
             """
             CREATE (u:IntelligenceUseEvent {
@@ -75,10 +97,7 @@ def record_intelligence_use(
                 "MATCH (d:DecisionRecord {decision_id: $did}) RETURN d",
                 did=referenced_decision_id,
             ).single()
-            if not decision:
-                # 可选：仅警告，不影响事件创建
-                print(f"⚠️ 警告: 决策 {referenced_decision_id} 不存在，跳过 TRIGGERS 关系创建。")
-            else:
+            if decision:
                 session.run(
                     """
                     MATCH (u:IntelligenceUseEvent {use_event_id: $uid})
@@ -90,14 +109,13 @@ def record_intelligence_use(
                 )
 
         # 5. 审计日志
-        log_action(
+        write_audit_event(
             driver,
-            domain="ci",
-            action_type="CREATE_INTELLIGENCE_USE",
+            action_type="CREATE",
             object_type="IntelligenceUseEvent",
             object_id=use_event_id,
             actor_id=actor_id,
-            after_snapshot={
+            delta={
                 "product_id": product_id,
                 "consumer_type": consumer_type,
                 "consumer_id": consumer_id,

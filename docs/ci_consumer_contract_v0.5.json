@@ -1,0 +1,148 @@
+{
+  "contract_version": "0.5.0",
+  "domain": "CI",
+  "description": "竞争情报域（CI Domain）对外暴露的服务契约，供 IPD/Scientific 域调用",
+  "as_of_date": "2026-09-04",
+  "exposed_objects": [
+    {
+      "object_type": "Organization",
+      "read_access": true,
+      "write_access": false,
+      "description": "竞争对手组织信息（只读）",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "DevelopmentProgram",
+      "read_access": true,
+      "write_access": false,
+      "description": "研发项目信息（只读）",
+      "allowed_consumers": ["IPD", "RD", "Strategy"]
+    },
+    {
+      "object_type": "IntelligenceEvent",
+      "read_access": true,
+      "write_access": false,
+      "description": "情报事件（只读，已审核的才可对外）",
+      "allowed_consumers": ["IPD", "Strategy", "BD"]
+    },
+    {
+      "object_type": "CompetitorAssessment",
+      "read_access": true,
+      "write_access": false,
+      "description": "竞争评估结论（只读，仅 approved 状态）",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "IntelligenceProduct",
+      "read_access": true,
+      "write_access": false,
+      "description": "情报简报（只读，仅 approved 状态）",
+      "allowed_consumers": ["IPD", "RD", "BD", "Strategy"]
+    },
+    {
+      "object_type": "DecisionRecord",
+      "read_access": true,
+      "write_access": false,
+      "description": "决策记录（只读，供追踪决策依据）",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "IntelligenceUseEvent",
+      "read_access": true,
+      "write_access": false,
+      "description": "情报使用记录（只读，用于审计）",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "EngineeringStrategy",
+      "read_access": true,
+      "write_access": false,
+      "description": "工程策略（只读）",
+      "allowed_consumers": ["IPD", "RD"]
+    },
+    {
+      "object_type": "EngineeredPhageConstruct",
+      "read_access": true,
+      "write_access": false,
+      "description": "工程化构建体（只读）",
+      "allowed_consumers": ["IPD", "RD"]
+    },
+    {
+      "object_type": "TechnicalClaim",
+      "read_access": true,
+      "write_access": false,
+      "description": "技术主张（只读）",
+      "allowed_consumers": ["IPD", "RD"]
+    },
+    {
+      "object_type": "TechnicalResult",
+      "read_access": true,
+      "write_access": false,
+      "description": "技术结果（只读）",
+      "allowed_consumers": ["IPD", "RD"]
+    },
+    {
+      "object_type": "TechnologyAssessment",
+      "read_access": true,
+      "write_access": false,
+      "description": "技术评估（只读）",
+      "allowed_consumers": ["IPD", "RD"]
+    }
+  ],
+  "not_exposed": [
+    {
+      "object_type": "SourceArtifact",
+      "reason": "原始来源数据需通过 IntelligenceEvent 间接访问，不直接暴露"
+    },
+    {
+      "object_type": "AuditEvent",
+      "reason": "审计日志仅限 Foundation 层内部使用"
+    },
+    {
+      "object_type": "OntologyModule",
+      "reason": "本体模块注册表仅限平台管理层使用"
+    },
+    {
+      "object_type": "Review",
+      "reason": "审核流程内部数据，不对外暴露"
+    }
+  ],
+  "write_back_allowed": [
+    {
+      "object_type": "IntelligenceUseEvent",
+      "action": "CREATE",
+      "description": "IPD 域可记录情报消费事件，追踪使用了哪些情报产品",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "DecisionRecord",
+      "action": "CREATE",
+      "description": "IPD 域可基于 CI 简报创建内部决策记录",
+      "allowed_consumers": ["IPD", "Strategy"]
+    },
+    {
+      "object_type": "DecisionRecord",
+      "action": "UPDATE",
+      "description": "IPD 域可更新决策的执行结果（outcome_status）",
+      "allowed_consumers": ["IPD", "Strategy"]
+    }
+  ],
+  "read_restrictions": [
+    {
+      "condition": "仅 approved 状态的 IntelligenceProduct 可被读取",
+      "enforced_by": "API 层过滤 review_status = 'approved'"
+    },
+    {
+      "condition": "仅 approved 状态的 CompetitorAssessment 可被读取",
+      "enforced_by": "API 层过滤 review_status = 'approved'"
+    }
+  ],
+  "version_history": [
+    {
+      "version": "0.5.0",
+      "date": "2026-09-04",
+      "changes": "初始版本，定义 CI 域对外暴露对象清单"
+    }
+  ],
+  "maintainer": "phage_platform_team"
+}

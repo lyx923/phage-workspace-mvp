@@ -1,8 +1,8 @@
 # src/engineering_intelligence/strategy_classifier.py
 import uuid
-from typing import Optional, List
+from typing import Optional, List, Dict
 from neo4j import Driver
-from src.foundation.audit_service import log_action
+from src.foundation.audit_service import write_audit_event
 
 # PRD 9.2 首版分类
 STRATEGY_TYPES = [
@@ -24,8 +24,16 @@ STRATEGY_TYPES = [
     "other"
 ]
 
+
 def generate_strategy_id() -> str:
+    """
+    生成工程策略 ID。
+    
+    Returns:
+        str: 格式为 ENG:STRAT:XXXXXXXX 的策略唯一标识符
+    """
     return f"ENG:STRAT:{uuid.uuid4().hex[:8].upper()}"
+
 
 def create_engineering_strategy(
     driver: Driver,
@@ -35,7 +43,23 @@ def create_engineering_strategy(
     actor_id: str = "system"
 ) -> str:
     """
-    创建工程策略（EngineeringStrategy）
+    创建工程策略（PRD 9.2）。
+    
+    策略类型受 STRATEGY_TYPES 受控词表约束。
+    若同类型策略已存在，则直接返回已有 ID（幂等）。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        strategy_type: 策略类型（受控词表）
+        description: 策略描述
+        evidence_maturity: 证据成熟度（conceptual / in_vitro / in_vivo / clinical）
+        actor_id: 操作者标识（默认 system）
+    
+    Returns:
+        str: 策略 ID（ENG:STRAT:XXXXXXXX）
+    
+    Raises:
+        ValueError: 当策略类型不在受控词表中时抛出
     """
     if strategy_type not in STRATEGY_TYPES:
         raise ValueError(f"未知的策略类型: {strategy_type}，可选: {STRATEGY_TYPES}")
@@ -43,7 +67,7 @@ def create_engineering_strategy(
     strategy_id = generate_strategy_id()
     
     with driver.session() as session:
-        # 查重：检查是否已存在同类型的策略
+        # 查重：检查是否已存在同类型的策略（幂等）
         existing = session.run("""
             MATCH (es:EngineeringStrategy {strategy_type: $strategy_type})
             RETURN es.strategy_id AS id
@@ -53,6 +77,7 @@ def create_engineering_strategy(
             print(f"ℹ️ 策略类型 '{strategy_type}' 已存在，ID: {existing['id']}")
             return existing['id']
         
+        # 创建策略节点
         session.run("""
             CREATE (es:EngineeringStrategy {
                 strategy_id: $strategy_id,
@@ -66,14 +91,30 @@ def create_engineering_strategy(
         """, strategy_id=strategy_id, strategy_type=strategy_type,
            description=description, evidence_maturity=evidence_maturity)
         
-        log_action(driver, domain="ci", action_type="CREATE_STRATEGY",
-                   object_type="EngineeringStrategy", object_id=strategy_id,
-                   actor_id=actor_id, after_snapshot={"strategy_type": strategy_type})
+        # 审计日志（使用新版 write_audit_event）
+        write_audit_event(
+            driver,
+            action_type="CREATE",
+            object_type="EngineeringStrategy",
+            object_id=strategy_id,
+            actor_id=actor_id,
+            delta={"strategy_type": strategy_type},
+            reason=f"创建工程策略: {strategy_type}",
+        )
         
         return strategy_id
 
+
 def get_all_strategies(driver: Driver) -> List[Dict]:
-    """获取所有工程策略"""
+    """
+    获取所有工程策略。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+    
+    Returns:
+        List[Dict]: 策略列表，按策略类型排序
+    """
     with driver.session() as session:
         result = session.run("""
             MATCH (es:EngineeringStrategy)
@@ -87,8 +128,18 @@ def get_all_strategies(driver: Driver) -> List[Dict]:
         """)
         return [dict(record) for record in result]
 
+
 def get_strategy_by_type(driver: Driver, strategy_type: str) -> Optional[Dict]:
-    """根据策略类型获取策略"""
+    """
+    根据策略类型获取单个策略。
+    
+    Args:
+        driver: Neo4j 数据库驱动
+        strategy_type: 策略类型
+    
+    Returns:
+        Optional[Dict]: 策略节点字典，若不存在则返回 None
+    """
     with driver.session() as session:
         result = session.run("""
             MATCH (es:EngineeringStrategy {strategy_type: $strategy_type})

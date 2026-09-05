@@ -25,6 +25,30 @@ EVENT_SIGNAL_MAP = {
 }
 
 
+def _assign_signal_direction(event: dict) -> str:
+    """
+    信号方向分配：综合 event_type 和 impact_level 判断。
+    当 impact_level 为 critical/high 且包含竞争对手直接行动关键词时，
+    优先将信号归入 threats，覆盖默认的 uncertainty 分类。
+    """
+    event_type = event.get("event_type", "")
+    impact_level = event.get("impact_level", "low")
+    title = event.get("title", "").lower()
+
+    # 基础映射
+    base_direction = EVENT_SIGNAL_MAP.get(event_type, "uncertainty")
+
+    # 覆盖规则：高影响的 partnership/合作若包含竞品关键词 → threat
+    if base_direction == "uncertainty" and impact_level in ("critical", "high"):
+        COMPETITIVE_ACTION_KEYWORDS = [
+            "acqui", "merger", "merge", "takeover",
+            "收购", "兼并", "合并"
+        ]
+        if any(kw in title for kw in COMPETITIVE_ACTION_KEYWORDS):
+            return "threat"
+    return base_direction
+
+
 def _aggregate_competitive_signals(
     events: List[Dict],
     claims: List[Dict] = None,
@@ -40,16 +64,16 @@ def _aggregate_competitive_signals(
 
     # 来自 IntelligenceEvent
     for evt in events:
-        event_type = evt.get("event_type", "")
-        direction = EVENT_SIGNAL_MAP.get(event_type, "uncertainty")
+        # 使用新函数计算方向
+        direction = _assign_signal_direction(evt)
         signal_entry = {
             "signal_text": evt.get("title", "")[:120],
             "signal_date": evt.get("event_date", ""),
             "source_object": "IntelligenceEvent",
             "source_id": evt.get("event_id", ""),
-            "impact_level": organization_service._calculate_event_impact(evt),   # 改用模块调用
+            "impact_level": organization_service._calculate_event_impact(evt),
             "confidence": "medium",
-            "basis": f"event_type={event_type}",
+            "basis": f"event_type={evt.get('event_type')}",
             "requires_review": True
         }
         if direction == "threat":
@@ -188,7 +212,10 @@ def generate_competitor_brief(
 
 
 def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> List[Dict]:
-    """查询组织相关的 SourceArtifact，返回 citations 列表"""
+    """
+    查询组织相关的 SourceArtifact，返回 citations 列表。
+    修改：使用 DISTINCT 并按 source_id 去重，同时收集所有引用该来源的事件 ID。
+    """
     with driver.session() as session:
         result = session.run(
             """
@@ -200,7 +227,7 @@ def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> L
                    s.url AS url,
                    s.published_date AS published_date,
                    s.credibility_tier AS credibility_tier,
-                   e.event_id AS referenced_by_event_id
+                   collect(DISTINCT e.event_id) AS referenced_by_event_ids
             UNION
             MATCH (o:Organization {organization_id: $oid})<-[:DEVELOPS]-(:DevelopmentProgram)-[:TARGETS_PATHOGEN]->(:Pathogen)<-[:TARGETS]-(:EngineeredPhageConstruct)-[:CLAIMS_ABOUT]->(tc:TechnicalClaim)
             MATCH (tc)-[:SUPPORTED_BY]->(s:SourceArtifact)
@@ -210,7 +237,7 @@ def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> L
                    s.url AS url,
                    s.published_date AS published_date,
                    s.credibility_tier AS credibility_tier,
-                   null AS referenced_by_event_id
+                   [] AS referenced_by_event_ids
             """,
             oid=organization_id,
         )
@@ -223,7 +250,7 @@ def _fetch_citations_for_organization(driver: Driver, organization_id: str) -> L
                 "url": record["url"],
                 "published_date": record["published_date"],
                 "credibility_tier": record["credibility_tier"],
-                "referenced_by_event_id": record["referenced_by_event_id"],
+                "referenced_by_event_ids": record["referenced_by_event_ids"],
             })
         return citations
 

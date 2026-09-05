@@ -1,11 +1,11 @@
 canonical_name,organization_name,program_type,development_stage,modality,target_pathogen_species
 PhageBank-DFO,Adaptive Phage Therapeutics,therapeutic,phase_1_2,natural_phage,Klebsiella pneumoniae
-PhageBank-PJI,Adaptive Phage Therapeutics,therapeutic,phase_1_2,natural_phage,
-PhageBank-CF,Adaptive Phage Therapeutics,therapeutic,phase_1_2,natural_phage,
-LBP-PA01,Locus Biosciences,therapeutic,phase_1,engineered_phage,
-BX211,BiomX,therapeutic,phase_2,cocktail,
-BX011,BiomX,therapeutic,preclinical,cocktail,
-BX004,BiomX,therapeutic,phase_2b,cocktail,
+PhageBank-PJI,Adaptive Phage Therapeutics,therapeutic,phase_1_2,natural_phage,Staphylococcus aureus
+PhageBank-CF,Adaptive Phage Therapeutics,therapeutic,phase_1_2,natural_phage,Pseudomonas aeruginosa
+LBP-PA01,Locus Biosciences,therapeutic,phase_1,engineered_phage,Pseudomonas aeruginosa
+BX211,BiomX,therapeutic,phase_2,cocktail,Staphylococcus aureus
+BX011,BiomX,therapeutic,preclinical,cocktail,Staphylococcus aureus
+BX004,BiomX,therapeutic,phase_2b,cocktail,Klebsiella pneumoniae
 ListShield,Intralytix,food_safety,commercial,natural_phage,
 SalmoFresh,Intralytix,food_safety,commercial,natural_phage,
 Data42,Novartis,platform,commercial,software,
