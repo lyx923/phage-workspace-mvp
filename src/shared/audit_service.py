@@ -1,4 +1,4 @@
-# src/foundation/audit_service.py
+# src/shared/audit_service.py
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, List

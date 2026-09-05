@@ -3,7 +3,7 @@ import uuid
 import json
 from typing import Dict, List, Optional
 from neo4j import Driver
-from src.foundation.audit_service import write_audit_event
+from shared.audit_service import write_audit_event
 
 # 证据等级升级映射
 LEVEL_UPGRADE_MAP = {

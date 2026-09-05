@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional, List
 from neo4j import Driver
-from src.foundation.audit_service import write_audit_event
+from shared.audit_service import write_audit_event
 from src.shared.pathogen_service import get_or_create_pathogen
 
 

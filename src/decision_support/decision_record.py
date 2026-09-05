@@ -2,7 +2,7 @@
 import uuid
 from typing import Optional, Dict, List
 from neo4j import Driver
-from src.foundation.audit_service import write_audit_event
+from shared.audit_service import write_audit_event
 
 
 def generate_decision_id() -> str:

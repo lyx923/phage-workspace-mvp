@@ -3,7 +3,7 @@ import uuid
 import hashlib
 from typing import Optional, List
 from neo4j import Driver
-from src.foundation.audit_service import write_audit_event
+from shared.audit_service import write_audit_event
 
 
 def generate_event_id() -> str:

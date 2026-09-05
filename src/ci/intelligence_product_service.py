@@ -3,7 +3,7 @@ import uuid
 import json
 from typing import Optional, Dict, List, Any
 from neo4j import Driver
-from src.foundation.audit_service import write_audit_event
+from shared.audit_service import write_audit_event
 
 
 def generate_brief_id() -> str:
