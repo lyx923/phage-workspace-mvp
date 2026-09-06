@@ -163,7 +163,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     mode = st.radio(
-        label="",
+        label=" ",
         options=["噬菌体配型", "CI竞争情报"],
         index=0,
         key="app_mode"
@@ -1343,10 +1343,14 @@ def ci_mode(driver):
     .mermaid-container {
         background: white;
         border-radius: 12px;
-        padding: 1rem;
+        padding: 0.2rem 0.5rem !important;
         border: 1px solid #e9edf2;
-        margin-bottom: 1.5rem;
+        margin-bottom: 0.5rem;
         text-align: center;
+    }
+    .mermaid-container .mermaid {
+        display: flex;
+        justify-content: center;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1361,7 +1365,7 @@ def ci_mode(driver):
             "brief_ids": [], "decision_ids": [], "use_event_ids": [],
             "current_org_id": None, "current_program_id": None, "current_brief_id": None,
             "technology_assessment_id": None,
-            "temp_events": [],   # 临时存储待提交的事件
+            "temp_events": [],
             "created_objects": {
                 "organization": None,
                 "program": None,
@@ -1372,12 +1376,13 @@ def ci_mode(driver):
     if "ci_step_status" not in st.session_state:
         st.session_state.ci_step_status = {f"step{i+1}_done": False for i in range(6)}
 
-    # ---- 创建两个 Tab ----
-    ci_tab1, ci_tab2 = st.tabs(["📋 情报流程", "🔍 情报查询"])
+    # ---- 创建三个 Tab ----
+    ci_tab0, ci_tab1, ci_tab2 = st.tabs(["📊 决策链图", "📋 情报流程", "🔍 情报查询"])
 
-    # ========== Tab1: 情报流程（含决策链图） ==========
-    with ci_tab1:
-        # ---- 决策链 Mermaid 图（纯 HTML 内联渲染，确保兼容） ----
+    # ========== Tab0: 决策链图（独立） ==========
+    with ci_tab0:
+        st.markdown("### 🧭 情报与决策 Ontology 链路")
+        st.caption("下图展示了从情报源到组织决策的完整数据链路，包括市场情报与工程情报的融合。")
         st.markdown('<div class="mermaid-container">', unsafe_allow_html=True)
         mermaid_html = """
         <div class="mermaid">
@@ -1391,6 +1396,11 @@ def ci_mode(driver):
             G -->|BASED_ON| H[决策记录<br>DecisionRecord]
             H -->|CONSUMES| I[情报使用事件<br>IntelligenceUseEvent]
 
+            C -.->|USES_CONSTRUCT| J[工程化构建体<br>EngineeredPhageConstruct]
+            J -->|IMPLEMENTS| K[工程策略<br>EngineeringStrategy]
+            J -.->|CLAIMS_ABOUT| L[技术主张<br>TechnicalClaim]
+            J -.->|RESULT_FOR| M[技术结果<br>TechnicalResult]
+
             style A fill:#dbeafe,stroke:#2563eb
             style B fill:#fef3c7,stroke:#d97706
             style C fill:#e0e7ff,stroke:#4338ca
@@ -1400,6 +1410,10 @@ def ci_mode(driver):
             style G fill:#fecaca,stroke:#dc2626
             style H fill:#c7d2fe,stroke:#4f46e5
             style I fill:#fef08a,stroke:#ca8a04
+            style J fill:#d9f99d,stroke:#65a30d
+            style K fill:#fde047,stroke:#ca8a04
+            style L fill:#fca5a5,stroke:#dc2626
+            style M fill:#93c5fd,stroke:#2563eb
         </div>
         <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
         <script>
@@ -1420,12 +1434,14 @@ def ci_mode(driver):
             })();
         </script>
         """
-        st.components.v1.html(mermaid_html, height=350)
+        st.components.v1.html(mermaid_html, height=310)
+        
         st.markdown('</div>', unsafe_allow_html=True)
+        st.caption("💡 实线表示主要链路，虚线表示可选关联（工程情报分支）。")
 
-        st.markdown("---")
-
-        # ---- 步骤指示器（与图对应） ----
+    # ========== Tab1: 情报流程（含步骤卡片） ==========
+    with ci_tab1:
+        # ---- 步骤指示器 ----
         step_names = ["创建组织/项目/事件", "工程策略与构建体", "技术主张与结果", "生成简报并审核", "情报消费", "归因验证"]
         step_status = [st.session_state.ci_step_status[f"step{i+1}_done"] for i in range(6)]
 
@@ -1443,21 +1459,21 @@ def ci_mode(driver):
 
         st.markdown("---")
 
-        # ---- 当前步骤卡片（可操作） ----
+        # ---- 当前步骤卡片 ----
         step = st.session_state.ci_step
 
         def go_to_step(n):
             st.session_state.ci_step = n
             st.rerun()
 
-        # 步骤 1（支持动态添加多个事件）
+        # 步骤 1
         if step == 0:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
                 st.markdown("#### 🏢 步骤 1：创建组织、项目与情报事件")
 
-                # 如果步骤1已完成，展示已创建对象，并允许追加事件
                 if st.session_state.ci_step_status.get("step1_done", False):
+                    # 已完成状态：显示已创建对象，并提供“添加更多事件”和“进入下一步”
                     st.success("✅ 步骤1已完成，已创建以下对象：")
                     obj = st.session_state.ci_context.get("created_objects", {})
                     st.write(f"**组织**: {obj.get('organization', 'N/A')}")
@@ -1468,7 +1484,6 @@ def ci_mode(driver):
                         st.write("**已创建的情报事件**:")
                         for evt in obj['events']:
                             st.write(f"  - {evt}")
-                    # 追加事件区域
                     st.markdown("---")
                     st.markdown("#### ➕ 添加更多情报事件")
                     with st.form("ci_step1_append_form"):
@@ -1478,7 +1493,6 @@ def ci_mode(driver):
                         evt_date = st.date_input("事件日期", value=pd.to_datetime("2026-01-01"))
                         submitted_append = st.form_submit_button("➕ 添加此事件", use_container_width=True)
                     if submitted_append:
-                        # 直接入库（使用已有的组织/项目ID）
                         try:
                             with st.spinner("正在添加事件..."):
                                 org_id = st.session_state.ci_context.get("current_org_id")
@@ -1486,7 +1500,6 @@ def ci_mode(driver):
                                 if not org_id or not prog_id:
                                     st.error("缺少组织或项目ID，请重新执行步骤1")
                                 else:
-                                    # 创建一个简单的来源（实际可扩展）
                                     src = create_source_artifact(
                                         driver,
                                         source_type="user_input",
@@ -1508,19 +1521,19 @@ def ci_mode(driver):
                                         source_ids=[src],
                                         actor_id="test_user"
                                     )
-                                    # 更新显示列表
                                     st.session_state.ci_context["created_objects"]["events"].append(f"{evt_id} ({evt_type})")
                                     st.success(f"✅ 事件 {evt_id} 已添加")
                                     st.rerun()
                         except Exception as e:
                             st.error(f"添加事件失败: {e}")
-                    # 继续按钮
                     if st.button("➡️ 进入步骤 2（工程策略）", key="step1_continue"):
-                        go_to_step(1)
+                        # 手动跳转
+                        st.session_state.ci_step = 1
+                        st.rerun()
                 else:
-                    # 步骤1未完成：完整表单
+                    # 未完成状态：表单
                     with st.form("ci_step1_form"):
-                        # ---- 选择或创建组织 ----
+                        # 已有组织列表
                         existing = list_organizations(driver)
                         org_options = [""] + [f"{o['name']} ({o['id']})" for o in existing]
                         quick_org = st.selectbox("或选择已有组织（留空则新建）", options=org_options)
@@ -1534,19 +1547,15 @@ def ci_mode(driver):
                             prog_stage = st.selectbox("研发阶段", ["discovery", "preclinical", "phase_1", "phase_2", "phase_3", "commercial"])
 
                         st.markdown("---")
-                        st.markdown("#### 📝 添加情报事件（可多次添加）")
-                        # 事件录入
+                        st.markdown("#### 📝 添加情报事件（可选，可多次添加）")
                         evt_type = st.selectbox("事件类型", ["regulatory_update", "funding", "acquisition", "partnership", "clinical_trial_update", "patent_event", "pipeline_update"], key="evt_type")
                         evt_title = st.text_input("事件标题", value="New event", key="evt_title")
                         evt_summary = st.text_area("事件摘要", value="详细描述...", key="evt_summary")
                         evt_date = st.date_input("事件日期", value=pd.to_datetime("2026-01-01"), key="evt_date")
-
-                        # 添加事件按钮（不提交整个表单，而是临时存储）
                         add_clicked = st.form_submit_button("➕ 添加事件到列表", use_container_width=False)
 
-                    # 处理添加事件（在表单外处理，因为需要保留表单状态）
+                    # 处理添加事件（在表单外，因为需要 rerun）
                     if add_clicked:
-                        # 将事件暂存到 temp_events
                         temp_event = {
                             "type": evt_type,
                             "title": evt_title,
@@ -1557,87 +1566,136 @@ def ci_mode(driver):
                         st.success(f"已添加事件: {evt_title}")
                         st.rerun()
 
-                    # 显示已暂存的事件列表
+                    # 显示已暂存事件
                     if st.session_state.ci_context.get("temp_events"):
                         st.write("**已暂存的事件（待提交）:**")
                         for i, evt in enumerate(st.session_state.ci_context["temp_events"]):
                             st.write(f"  {i+1}. [{evt['type']}] {evt['title']} ({evt['date']})")
 
-                    # 提交所有事件（在另一个表单或按钮）
-                    if st.session_state.ci_context.get("temp_events"):
-                        if st.button("🚀 提交所有事件并完成步骤1", use_container_width=True, type="primary"):
-                            try:
-                                with st.spinner("正在创建组织、项目及所有事件..."):
-                                    # 1. 组织/项目创建（与之前类似）
-                                    if quick_org and quick_org.strip():
-                                        parts = quick_org.split("(")
-                                        org_id = parts[1].rstrip(")") if len(parts)>1 else None
+                    st.caption("💡 情报事件为可选，您可以直接提交而不添加任何事件。")
+
+                    # 提交按钮（统一处理）
+                    if st.button("🚀 提交并完成步骤1", use_container_width=True, type="primary"):
+                        try:
+                            with st.spinner("正在创建组织、项目及事件..."):
+                                # ---- 1. 处理组织 ----
+                                if quick_org and quick_org.strip():
+                                    # 解析已有组织ID
+                                    parts = quick_org.split("(")
+                                    if len(parts) > 1:
+                                        org_id = parts[1].rstrip(")")
                                     else:
                                         org_id = None
-                                    if not org_id:
-                                        org_id = create_organization(driver, canonical_name=org_name, organization_type=org_type,
-                                                                     aliases=[org_name[:8]], headquarters_country="Poland",
-                                                                     website=f"https://www.{org_name.lower().replace(' ','')}.com",
-                                                                     description=f"{org_name} 是一家专注于噬菌体技术的生物技术公司。",
-                                                                     actor_id="test_user")
-                                        st.session_state.ci_context["org_ids"][org_name] = org_id
-                                    st.session_state.ci_context["current_org_id"] = org_id
+                                else:
+                                    org_id = None
+
+                                # 如果未选择已有组织，则新建
+                                if not org_id:
+                                    # 检查是否已存在同名组织（避免重复）
                                     with driver.session() as session:
-                                        result = session.run("MATCH (o:Organization {organization_id: $oid}) RETURN o.canonical_name AS name", oid=org_id).single()
-                                        org_name_display = result["name"] if result else org_id
-                                    prog_id = create_development_program(driver, organization_id=org_id, canonical_name=prog_name,
-                                                                         program_type="therapeutic", development_stage=prog_stage,
-                                                                         modality="cocktail", target_pathogen_species=["Salmonella enterica"],
-                                                                         actor_id="test_user")
-                                    st.session_state.ci_context["program_ids"][prog_name] = prog_id
-                                    st.session_state.ci_context["current_program_id"] = prog_id
+                                        existing_org = session.run(
+                                            "MATCH (o:Organization {canonical_name: $name}) RETURN o.organization_id AS id",
+                                            name=org_name
+                                        ).single()
+                                        if existing_org:
+                                            org_id = existing_org["id"]
+                                            st.warning(f"组织 '{org_name}' 已存在，将复用该组织 (ID: {org_id})")
+                                        else:
+                                            org_id = create_organization(
+                                                driver,
+                                                canonical_name=org_name,
+                                                organization_type=org_type,
+                                                aliases=[org_name[:8]],
+                                                headquarters_country="Poland",
+                                                website=f"https://www.{org_name.lower().replace(' ','')}.com",
+                                                description=f"{org_name} 是一家专注于噬菌体技术的生物技术公司。",
+                                                actor_id="test_user"
+                                            )
+                                            st.session_state.ci_context["org_ids"][org_name] = org_id
 
-                                    # 2. 处理暂存的事件
-                                    created_events = []
-                                    created_sources = []
-                                    for evt in st.session_state.ci_context["temp_events"]:
-                                        # 为每个事件创建一个来源（简化）
-                                        src = create_source_artifact(
+                                st.session_state.ci_context["current_org_id"] = org_id
+                                with driver.session() as session:
+                                    org_display = session.run(
+                                        "MATCH (o:Organization {organization_id: $oid}) RETURN o.canonical_name AS name",
+                                        oid=org_id
+                                    ).single()["name"]
+
+                                # ---- 2. 处理项目 ----
+                                # 检查项目是否已存在（基于组织+名称）
+                                with driver.session() as session:
+                                    existing_prog = session.run(
+                                        """
+                                        MATCH (d:DevelopmentProgram {canonical_name: $pname, organization_id: $oid})
+                                        RETURN d.program_id AS id
+                                        """,
+                                        pname=prog_name, oid=org_id
+                                    ).single()
+                                    if existing_prog:
+                                        prog_id = existing_prog["id"]
+                                        st.warning(f"项目 '{prog_name}' 已存在，将复用该项目 (ID: {prog_id})")
+                                    else:
+                                        prog_id = create_development_program(
                                             driver,
-                                            source_type="user_input",
-                                            title=f"手动添加: {evt['title']}",
-                                            url="",
-                                            published_date=evt['date'],
-                                            credibility_tier="secondary",
-                                            actor_id="test_user"
-                                        )
-                                        created_sources.append(src)
-                                        evt_id = capture_intelligence_event(
-                                            driver,
-                                            event_type=evt['type'],
-                                            title=evt['title'],
-                                            factual_summary=evt['summary'],
                                             organization_id=org_id,
-                                            program_id=prog_id,
-                                            event_date=evt['date'],
-                                            published_at=evt['date'],
-                                            source_ids=[src],
+                                            canonical_name=prog_name,
+                                            program_type="therapeutic",
+                                            development_stage=prog_stage,
+                                            modality="cocktail",
+                                            target_pathogen_species=["Salmonella enterica"],
                                             actor_id="test_user"
                                         )
-                                        created_events.append(f"{evt_id} ({evt['type']})")
+                                st.session_state.ci_context["program_ids"][prog_name] = prog_id
+                                st.session_state.ci_context["current_program_id"] = prog_id
 
-                                    # 存储对象信息
-                                    st.session_state.ci_context["created_objects"] = {
-                                        "organization": f"{org_name_display} (ID: {org_id})",
-                                        "program": f"{prog_name} (ID: {prog_id})",
-                                        "sources": created_sources,
-                                        "events": created_events
-                                    }
-                                    st.session_state.ci_context["temp_events"] = []  # 清空暂存
-                                    st.session_state.ci_step_status["step1_done"] = True
-                                    st.success(f"✅ 步骤1完成！已创建 {len(created_events)} 个事件。")
-                                    st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ 执行失败：{e}")
+                                # ---- 3. 处理情报事件（如果有） ----
+                                created_events = []
+                                created_sources = []
+                                for evt in st.session_state.ci_context["temp_events"]:
+                                    src = create_source_artifact(
+                                        driver,
+                                        source_type="user_input",
+                                        title=f"手动添加: {evt['title']}",
+                                        url="",
+                                        published_date=evt['date'],
+                                        credibility_tier="secondary",
+                                        actor_id="test_user"
+                                    )
+                                    created_sources.append(src)
+                                    evt_id = capture_intelligence_event(
+                                        driver,
+                                        event_type=evt['type'],
+                                        title=evt['title'],
+                                        factual_summary=evt['summary'],
+                                        organization_id=org_id,
+                                        program_id=prog_id,
+                                        event_date=evt['date'],
+                                        published_at=evt['date'],
+                                        source_ids=[src],
+                                        actor_id="test_user"
+                                    )
+                                    created_events.append(f"{evt_id} ({evt['type']})")
+
+                                # ---- 4. 保存上下文 ----
+                                st.session_state.ci_context["created_objects"] = {
+                                    "organization": f"{org_display} (ID: {org_id})",
+                                    "program": f"{prog_name} (ID: {prog_id})",
+                                    "sources": created_sources,
+                                    "events": created_events
+                                }
+                                st.session_state.ci_context["temp_events"] = []  # 清空暂存
+                                st.session_state.ci_step_status["step1_done"] = True
+                                st.success(f"✅ 步骤1完成！已创建 {len(created_events)} 个事件。")
+
+                                # ---- 5. 自动跳转到步骤2 ----
+                                st.session_state.ci_step = 1
+                                st.rerun()
+
+                        except Exception as e:
+                            st.error(f"❌ 执行失败：{e}")
 
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 步骤 2（不变，略）
+        # 步骤 2
         elif step == 1:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
@@ -1670,7 +1728,6 @@ def ci_mode(driver):
                                                                       actor_id="test_user")
                             st.session_state.ci_context["construct_ids"][construct_name] = construct_id
                             link_program_to_construct(driver, program_id, construct_id, actor_id="test_user")
-                            # 自动创建技术评估
                             tech_assess_id = create_technology_assessment(
                                 driver,
                                 subject_type="construct",
@@ -1693,7 +1750,7 @@ def ci_mode(driver):
                         st.error(f"❌ 执行失败：{e}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 步骤 3（不变，略）
+        # 步骤 3
         elif step == 2:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
@@ -1702,7 +1759,7 @@ def ci_mode(driver):
                     col1, col2 = st.columns(2)
                     with col1:
                         claim_type = st.selectbox("主张类型", ["host_range", "efficacy", "safety", "manufacturability", "mechanism"])
-                        claim_text = st.text_area("主张文本", value="该工程化构建体成功将宿主范围从KL1型扩展到KL47型肺炎克雷伯菌", height=80)
+                        claim_text = st.text_area("主张文本", value="", height=80)
                     with col2:
                         result_type = st.selectbox("结果类型", ["host_range", "lysis", "biofilm", "safety", "in_vivo", "computational"])
                         metric_value = st.number_input("结果值", value=0.85, step=0.05)
@@ -1734,7 +1791,7 @@ def ci_mode(driver):
                         st.error(f"❌ 执行失败：{e}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 步骤 4（不变，略）
+        # 步骤 4
         elif step == 3:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
@@ -1748,24 +1805,30 @@ def ci_mode(driver):
                     if not org_options:
                         st.warning("⚠️ 暂无组织，请先执行步骤 1")
                     else:
-                        selected_org = st.selectbox("选择要分析的组织", options=org_options)
+                        current_org_id = st.session_state.ci_context.get("current_org_id")
+                        default_index = 0
+                        if current_org_id:
+                            for idx, opt in enumerate(org_options):
+                                if current_org_id in opt:
+                                    default_index = idx
+                                    break
+                        selected_org = st.selectbox("选择要分析的组织", options=org_options, index=default_index)
                         parts = selected_org.split("(")
                         org_id = parts[1].rstrip(")") if len(parts)>1 else None
                         if org_id:
-                            # 显示该组织的工程对象
                             with st.expander("🧬 该组织的工程化噬菌体情报", expanded=True):
                                 with driver.session() as session:
                                     engineering_data = session.run("""
                                         MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(p:DevelopmentProgram)
-                                        OPTIONAL MATCH (p)-[:USES_STRATEGY]->(s:EngineeringStrategy)
-                                        OPTIONAL MATCH (p)<-[:ASSOCIATED_WITH]-(c:EngineeredPhageConstruct)
-                                        OPTIONAL MATCH (c)<-[:CLAIMS_ABOUT]-(cl:TechnicalClaim)
-                                        OPTIONAL MATCH (c)<-[:RESULT_FOR]-(r:TechnicalResult)
+                                        OPTIONAL MATCH (p)-[:USES_CONSTRUCT|ASSOCIATED_WITH]-(c:EngineeredPhageConstruct)
+                                        OPTIONAL MATCH (c)-[:IMPLEMENTS]-(s:EngineeringStrategy)
+                                        OPTIONAL MATCH (c)-[:CLAIMS_ABOUT]-(cl:TechnicalClaim)
+                                        OPTIONAL MATCH (c)-[:RESULT_FOR]-(r:TechnicalResult)
                                         RETURN p.canonical_name AS program,
-                                               collect(DISTINCT s.strategy_type) AS strategies,
-                                               collect(DISTINCT c.public_name) AS constructs,
-                                               collect(DISTINCT cl.claim_type) AS claims,
-                                               collect(DISTINCT r.result_type) AS results
+                                            collect(DISTINCT s.strategy_type) AS strategies,
+                                            collect(DISTINCT c.public_name) AS constructs,
+                                            collect(DISTINCT cl.claim_type) AS claims,
+                                            collect(DISTINCT r.result_type) AS results
                                     """, oid=org_id)
                                     rows = list(engineering_data)
                                     if rows:
@@ -1817,7 +1880,6 @@ def ci_mode(driver):
                         if submitted_review:
                             try:
                                 with st.spinner("审核中..."):
-                                    # 创建竞争评估
                                     org_id = st.session_state.ci_context.get("current_org_id")
                                     with driver.session() as session:
                                         result = session.run("MATCH (o:Organization {organization_id: $oid}) RETURN o.canonical_name AS name", oid=org_id).single()
@@ -1837,7 +1899,6 @@ def ci_mode(driver):
                                         unknowns=unknowns.split(",") if unknowns else [],
                                         actor_id="system"
                                     )
-                                    # 创建技术评估（针对构建体）
                                     construct_id = list(st.session_state.ci_context.get("construct_ids", {}).values())[0] if st.session_state.ci_context.get("construct_ids") else None
                                     if construct_id:
                                         tech_assess_id = create_technology_assessment(
@@ -1854,7 +1915,6 @@ def ci_mode(driver):
                                             assessment_summary=f"技术评估: {assessment_summary[:50]}...",
                                             actor_id="system"
                                         )
-                                    # 审核简报
                                     review_brief_id = create_review(
                                         driver,
                                         review_type="intelligence_product_review",
@@ -1866,7 +1926,6 @@ def ci_mode(driver):
                                         update_target_status=True,
                                         actor_id="system"
                                     )
-                                    # 审核评估
                                     review_assess_id = create_review(
                                         driver,
                                         review_type="intelligence_product_review",
@@ -1878,7 +1937,6 @@ def ci_mode(driver):
                                         update_target_status=True,
                                         actor_id="system"
                                     )
-                                    # 创建决策记录
                                     dec_id = create_decision_record(
                                         driver,
                                         brief_id=brief_id,
@@ -1908,7 +1966,7 @@ def ci_mode(driver):
                                 st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 步骤 5（不变，略）
+        # 步骤 5
         elif step == 4:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
@@ -1950,88 +2008,123 @@ def ci_mode(driver):
                             st.error(f"记录失败：{e}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 步骤 6（优化展示，合并同一组织的多个事件）
+        # 步骤 6
         elif step == 5:
             with st.container():
                 st.markdown('<div class="ci-card">', unsafe_allow_html=True)
-                st.markdown("#### 🔗 步骤 6：验证归因链（含工程对象，合并事件）")
+                st.markdown("#### 🔗 步骤 6：验证归因链")
                 if st.button("🔍 执行归因验证", use_container_width=True, type="primary"):
                     try:
                         with st.spinner("验证中..."):
+                            # ---------- 按组织聚合查询 ----------
                             query = """
                             MATCH (brief:IntelligenceProduct)-[:COVERS]->(org:Organization)
                             MATCH (review:Review)-[:REVIEWS]->(brief)
                             WHERE review.decision = 'approved'
                             MATCH (dec:DecisionRecord)-[:BASED_ON]->(brief)
                             MATCH (use:IntelligenceUseEvent)-[:CONSUMES]->(brief)
+
                             OPTIONAL MATCH (src:SourceArtifact)<-[:HAS_SOURCE]-(evt:IntelligenceEvent)-[:AFFECTS]->(prog:DevelopmentProgram)-[:TARGETS_PATHOGEN]->(p:Pathogen)
                             WHERE evt.organization_id = org.organization_id
-                            OPTIONAL MATCH (prog)-[:USES_STRATEGY]->(strat:EngineeringStrategy)
-                            OPTIONAL MATCH (strat)<-[:IMPLEMENTS]-(con:EngineeredPhageConstruct)
+
+                            OPTIONAL MATCH (prog)-[:USES_CONSTRUCT]->(con:EngineeredPhageConstruct)
+                            OPTIONAL MATCH (con)-[:IMPLEMENTS]->(strat:EngineeringStrategy)
                             OPTIONAL MATCH (con)<-[:CLAIMS_ABOUT]-(claim:TechnicalClaim)
                             OPTIONAL MATCH (con)<-[:RESULT_FOR]-(res:TechnicalResult)
-                            WITH org, brief, review, dec, use,
-                                 collect(DISTINCT src.title) AS evidence_sources,
-                                 collect(DISTINCT src.credibility_tier) AS credibility_tiers,
-                                 collect(DISTINCT evt.title) AS events,
-                                 collect(DISTINCT p.species) AS pathogens,
-                                 collect(DISTINCT strat.strategy_type) AS strategies,
-                                 collect(DISTINCT con.public_name) AS constructs,
-                                 collect(DISTINCT claim.claim_type) AS claim_types,
-                                 collect(DISTINCT res.result_type) AS result_types
-                            RETURN evidence_sources,
-                                   credibility_tiers,
-                                   events,
-                                   pathogens,
-                                   org.canonical_name AS competitor,
-                                   brief.brief_id AS brief_id,
-                                   review.decision AS review_status,
-                                   dec.decision_type AS decision_type,
-                                   use.consumer_type AS consumer,
-                                   use.use_purpose AS purpose,
-                                   strategies,
-                                   constructs,
-                                   claim_types,
-                                   result_types
-                            LIMIT 10
+
+                            WITH org,
+                                COLLECT(DISTINCT brief) AS briefs,
+                                COLLECT(DISTINCT review) AS reviews,
+                                COLLECT(DISTINCT dec) AS decs,
+                                COLLECT(DISTINCT use) AS uses,
+                                COLLECT(DISTINCT src.title) AS evidence_sources,
+                                COLLECT(DISTINCT src.credibility_tier) AS credibility_tiers,
+                                COLLECT(DISTINCT evt.title) AS events,
+                                COLLECT(DISTINCT p.species) AS pathogens,
+                                COLLECT(DISTINCT strat.strategy_type) AS strategies,
+                                COLLECT(DISTINCT con.public_name) AS constructs,
+                                COLLECT(DISTINCT claim.claim_type) AS claim_types,
+                                COLLECT(DISTINCT res.result_type) AS result_types
+
+                            RETURN org.canonical_name AS competitor,
+                                org.organization_id AS org_id,
+                                [b IN briefs | b.brief_id] AS brief_ids,
+                                [r IN reviews | r.decision] AS review_decisions,
+                                [d IN decs | d.decision_type] AS decision_types,
+                                [u IN uses | u.consumer_type] AS consumers,
+                                [u IN uses | u.use_purpose] AS purposes,
+                                evidence_sources,
+                                credibility_tiers,
+                                events,
+                                pathogens,
+                                strategies,
+                                constructs,
+                                claim_types,
+                                result_types
                             """
                             with driver.session() as session:
                                 results = list(session.run(query))
                             st.session_state.ci_step_status["step6_done"] = True
                             if not results:
-                                st.warning("未找到完整归因链路，但验证步骤已执行。")
+                                st.warning("未找到完整归因链路。请确保至少有一个组织已完成简报审核并记录消费。")
                             else:
-                                st.success(f"✅ 找到 {len(results)} 条完整链路（已按组织合并）")
-                                for i, row in enumerate(results, 1):
-                                    with st.expander(f"🔗 链路 #{i}: {row['competitor']}", expanded=(i==1)):
-                                        # 证据来源（多个）
-                                        sources = '; '.join(row['evidence_sources']) if row['evidence_sources'] else '无'
-                                        cred = '; '.join(row['credibility_tiers']) if row['credibility_tiers'] else '未知'
-                                        st.write(f"**证据来源**: {sources}（可信度: {cred}）")
-                                        # 情报事件
-                                        events_str = '; '.join(row['events']) if row['events'] else '无'
-                                        st.write(f"**情报事件**: {events_str}")
-                                        # 病原体列表
-                                        pathogens_str = '; '.join(row['pathogens']) if row['pathogens'] else '未指定'
-                                        st.write(f"**靶向病原**: {pathogens_str}")
-                                        st.write(f"**竞争对手**: {row['competitor']}")
-                                        st.write(f"**简报**: {row['brief_id']} (审核: {row['review_status']})")
-                                        st.write(f"**决策**: {row['decision_type']}，**消费方**: {row['consumer']}，**用途**: {row['purpose']}")
-                                        # 工程对象
-                                        st.write(f"**工程策略**: {', '.join(row['strategies']) if row['strategies'] else '无'}")
-                                        st.write(f"**构建体**: {', '.join(row['constructs']) if row['constructs'] else '无'}")
-                                        st.write(f"**技术主张**: {', '.join(row['claim_types']) if row['claim_types'] else '无'}")
-                                        st.write(f"**实验结果**: {', '.join(row['result_types']) if row['result_types'] else '无'}")
+                                st.success(f"✅ 找到 {len(results)} 个组织具备完整归因链路")
+
+                                # ----- 将结果转换为 DataFrame 展示 -----
+                                rows = []
+                                for row in results:
+                                    rows.append({
+                                        "组织": row['competitor'],
+                                        "组织ID": row['org_id'],
+                                        "简报ID": ', '.join(row['brief_ids']) if row['brief_ids'] else '',
+                                        "审核决策": ', '.join(row['review_decisions']) if row['review_decisions'] else '',
+                                        "决策类型": ', '.join(row['decision_types']) if row['decision_types'] else '',
+                                        "消费方": ', '.join(row['consumers']) if row['consumers'] else '',
+                                        "用途": ', '.join(row['purposes']) if row['purposes'] else '',
+                                        "证据来源数": len(row['evidence_sources']) if row['evidence_sources'] else 0,
+                                        "事件数": len(row['events']) if row['events'] else 0,
+                                        "靶向病原": ', '.join(row['pathogens']) if row['pathogens'] else '',
+                                        "策略": ', '.join(row['strategies']) if row['strategies'] else '',
+                                        "构建体": ', '.join(row['constructs']) if row['constructs'] else '',
+                                        "主张": ', '.join(row['claim_types']) if row['claim_types'] else '',
+                                        "结果": ', '.join(row['result_types']) if row['result_types'] else '',
+                                    })
+                                df = pd.DataFrame(rows)
+                                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                                # 可选：提供查看单个组织完整详情的功能
+                                st.markdown("---")
+                                st.markdown("#### 📌 查看单个组织完整详情")
+                                org_names = [row['competitor'] for row in results]
+                                selected_org = st.selectbox("选择组织", org_names)
+                                if selected_org:
+                                    # 找到对应的原始行
+                                    for row in results:
+                                        if row['competitor'] == selected_org:
+                                            st.json({
+                                                "组织": row['competitor'],
+                                                "简报ID列表": row['brief_ids'],
+                                                "审核决策列表": row['review_decisions'],
+                                                "决策类型列表": row['decision_types'],
+                                                "消费方列表": row['consumers'],
+                                                "用途列表": row['purposes'],
+                                                "证据来源": row['evidence_sources'],
+                                                "可信度等级": row['credibility_tiers'],
+                                                "情报事件": row['events'],
+                                                "靶向病原": row['pathogens'],
+                                                "工程策略": row['strategies'],
+                                                "构建体": row['constructs'],
+                                                "技术主张": row['claim_types'],
+                                                "实验结果": row['result_types']
+                                            }, expanded=True)
+                                            break
                     except Exception as e:
                         st.error(f"验证失败：{e}")
                 st.markdown('</div>', unsafe_allow_html=True)
 
-        # 所有步骤完成时庆祝
         if all(st.session_state.ci_step_status.values()):
-            st.success("🏁 所有步骤已完成！您可以查看归因链或继续探索。")
             st.rerun()
 
-        # 上下文状态
         with st.expander("📊 当前上下文状态"):
             st.json({
                 "current_org_id": st.session_state.ci_context.get("current_org_id"),
@@ -2042,7 +2135,7 @@ def ci_mode(driver):
                 "technology_assessment_id": st.session_state.ci_context.get("technology_assessment_id"),
             })
 
-    # ========== Tab2: 情报查询（保持原有功能） ==========
+    # ========== Tab2: 情报查询 ==========
     with ci_tab2:
         st.markdown("### 🔍 智能语义检索")
         st.caption("输入名称、缩写或关联关键词，系统将自动匹配已有本体实体，未匹配时可触发全网情报检索")
@@ -2071,8 +2164,8 @@ def ci_mode(driver):
                         }
                         org_result = session.run("""
                             MATCH (o:Organization)
-                            WHERE o.canonical_name CONTAINS $q
-                               OR ANY(alias IN o.aliases WHERE alias CONTAINS $q)
+                            WHERE o.canonical_name CONTAINS toLower($q)
+                               OR ANY(alias IN o.aliases WHERE alias CONTAINS toLower($q))
                             RETURN o.organization_id AS id,
                                    o.canonical_name AS name,
                                    o.organization_type AS type,
@@ -2083,8 +2176,8 @@ def ci_mode(driver):
 
                         prog_result = session.run("""
                             MATCH (d:DevelopmentProgram)
-                            WHERE d.canonical_name CONTAINS $q
-                               OR ANY(alias IN d.aliases WHERE alias CONTAINS $q)
+                            WHERE d.canonical_name CONTAINS toLower($q)
+                               OR ANY(alias IN d.aliases WHERE alias CONTAINS toLower($q))
                             RETURN d.program_id AS id,
                                    d.canonical_name AS name,
                                    d.development_stage AS stage,
@@ -2095,8 +2188,8 @@ def ci_mode(driver):
 
                         event_result = session.run("""
                             MATCH (e:IntelligenceEvent)
-                            WHERE e.title CONTAINS $q
-                               OR e.event_type CONTAINS $q
+                            WHERE e.title CONTAINS toLower($q)
+                               OR e.event_type CONTAINS toLower($q)
                             RETURN e.event_id AS id,
                                    e.title AS name,
                                    e.event_type AS type,
@@ -2108,8 +2201,8 @@ def ci_mode(driver):
 
                         path_result = session.run("""
                             MATCH (p:Pathogen)
-                            WHERE p.species CONTAINS $q
-                               OR ANY(alias IN p.aliases WHERE alias CONTAINS $q)
+                            WHERE p.species CONTAINS toLower($q)
+                               OR ANY(alias IN p.aliases WHERE alias CONTAINS toLower($q))
                             RETURN p.pathogen_id AS id,
                                    p.species AS name,
                                    p.pathogen_type AS type
@@ -2153,15 +2246,28 @@ def ci_mode(driver):
 
         st.markdown("---")
 
-        # ---- 组织列表（卡片展示） ----
-        st.markdown("#### 组织列表")
+        # ---- 组织列表（按事件数排序，取前10） ----
+        st.markdown("#### 组织列表（按事件数排序）")
         try:
             orgs = list_organizations(driver)
             if not orgs:
                 st.info("暂无组织数据，请先执行步骤1创建组织。")
             else:
+                # 为每个组织获取事件数并排序
+                org_with_events = []
+                for org in orgs:
+                    org_id = org["id"]
+                    with driver.session() as session:
+                        event_count = session.run("""
+                            MATCH (e:IntelligenceEvent {organization_id: $oid})
+                            RETURN count(e) AS cnt
+                        """, oid=org_id).single()["cnt"]
+                    org_with_events.append({**org, "event_count": event_count})
+                # 按事件数降序排序，取前10
+                org_sorted = sorted(org_with_events, key=lambda x: x["event_count"], reverse=True)[:10]
+
                 cols = st.columns(2)
-                for idx, org in enumerate(orgs):
+                for idx, org in enumerate(org_sorted):
                     with cols[idx % 2]:
                         org_id = org["id"]
                         name = org["name"]
@@ -2172,11 +2278,7 @@ def ci_mode(driver):
                             detail = "无法加载详情"
                         else:
                             progs = profile.get('active_programs', [])
-                            detail = f"""
-                            <b>项目数</b>: {len(progs)}<br>
-                            <b>事件数</b>: {len(profile.get('recent_events', []))}<br>
-                            <b>数据截止</b>: {profile.get('as_of_date', 'N/A')}
-                            """
+                            detail = f"项目数: {len(progs)} | 事件数: {len(profile.get('recent_events', []))} | 数据截止: {profile.get('as_of_date', 'N/A')}"
                         st.markdown(f"""
                         <div style="background:white; border-radius:10px; padding:1rem 1.2rem; border:1px solid #e9edf2; margin-bottom:0.8rem; box-shadow:0 1px 4px rgba(0,0,0,0.02);">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
