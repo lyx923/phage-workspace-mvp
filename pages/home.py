@@ -66,7 +66,7 @@ st.markdown("""
     .apple-card.accent-purple .value { color: #af52de; }
     .apple-card.accent-teal .value   { color: #0a84a5; }
 
-    /* 列表小标题 —— 与上方卡片拉开距离 */
+    /* 列表小标题 */
     .apple-list-title {
         font-size: 1rem;
         font-weight: 600;
@@ -79,7 +79,7 @@ st.markdown("""
         gap: 0.4rem;
     }
 
-    /* 列表 —— 强制等高、内容顶部对齐 */
+    /* 列表 */
     .apple-list {
         background: #ffffff;
         border-radius: 22px;
@@ -104,7 +104,6 @@ st.markdown("""
     .apple-list-item .count { font-weight: 600; color: #1d1d1f; font-size: 1.02rem; font-variant-numeric: tabular-nums; }
     .apple-list-item .count.pill { background: #f5f5f7; padding: 4px 12px; border-radius: 100px; font-size: 0.82rem; }
 
-    /* 空态：垂直居中撑满 */
     .apple-list-empty {
         flex: 1;
         display: flex;
@@ -154,8 +153,8 @@ def render_echarts(option: dict, height: int = 340, key: str = "chart"):
 def load_dashboard_data():
     """
     一次性拉取首页所有统计信息，分 4 类视角：
-      - assets  : 核心资产（护城河）
-      - quality : 证据质量（投资人最看重）
+      - assets  : 核心资产
+      - quality : 证据质量
       - ci      : 情报与决策闭环
       - ops     : 运营健康
     """
@@ -237,7 +236,13 @@ def load_dashboard_data():
                 MATCH (b:IntelligenceProduct {review_status: 'approved'}) RETURN count(b)
             """),
             "decisions": one("MATCH (d:DecisionRecord) RETURN count(d)"),
+            # ★ 修复：监控企业 = 有情报事件覆盖的企业（而非必须有 monitor 决策）
             "monitored_orgs": one("""
+                MATCH (e:IntelligenceEvent)-[:CONCERNS]->(o:Organization)
+                RETURN count(DISTINCT o)
+            """),
+            # 已进入决策监控名单的企业（子集）
+            "decision_monitored_orgs": one("""
                 MATCH (dec:DecisionRecord {decision_type: 'monitor'})
                       -[:BASED_ON]->(brief:IntelligenceProduct)
                       -[:COVERS]->(org:Organization)
@@ -248,19 +253,16 @@ def load_dashboard_data():
             """),
         }
 
-        # 监控企业列表（过滤掉 0 事件企业）
+        # ★ 修复：监控企业列表 = 有情报事件关联的企业
         monitored = []
         for row in session.run("""
-            MATCH (dec:DecisionRecord {decision_type: 'monitor'})
-                  -[:BASED_ON]->(brief:IntelligenceProduct)
-                  -[:COVERS]->(org:Organization)
-            WITH DISTINCT org
-            MATCH (e:IntelligenceEvent {organization_id: org.organization_id})
+            MATCH (e:IntelligenceEvent)-[:CONCERNS]->(org:Organization)
+            WITH org, count(DISTINCT e) AS event_count
             RETURN org.canonical_name AS name,
                    org.organization_id AS id,
                    org.headquarters_country AS country,
                    org.organization_type AS type,
-                   count(DISTINCT e) AS event_count
+                   event_count
             ORDER BY event_count DESC
             LIMIT 5
         """):
@@ -347,7 +349,7 @@ with c2:
     <div class="apple-card accent-blue">
         <div class="label">裂解实验</div>
         <div class="value">{A['assays']}</div>
-        <div class="sub">LysisAssay 互作记录</div>
+        <div class="sub">互作记录</div>
     </div>""", unsafe_allow_html=True)
 with c3:
     st.markdown(f"""
@@ -504,11 +506,12 @@ st.markdown(
 C = D["ci"]
 d1, d2, d3, d4 = st.columns(4)
 with d1:
+    # ★ 修复：主数值 = 有情报覆盖的企业，副标题提示其中已列入决策名单的数量
     st.markdown(f"""
     <div class="apple-card accent-purple">
-        <div class="label">监控企业</div>
+        <div class="label">CR 监控企业</div>
         <div class="value">{C['monitored_orgs']}</div>
-        <div class="sub">已列入 CR 监控名单</div>
+        <div class="sub">有情报覆盖 · 已决策 <b>{C['decision_monitored_orgs']}</b></div>
     </div>""", unsafe_allow_html=True)
 with d2:
     st.markdown(f"""
@@ -535,7 +538,6 @@ with d4:
 
 
 # ---------- 监控企业 + 近期高影响情报 ----------
-# ⚠️ 在卡片行和列表行之间插入留白
 st.markdown('<div style="height: 8px;"></div>', unsafe_allow_html=True)
 
 q1, q2 = st.columns(2)
@@ -546,7 +548,7 @@ with q1:
         st.markdown("""
         <div class="apple-list"><div class="apple-list-empty">
             暂无 CR 监控企业<br>
-            <span style="font-size:0.8rem;">完成「简报 → 决策」流程后自动出现</span>
+            <span style="font-size:0.8rem;">导入情报事件后自动出现</span>
         </div></div>""", unsafe_allow_html=True)
     else:
         rows_html = ""

@@ -1,0 +1,533 @@
+{
+  "orgs": [
+    {
+      "canonical_name": "BiomX",
+      "organization_type": "biotech",
+      "aliases": [
+        "PHGE"
+      ],
+      "headquarters_country": "以色列",
+      "website": "",
+      "description": "成立于2015年、2019年上市的以色列噬菌体疗法企业，基于噬菌体展示技术、噬菌体培养、计算生物学与合成生物学开发噬菌体疗法，并涉足化妆品和肠道药物领域。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Adaptive Phage Therapeutics",
+      "organization_type": "biotech",
+      "aliases": [
+        "APT"
+      ],
+      "headquarters_country": "美国",
+      "website": "",
+      "description": "美国噬菌体企业，噬菌体库来源于美国海军实验室，投资方包括美国国防部、美国国防卫生局、梅奥诊所等，2023年入选“生物技术猛公司”榜单。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Weizmann Institute of Science",
+      "organization_type": "academic",
+      "aliases": [
+        "魏茨曼科学研究所"
+      ],
+      "headquarters_country": "以色列",
+      "website": "",
+      "description": "位于以色列雷霍沃特的研究机构，BiomX与其合作，基于Rotem Sorek博士、Eran Elinav博士及Timothy K. Lu博士等科研人员的前沿创新研究开发新型噬菌体。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "RondinX",
+      "organization_type": "tech",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "2017年被BiomX收购的公司，用于进一步完善XMarker平台的人工智能算法。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "强生",
+      "organization_type": "pharma",
+      "aliases": [
+        "Johnson & Johnson"
+      ],
+      "headquarters_country": "",
+      "website": "",
+      "description": "与BiomX基于XMarker平台合作，共同开发炎症性肠病（IBD）诊断性生物标志物。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "勃林格殷格翰",
+      "organization_type": "pharma",
+      "aliases": [
+        "BI"
+      ],
+      "headquarters_country": "",
+      "website": "",
+      "description": "与BiomX基于XMarker平台合作，开发IBD相关的生物标志物。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Pherecydes pharma",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "法国",
+      "website": "",
+      "description": "法国噬菌体公司，2023年6月与Erytech合并，新公司更名为Phaxiam。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Phagomed",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "奥地利",
+      "website": "",
+      "description": "奥地利噬菌体公司，2021年11月被BioNTech以1.5亿欧元收购。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "BiomX",
+      "organization_type": "biotech",
+      "aliases": [
+        "BiomX Ltd",
+        "BiomXInc"
+      ],
+      "headquarters_country": "",
+      "website": "",
+      "description": "开发定制噬菌体鸡尾酒疗法，用于消除与IBD发作有关的专有细菌靶标；痤疮皮肤产品已进入临床测试，IBD候选药物有望2020年进入临床。2019年10月29日在纽交所开始交易，市值约2.54亿美元。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Kaleido BioSciences",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "美国",
+      "website": "",
+      "description": "2015年成立于美国马塞诸塞州，团队规模超过100人。完成1.644亿美元融资后于2019年1月11日提交招股申请书，IPO募资1亿美元，2019年2月28日登陆纳斯达克，市值2.62亿美元。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Aptorum",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "中国香港",
+      "website": "",
+      "description": "成立于2010年9月，产品处于临床前阶段，在神经病学、传染病、胃肠病学、肿瘤学等领域开展治疗和诊断项目。2018年12月在纳斯达克上市，市值约4.49亿美元。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Finch Therapeutics",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "产品CP101为口服含多种微生物群的胶囊，用于恢复体内细菌菌落平衡，针对预防复发性艰难梭菌感染的研究已进入临床三期。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Enterome",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "开展肠道微生物相关代谢性疾病研究的企业之一。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "Kallyope",
+      "organization_type": "biotech",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "开展肠道微生物相关代谢性疾病研究的企业之一。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "盖茨基金会",
+      "organization_type": "other",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "微生物药领域的明星投资机构之一。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "诺和诺德",
+      "organization_type": "pharma",
+      "aliases": [],
+      "headquarters_country": "",
+      "website": "",
+      "description": "入场微生物药领域的巨头药企之一，与相关技术公司开展合作。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    }
+  ],
+  "progs": [
+    {
+      "canonical_name": "BX004",
+      "organization_name": "BiomX",
+      "program_type": "therapeutic",
+      "development_stage": "phase_2b",
+      "modality": "cocktail",
+      "target_pathogen_species": [
+        "铜绿假单胞菌"
+      ],
+      "program_status": "active",
+      "intended_effects": [
+        "治疗囊性纤维化（CF）患者慢性铜绿假单胞菌感染"
+      ],
+      "notes": "噬菌体鸡尾酒药物管线；2023年8月获FDA快速审评通道资格；此前Ⅰb/Ⅱa期试验显示良好安全性和有效性；2023年11月底宣布第二部分试验取得积极结果；今年年初获FDA孤儿药资格认定；Ⅱb期研究数据预计2025年第三季度公布。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "BX211",
+      "organization_name": "BiomX",
+      "program_type": "therapeutic",
+      "development_stage": "phase_1",
+      "modality": "natural_phage",
+      "target_pathogen_species": [
+        "金黄色葡萄球菌"
+      ],
+      "program_status": "active",
+      "intended_effects": [
+        "治疗糖尿病足骨髓炎（DFO）中的金黄色葡萄球菌感染"
+      ],
+      "notes": "原代号APT.DFI.001，为APT开发的个性化噬菌体库疗法；安全性、耐受性和疗效研究初步结果预计2025年Q1公布。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "XMarker",
+      "organization_name": "BiomX",
+      "program_type": "platform",
+      "development_stage": "discovery",
+      "modality": "software",
+      "target_pathogen_species": [],
+      "program_status": "active",
+      "intended_effects": [
+        "发现预测性微生物基因组特征并发展为生物标志物"
+      ],
+      "notes": "使用基于宏基因组学的方法，结合超高分辨率DNA分析、人工智能技术和大规模云计算基础设施；AI技术来源于魏兹曼科学研究所Eran Segal教授开发的算法，2017年通过收购RondinX进一步完善；强生和勃林格殷格翰正基于该平台与BiomX开展合作。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "BOLT",
+      "organization_name": "BiomX",
+      "program_type": "platform",
+      "development_stage": "discovery",
+      "modality": "engineered_phage",
+      "target_pathogen_species": [],
+      "program_status": "active",
+      "intended_effects": [
+        "开发针对特定致病菌的天然或工程噬菌体疗法"
+      ],
+      "notes": "全称BacteriOphage Lead to Treatment，由计算工具、自动筛选、合成工程等板块组成；开发路径包括个性化噬菌体疗法（6-8周内针对特定患者目标菌株量身定制）和通用型噬菌体疗法。",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "CP101",
+      "organization_name": "Finch Therapeutics",
+      "program_type": "therapeutic",
+      "development_stage": "phase_3",
+      "modality": "cocktail",
+      "target_pathogen_species": [
+        "艰难梭菌"
+      ],
+      "program_status": "active",
+      "intended_effects": [
+        "预防复发性艰难梭菌感染"
+      ],
+      "notes": "口服含多种微生物群的胶囊，恢复体内细菌菌落平衡",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "BiomX IBD候选药物",
+      "organization_name": "BiomX",
+      "program_type": "therapeutic",
+      "development_stage": "preclinical",
+      "modality": "natural_phage",
+      "target_pathogen_species": [],
+      "program_status": "active",
+      "intended_effects": [
+        "治疗炎症性肠病"
+      ],
+      "notes": "定制噬菌体鸡尾酒疗法，旨在消除与IBD发作有关的专有细菌靶标，有望2020年进入临床",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "canonical_name": "BiomX痤疮皮肤产品",
+      "organization_name": "BiomX",
+      "program_type": "therapeutic",
+      "development_stage": "phase_1",
+      "modality": "natural_phage",
+      "target_pathogen_species": [],
+      "program_status": "active",
+      "intended_effects": [
+        "治疗痤疮"
+      ],
+      "notes": "最近已进入临床测试",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    }
+  ],
+  "events": [
+    {
+      "event_type": "merger",
+      "title": "BiomX与APT达成最终合并协议",
+      "factual_summary": "2024年3月6日，以色列噬菌体疗法企业BiomX宣布与美国噬菌体企业Adaptive Phage Therapeutics达成最终合并协议，创建新生物技术公司，新公司仍名为BiomX，BiomX现有股东持有55%股份，APT股东持有45%。合并后公司还将通过私募渠道新增融资5000万美元。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2024-03-06",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "regulatory_update",
+      "title": "FDA授予BX004快速审评通道资格",
+      "factual_summary": "2023年8月，FDA授予BiomX开发的针对囊性纤维化患者慢性铜绿假单胞菌感染的噬菌体鸡尾酒药物管线BX004快速审评通道资格。",
+      "organization_name": "BiomX",
+      "program_name": "BX004",
+      "event_date": "2023-08-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "clinical_trial_update",
+      "title": "BX004第二部分试验取得积极结果",
+      "factual_summary": "2023年11月底，BiomX宣布BX004第二部分试验取得积极结果。此前Ⅰb/Ⅱa期试验数据显示BX004具有良好的安全性和有效性。",
+      "organization_name": "BiomX",
+      "program_name": "BX004",
+      "event_date": "2023-11-30",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "regulatory_update",
+      "title": "BX004获FDA孤儿药资格认定",
+      "factual_summary": "BX004药物在今年年初获得FDA孤儿药资格认定，其Ⅱb期研究数据预计将在2025年第三季度公布。",
+      "organization_name": "BiomX",
+      "program_name": "BX004",
+      "event_date": "2024-01-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "merger",
+      "title": "Pherecydes pharma与Erytech合并",
+      "factual_summary": "2023年6月，法国噬菌体公司Pherecydes pharma与红细胞递送抗肿瘤疗法公司Erytech合并，双方各占新公司约49.5%和50.5%股权，新公司更名为Phaxiam，重点推进针对金黄色葡萄球菌、大肠埃希菌和铜绿假单胞菌的噬菌体疗法。",
+      "organization_name": "Pherecydes pharma",
+      "program_name": "",
+      "event_date": "2023-06-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "acquisition",
+      "title": "BioNTech收购Phagomed",
+      "factual_summary": "2021年11月，BioNTech以1.5亿欧元收购奥地利噬菌体公司Phagomed，这是噬菌体药物开发领域的一笔大规模交易，流露出大药企对噬菌体技术的认可。",
+      "organization_name": "Phagomed",
+      "program_name": "",
+      "event_date": "2021-11-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "merger",
+      "title": "AmpliPhi与C3J Therapeutics合并",
+      "factual_summary": "2019年5月，美国噬菌体公司AmpliPhi Biosciences与抗菌肽公司C3J Therapeutics完成合并，双方各占新公司76%和24%股权，新公司更名为Armata Pharmaceuticals，重点推进针对铜绿假单胞菌和金黄色葡萄球菌的噬菌体疗法。",
+      "organization_name": "AmpliPhi Biosciences",
+      "program_name": "",
+      "event_date": "2019-05-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "国内首部噬菌体专家共识撰写",
+      "factual_summary": "2023年8月，中国噬菌体研究联盟、中国生物工程学会噬菌体技术专业委员会、中国微生物学会医学微生物与免疫学专业委员会组织国内一线噬菌体领域及临床专家、学者及产业界代表共同商讨并撰写了国内首部噬菌体专家共识。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2023-08-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "《预防及治疗用噬菌体质量标准专家共识》首发",
+      "factual_summary": "国内相关领域专家共同起草《预防及治疗用噬菌体质量标准专家共识》，对入库噬菌体的来源、宿主、生物学特性及包装与标识等提出建议，该共识于2023年11月17日在《中国生物工程杂志》网络首发。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2023-11-17",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546514&ver=6969&signature=hO4MC5DImLQT785Ru7QMtoQ4BmmFrpqU7WClNuw4zbP2jysvNhY2gl5eacVjvhl-BF0MhvX-B8pEQe8-ELdzcO756BigEtwbo1b8o9vyVZ8L9KYcY-BVS*A936xNI0VH&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "merger",
+      "title": "BiomX被SPAC并购并登陆纽交所",
+      "factual_summary": "BiomX Ltd被Chardan分支机构赞助的SPAC并购，并购后公司名为BiomXInc，市值约2.54亿美元，普通股于2019年10月29日在纽约证券交易所开始交易，IPO募集资金用于支持产品线。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2019-10-29",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "funding",
+      "title": "Kaleido BioSciences完成1.644亿美元融资",
+      "factual_summary": "Kaleido BioSciences完成1.644亿美元融资，并于2019年1月11日提交招股申请书。",
+      "organization_name": "Kaleido BioSciences",
+      "program_name": "",
+      "event_date": "",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "funding",
+      "title": "Kaleido BioSciences IPO募资1亿美元",
+      "factual_summary": "Kaleido BioSciences通过IPO募资再获得1亿美元融资，并于2019年2月28日登陆纳斯达克，目前市值2.62亿美元。",
+      "organization_name": "Kaleido BioSciences",
+      "program_name": "",
+      "event_date": "2019-02-28",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "Aptorum于纳斯达克上市",
+      "factual_summary": "位于香港的Aptorum成立于2010年9月，产品处于临床前阶段，公司于2018年12月在纳斯达克上市，目前市值约4.49亿美元。",
+      "organization_name": "Aptorum",
+      "program_name": "",
+      "event_date": "2018-12-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "Science发表肠道微生物影响肿瘤免疫研究",
+      "factual_summary": "2015年《Science》两篇文章显示肿瘤患者肠道微生物组成可能影响免疫检查点抑制剂疗效：CTLA-4抗体应答与多形拟杆菌和脆弱类杆菌相关；双歧杆菌属有利于PD-L1抑制剂发挥抗肿瘤作用。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2015-01-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "HMP计划完成",
+      "factual_summary": "2013年美国NIH发起的第一个人类微生物组计划HMP正式完成，耗资1.2亿美元，对300个志愿者全身各部位微生物测序，破解3000种微生物全基因组，初步建立人体共生微生物参考数据库。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2013-01-01",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    },
+    {
+      "event_type": "publication",
+      "title": "欧盟MetaHIT计划完成",
+      "factual_summary": "欧盟第七框架计划资助的人体肠道宏基因组计划MetaHIT由8个国家14个机构参与，截至2012年6月30日总计投资2200万欧元，确定肠道微生物330万个基因，提出3种肠型概念。",
+      "organization_name": "BiomX",
+      "program_name": "",
+      "event_date": "2012-06-30",
+      "published_at": "",
+      "source_url": "",
+      "_source_url": "https://mp.weixin.qq.com/s?src=11&timestamp=1789546532&ver=6969&signature=etmViOCFyDqekFoPxv1OsnreL7xyacCEDzqepvcRR0kiCYU1E2HoZWDGswEnfOm5KlLBIfm5MY*tuUYJTH8t-wVOYdC8bRK3NjAlBGj9sU4WlPKwVBtnwpc9KGKby7Qy&new=1",
+      "_source_label": "BiomX",
+      "_owner_org_id": "CI:ORG:33EDFCC3"
+    }
+  ],
+  "stats": {
+    "sources_scanned": 1,
+    "articles_new": 3,
+    "orgs": 16,
+    "progs": 7,
+    "events": 16,
+    "today_only": false,
+    "timestamp": "2026-09-16 16:15:11"
+  },
+  "errors": []
+}

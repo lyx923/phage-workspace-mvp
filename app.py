@@ -27,11 +27,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="噬菌体智能平台", page_icon="", layout="wide")
 
+
 # ---------- 缓存数据库连接 ----------
 @st.cache_resource
 def get_db():
     return get_driver()
 
+
+# ---------- 连接数据库 ----------
 try:
     driver = get_db()
     with driver.session() as session:
@@ -39,6 +42,7 @@ try:
 except Exception as e:
     st.error(f"⚠️ 无法连接 Neo4j 数据库，请检查 config.py 配置。错误: {str(e)}")
     st.stop()
+
 
 # ---------- 定义页面路由 ----------
 pg = st.navigation(
@@ -49,21 +53,17 @@ pg = st.navigation(
     ]
 )
 
+
 # ============================================================
 # 侧边栏（全局）
 # ============================================================
 with st.sidebar:
-    # ---- 自定义侧边栏标题 ----
     st.markdown(
         """
         <div style="
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #0068c9;
-            padding: 0.5rem 0 0.2rem 0;
-            letter-spacing: -0.5px;
-            border-bottom: 2px solid #e6e9ef;
-            margin-bottom: 0.8rem;
+            font-size: 1.8rem; font-weight: 700; color: #0068c9;
+            padding: 0.5rem 0 0.2rem 0; letter-spacing: -0.5px;
+            border-bottom: 2px solid #e6e9ef; margin-bottom: 0.8rem;
         ">
              噬菌体智能平台
         </div>
@@ -78,11 +78,11 @@ with st.sidebar:
             clear_database()
             st.write("✅ 数据库已清空")
 
-            status.update(label="创建约束、索引及 Foundation 对象...")
+            status.update(label="创建约束、索引...")
             create_schema(driver)
             create_ontology_modules(driver)
             create_controlled_vocabularies(driver)
-            st.write("✅ 约束、索引、OntologyModule、ControlledVocabulary 已创建")
+            st.write("✅ 约束、索引已创建")
 
             status.update(label="导入患者主数据...")
             load_patients_from_csv(os.path.join(BASE_DIR, "data", "patients.csv"))
@@ -204,5 +204,6 @@ with st.sidebar:
         st.caption("⚠️ 无法读取配置")
 
     st.caption("演示版本，基于本地 Neo4j 数据库")
+
 
 pg.run()
