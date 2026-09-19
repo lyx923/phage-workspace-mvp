@@ -3,17 +3,19 @@
 公司项目 & 事件持续监控
 支持：通用网页抓取 / 微信公众号合集 / 搜狗微信搜索关键词
 
-注意：Neo4j 属性只支持基本类型及其数组，因此 monitor_sources
-存储为 JSON 字符串数组。
+监控源：
+- 全部存于 :GlobalMonitorSource 节点
+- 历史遗留的 Organization.monitor_sources 仍会读取（兼容旧数据）
 
-新增：
-- --today-only  只抓取当天发布的文章
-- 内置 --schedule 每日定时调度（默认 23:30）
+时间范围：
+- time_filter: today / week / month / all
+- 默认 today（CLI 可用 --time 指定）
+- 定时调度默认抓一周（week）
 
-修复：
-- 搜狗 /link 跳转页 href 里的 &amp; 未反转义
-- _extract_sogou_real_url 只取一段 url += 导致拿不到完整微信链接
-- 拿不到 mp.weixin.qq.com 时不再用相对路径去 fetch（避免 Invalid URL）
+缓存：
+- Redis 缓存已解析的文章，避免重复调用 LLM
+- key = {prefix}:monitor:article:{md5(title|publish_time|creator)[:16]}
+- 值 = 结构化抽取结果 + 状态标记
 """
 import os
 import sys
@@ -21,6 +23,8 @@ import re
 import time
 import json
 import html
+import uuid
+import hashlib
 import argparse
 import traceback
 from datetime import datetime, timedelta
@@ -39,11 +43,24 @@ from src.ci.organization_service import create_organization
 from src.ci.program_service import create_development_program
 from src.ci.event_service import capture_intelligence_event
 from src.shared.source_artifact_service import create_source_artifact
+from src.shared.monitor_cache import (
+    get_cached, set_cached, mark_persisted, mark_persisted_by_url, cache_status,
+)
 
 
 # ============================================================
-# 当天判断辅助
+# 时间范围判断
 # ============================================================
+
+TIME_FILTER_DAYS = {
+    "today": 1,
+    "week": 7,
+    "month": 30,
+    "all": None,
+}
+
+VALID_TIME_FILTERS = tuple(TIME_FILTER_DAYS.keys())
+
 
 def parse_publish_time(pt: str):
     """把搜狗/微信的发布时间字符串解析成 date 对象，解析不出来返回 None"""
@@ -70,7 +87,6 @@ def parse_publish_time(pt: str):
     if m:
         return today - timedelta(days=int(m.group(1)))
 
-    # 2024-01-15 / 2024/01/15
     m = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", pt)
     if m:
         try:
@@ -78,7 +94,6 @@ def parse_publish_time(pt: str):
         except Exception:
             return None
 
-    # 2024年01月15日
     m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", pt)
     if m:
         try:
@@ -86,7 +101,6 @@ def parse_publish_time(pt: str):
         except Exception:
             return None
 
-    # unix 秒字符串
     if pt.isdigit() and len(pt) >= 9:
         try:
             return datetime.fromtimestamp(int(pt)).date()
@@ -96,16 +110,27 @@ def parse_publish_time(pt: str):
     return None
 
 
-def is_today(publish_time: str) -> bool:
+def is_in_time_range(publish_time: str, time_filter: str = "today") -> bool:
     """
-    判断是否为"当天"。
-    - 能解析出日期 → 严格判断是否等于今天
-    - 解析不出来（例如格式变了）→ 返回 True，靠 is_url_scraped 兜底去重
+    判断发布时间是否落在指定时间范围内。
+    - time_filter: today / week / month / all
+    - all → 全部通过
+    - 无法解析时间的 → 返回 True，靠 is_url_scraped / 缓存兜底去重
     """
+    days_back = TIME_FILTER_DAYS.get(time_filter, 1)
+    if days_back is None:
+        return True
     d = parse_publish_time(publish_time)
     if d is None:
         return True
-    return d == datetime.now().date()
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=days_back - 1)
+    return d >= cutoff
+
+
+def is_today(publish_time: str) -> bool:
+    """兼容旧调用"""
+    return is_in_time_range(publish_time, "today")
 
 
 # ============================================================
@@ -113,7 +138,7 @@ def is_today(publish_time: str) -> bool:
 # ============================================================
 
 def build_sogou_url(org_name: str) -> str:
-    """根据组织名称自动构造搜狗微信搜索 URL（与浏览器访问一致）"""
+    """根据组织名称自动构造搜狗微信搜索 URL"""
     params = {
         "type": "2",
         "s_from": "input",
@@ -157,6 +182,32 @@ def _source_from_any(raw) -> Optional[dict]:
                 pass
         return {"url": s, "type": "mixed", "label": "通用"}
     return None
+
+
+def _make_source_id(owner_id: Optional[str], url: str) -> str:
+    """监控源的稳定 ID：由 owner + url 派生"""
+    key = f"{owner_id or '__global__'}|{url or ''}"
+    h = hashlib.md5(key.encode("utf-8")).hexdigest()[:14]
+    return f"src-{h}"
+
+
+def _guess_label_from_url(url: str) -> str:
+    """从 URL 里尽量猜一个友好标签（搜狗微信取 query，其他取域名+尾段）"""
+    if not url:
+        return ""
+    try:
+        p = urlparse(url)
+        q = parse_qs(p.query)
+        kw = (q.get("query", [""])[0] or "").strip()
+        if kw:
+            return kw
+        host = (p.netloc or "").replace("www.", "")
+        tail = [seg for seg in (p.path or "").split("/") if seg]
+        if tail:
+            return f"{host}/{tail[-1]}" if host else tail[-1]
+        return host
+    except Exception:
+        return ""
 
 
 # ============================================================
@@ -451,15 +502,9 @@ def _clean_html(text: str) -> str:
 # ============================================================
 
 def _extract_sogou_real_url(sogou_link: str, session) -> str:
-    """
-    从搜狗的 /link?url=... 跳转页里还原真实的 mp.weixin.qq.com 地址。
-    搜狗不是 302 跳转，而是返回一段 JS：url += 'xxx'; url += 'yyy'; ...
-    必须把所有片段拼起来，且必须带 Referer: https://weixin.sogou.com/。
-    """
     if not sogou_link:
         return ""
 
-    # 1) 清理实体 + 补全 scheme
     sogou_link = html.unescape(sogou_link).strip()
     if sogou_link.startswith("//"):
         sogou_link = "https:" + sogou_link
@@ -483,11 +528,9 @@ def _extract_sogou_real_url(sogou_link: str, session) -> str:
         final_url = resp.url
         text = resp.text
 
-        # 情形 A：已经 302 到微信了
         if "mp.weixin.qq.com" in final_url:
             return final_url
 
-        # 情形 B：拼接所有 url += '...' 片段
         parts = re.findall(r"url\s*\+=\s*['\"]([^'\"]+)['\"]", text)
         if parts:
             candidate = "".join(parts).replace("@", "")
@@ -496,12 +539,10 @@ def _extract_sogou_real_url(sogou_link: str, session) -> str:
             if candidate.startswith("http"):
                 return candidate
 
-        # 情形 C：页面里直接有 mp.weixin.qq.com 的链接
         m = re.search(r"(https?://mp\.weixin\.qq\.com/s[^\s\"'<>\\]+)", text)
         if m:
             return html.unescape(m.group(1))
 
-        # 情形 D：og:url
         m = re.search(
             r'<meta[^>]+property="og:url"[^>]+content="([^"]+)"',
             text, re.IGNORECASE
@@ -542,7 +583,6 @@ def _parse_sogou_articles(html_text: str, session) -> list:
             )
             if not title_match:
                 continue
-            # ★ 关键修复：href 里可能有 &amp;，需要反转义
             sogou_link = html.unescape(title_match.group(1).strip())
             title = _clean_html(title_match.group(2))
 
@@ -575,11 +615,7 @@ def _parse_sogou_articles(html_text: str, session) -> list:
 
 
 def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
-                          today_only: bool = False):
-    """
-    直接从存储的 URL 访问搜狗微信搜索（与浏览器行为一致）。
-    today_only=True 时只保留发布时间为当天的文章。
-    """
+                          time_filter: str = "today"):
     base_url = source["url"].strip()
     if not base_url:
         collected["errors"].append("搜狗搜索 URL 为空")
@@ -593,7 +629,7 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
         collected["errors"].append("搜狗搜索 URL 缺少 query 参数")
         return collected
 
-    print(f"     🔑 关键词: {keyword}" + ("（仅当天）" if today_only else ""))
+    print(f"     🔑 关键词: {keyword}（时间范围：{time_filter}）")
 
     try:
         session.get("https://weixin.sogou.com", timeout=15)
@@ -649,21 +685,19 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
 
             print(f"     📋 第 {page} 页解析到 {len(articles)} 篇文章")
 
-            page_has_today = False
+            page_has_in_range = False
             for art in articles:
                 sogou_link = art.get("sogou_link", "")
                 if not sogou_link:
                     continue
 
-                # 仅当天过滤：在解析真实 URL 之前判断，省流量
-                if today_only:
+                if time_filter != "all":
                     pt = art.get("publish_time", "")
-                    if not is_today(pt):
-                        print(f"        ⏭️  非当天，跳过: {art.get('title','')[:40]} ({pt})")
+                    if not is_in_time_range(pt, time_filter):
+                        print(f"        ⏭️  超出时间范围，跳过: {art.get('title','')[:40]} ({pt})")
                         continue
-                    page_has_today = True
+                page_has_in_range = True
 
-                # ★ 关键修复：不再用相对路径 fallback
                 real_url = _extract_sogou_real_url(sogou_link, session)
                 if not real_url or "mp.weixin.qq.com" not in real_url:
                     print(f"        ⏭️  跳过（无法还原微信链接）: {art.get('title','')[:40]}")
@@ -683,13 +717,14 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
 
                 text = html_to_text(raw)
                 title = art.get("title", "")
+                pt = art.get("publish_time", "")
                 _collect_one_page(driver, real_url, title, text,
-                                  owner_org_id, source, collected)
+                                  owner_org_id, source, collected,
+                                  publish_time=pt)
                 time.sleep(3)
 
-            # 若当天模式下，第 1 页已经全是非当天文章（搜狗按时间倒序），停止翻页
-            if today_only and not page_has_today and page == 1:
-                print(f"     ⏹️  第 1 页已无当天文章，停止翻页")
+            if time_filter != "all" and not page_has_in_range and page == 1:
+                print(f"     ⏹️  第 1 页已无时间范围内文章，停止翻页")
                 break
 
             time.sleep(5)
@@ -981,9 +1016,9 @@ def _event_exists(driver, org_id: str, title: str, event_date: str) -> bool:
 # 处理单源
 # ============================================================
 
-def process_source(driver, session, source: dict, owner_org_id: str,
+def process_source(driver, session, source: dict, owner_org_id: Optional[str],
                    dry_run: bool = False,
-                   today_only: bool = False) -> dict:
+                   time_filter: str = "today") -> dict:
     url = source.get("url", "").strip()
     stype = source.get("type", "mixed")
     label = source.get("label", stype)
@@ -1001,11 +1036,11 @@ def process_source(driver, session, source: dict, owner_org_id: str,
 
     if stype == "sogou_wechat" or "weixin.sogou.com" in url:
         return _process_sogou_wechat(driver, session, source, owner_org_id,
-                                     stats, dry_run, today_only=today_only)
+                                     stats, dry_run, time_filter=time_filter)
 
     if stype == "wechat" or "mp.weixin.qq.com" in url:
         return _process_wechat(driver, session, source, owner_org_id, stats,
-                               dry_run, today_only=today_only)
+                               dry_run, time_filter=time_filter)
 
     raw = fetch_html(session, url)
     if not raw:
@@ -1040,11 +1075,11 @@ def process_source(driver, session, source: dict, owner_org_id: str,
 
 
 def _process_sogou_wechat(driver, session, source, owner_org_id, stats,
-                          dry_run, today_only: bool = False):
+                          dry_run, time_filter: str = "today"):
     collected = _collect_sogou_wechat(driver, session, source, owner_org_id,
                                        {"orgs": [], "progs": [], "events": [],
                                         "errors": [], "articles_new": 0},
-                                       today_only=today_only)
+                                       time_filter=time_filter)
 
     if collected["orgs"] or collected["progs"] or collected["events"]:
         url = source.get("url", "")
@@ -1056,7 +1091,7 @@ def _process_sogou_wechat(driver, session, source, owner_org_id, stats,
     return stats
 
 
-def _process_article(driver, session, art_url: str, owner_org_id: str,
+def _process_article(driver, session, art_url: str, owner_org_id: Optional[str],
                      stats: dict, dry_run: bool):
     raw = fetch_html(session, art_url)
     if not raw:
@@ -1069,7 +1104,7 @@ def _process_article(driver, session, art_url: str, owner_org_id: str,
 
 
 def _process_one_page(driver, url: str, title: str, text: str,
-                      owner_org_id: str, stats: dict, dry_run: bool):
+                      owner_org_id: Optional[str], stats: dict, dry_run: bool):
     try:
         result = extract_with_llm(url, title, text)
     except Exception as e:
@@ -1108,9 +1143,9 @@ def _process_one_page(driver, url: str, title: str, text: str,
                      owner_org_id=owner_org_id, dry_run=dry_run)
 
 
-def _process_wechat(driver, session, source: dict, owner_org_id: str,
+def _process_wechat(driver, session, source: dict, owner_org_id: Optional[str],
                     stats: dict, dry_run: bool,
-                    today_only: bool = False) -> dict:
+                    time_filter: str = "today") -> dict:
     url = source["url"]
     if "/s?" in url or "/s/" in url:
         if is_url_scraped(driver, url):
@@ -1142,14 +1177,13 @@ def _process_wechat(driver, session, source: dict, owner_org_id: str,
 
     new_count = 0
     for a in articles:
-        # 仅当天过滤（合集里 create_time 是 unix 秒）
-        if today_only:
+        if time_filter != "all":
             ct = a.get("create_time")
             if ct:
                 try:
-                    d = datetime.fromtimestamp(int(ct)).date()
-                    if d != datetime.now().date():
-                        print(f"        ⏭️  非当天，跳过: {a.get('title','')[:40]}")
+                    d = datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d")
+                    if not is_in_time_range(d, time_filter):
+                        print(f"        ⏭️  超出时间范围，跳过: {a.get('title','')[:40]}")
                         continue
                 except Exception:
                     pass
@@ -1171,11 +1205,155 @@ def _process_wechat(driver, session, source: dict, owner_org_id: str,
 
 
 # ============================================================
+# 监控源管理（全部 GlobalMonitorSource；兼容历史组织源读取）
+# ============================================================
+
+def _list_global_sources_raw(driver) -> List[dict]:
+    """列出所有全局监控源"""
+    with driver.session() as s:
+        rs = s.run("""
+            MATCH (g:GlobalMonitorSource)
+            RETURN g.source_id AS source_id, g.url AS url,
+                   g.type AS type, g.label AS label,
+                   g.created_at AS created_at
+            ORDER BY g.created_at DESC
+        """)
+        return [dict(r) for r in rs]
+
+
+def get_all_monitor_sources(driver) -> List[dict]:
+    """
+    返回统一的监控源列表（含历史组织源，为兼容旧数据；新加的都在 GlobalMonitorSource）：
+    [
+      {
+        "source_id": "src-xxxxxx",
+        "owner_org_id": "<org_id>" or None,
+        "owner_name": "<org_name>" or None,
+        "url": "...", "type": "...", "label": "..."
+      },
+      ...
+    ]
+    """
+    result_list = []
+
+    # 历史组织源（兼容读取）
+    with driver.session() as s:
+        rs = s.run("""
+            MATCH (o:Organization)
+            WHERE o.monitor_sources IS NOT NULL AND size(o.monitor_sources) > 0
+            RETURN o.organization_id AS id, o.canonical_name AS name,
+                   o.monitor_sources AS sources
+        """)
+        for r in rs:
+            org_id = r["id"]
+            org_name = r["name"]
+            for raw in (r["sources"] or []):
+                parsed = _source_from_any(raw)
+                if not parsed or not parsed.get("url"):
+                    continue
+                label_txt = (parsed.get("label") or "").strip()
+                if not label_txt or label_txt in ("通用", "全局源"):
+                    label_txt = _guess_label_from_url(parsed["url"]) or org_name
+                result_list.append({
+                    "source_id": _make_source_id(org_id, parsed["url"]),
+                    "owner_org_id": org_id,
+                    "owner_name": org_name,
+                    "url": parsed["url"],
+                    "type": parsed.get("type", "mixed"),
+                    "label": label_txt,
+                })
+
+    # 全局源
+    for g in _list_global_sources_raw(driver):
+        url = (g.get("url") or "").strip()
+        if not url:
+            continue
+        raw_label = (g.get("label") or "").strip()
+        if not raw_label or raw_label == "全局源":
+            raw_label = _guess_label_from_url(url) or "未命名"
+        result_list.append({
+            "source_id": _make_source_id(None, url),
+            "owner_org_id": None,
+            "owner_name": None,
+            "url": url,
+            "type": g.get("type") or "mixed",
+            "label": raw_label,
+        })
+
+    return result_list
+
+
+def add_global_source(url: str, stype: str = "sogou_wechat", label: str = ""):
+    """添加全局监控源（不归属任何组织）"""
+    if stype not in VALID_TYPES:
+        raise ValueError(f"未知 type: {stype}。可选: {sorted(VALID_TYPES)}")
+    if not url or not url.strip():
+        raise ValueError("URL 不能为空")
+    url = url.strip()
+    if not label or not label.strip():
+        label = _guess_label_from_url(url) or "未命名"
+
+    driver = get_driver()
+    with driver.session() as s:
+        # 检查重复
+        r = s.run("""
+            MATCH (g:GlobalMonitorSource {url: $url})
+            RETURN g.source_id AS sid LIMIT 1
+        """, url=url).single()
+        if r:
+            raise ValueError(f"该 URL 已存在，无需重复添加")
+
+        sid = f"GSRC-{uuid.uuid4().hex[:12].upper()}"
+        s.run("""
+            CREATE (g:GlobalMonitorSource {
+                source_id: $sid,
+                url: $url,
+                type: $type,
+                label: $label,
+                created_at: datetime()
+            })
+        """, sid=sid, url=url, type=stype, label=label)
+
+    print(f"✅ 已添加监控源: [{stype}] {label} · {url}")
+    return f"已添加监控源：{label}"
+
+
+def remove_global_source(source_id: str):
+    """删除全局监控源（source_id 为节点上的 source_id 字段）"""
+    driver = get_driver()
+    with driver.session() as s:
+        r = s.run("""
+            MATCH (g:GlobalMonitorSource {source_id: $sid})
+            RETURN g.url AS url
+        """, sid=source_id).single()
+        if not r:
+            raise ValueError(f"监控源 {source_id} 不存在")
+        s.run("""
+            MATCH (g:GlobalMonitorSource {source_id: $sid})
+            DELETE g
+        """, sid=source_id)
+        return f"已删除: {r['url']}"
+
+
+def get_global_source_node_id(driver, url: str) -> Optional[str]:
+    """根据 url 找到源的节点 source_id（用于删除）"""
+    if not url:
+        return None
+    with driver.session() as s:
+        r = s.run("""
+            MATCH (g:GlobalMonitorSource {url: $url})
+            RETURN g.source_id AS sid LIMIT 1
+        """, url=url).single()
+        return r["sid"] if r else None
+
+
+# ============================================================
 # 主流程
 # ============================================================
 
 def get_monitored_orgs(driver, org_filter: Optional[str] = None,
                        type_filter: Optional[str] = None) -> List[dict]:
+    """兼容旧调用：返回有历史监控源的组织"""
     with driver.session() as s:
         if org_filter:
             result = s.run("""
@@ -1208,46 +1386,55 @@ def get_monitored_orgs(driver, org_filter: Optional[str] = None,
 
 
 def run_once(org_filter: Optional[str] = None, type_filter: Optional[str] = None,
+             source_id_filter: Optional[str] = None,
              dry_run: bool = False, sleep_between: float = 3.0,
-             today_only: bool = False):
+             time_filter: str = "today"):
     driver = get_driver()
     session = make_session()
     started = datetime.now()
 
     print(f"\n{'='*70}")
     print(f"🔍 公司监控 - {started.strftime('%Y-%m-%d %H:%M:%S')}"
-          f"{'（仅当天）' if today_only else ''}")
+          f"（时间范围：{time_filter}）")
     print(f"{'='*70}")
 
-    orgs = get_monitored_orgs(driver, org_filter, type_filter)
-    if not orgs:
-        print("📭 没有配置监控源的组织。")
-        print("   使用：python scripts/monitor_runner.py --add ORG_ID URL TYPE LABEL")
+    all_sources = get_all_monitor_sources(driver)
+    if source_id_filter:
+        all_sources = [s for s in all_sources if s["source_id"] == source_id_filter]
+    if org_filter:
+        all_sources = [s for s in all_sources if s["owner_org_id"] == org_filter]
+    if type_filter:
+        all_sources = [s for s in all_sources if s["type"] == type_filter]
+
+    if not all_sources:
+        print("📭 没有匹配的监控源。")
         return []
 
-    print(f"📋 待监控组织: {len(orgs)}")
+    print(f"📋 待监控源: {len(all_sources)}")
 
     all_stats = []
-    for org in orgs:
-        print(f"\n🏢 {org['name']} ({org['id']})")
-        print(f"   监控源 {len(org['sources'])} 个 · 上次监控: {org.get('last_monitored') or '从未'}")
+    for src in all_sources:
+        print(f"\n📡 [{src['label']}] {src['url'][:80]}")
 
-        for source in org["sources"]:
-            try:
-                stats = process_source(driver, session, source, org["id"],
-                                       dry_run, today_only=today_only)
-                all_stats.append(stats)
-            except Exception as e:
-                print(f"    ❌ 处理异常: {e}")
-                traceback.print_exc()
-            time.sleep(sleep_between)
+        try:
+            stats = process_source(
+                driver, session,
+                {"url": src["url"], "type": src["type"], "label": src["label"]},
+                src["owner_org_id"],
+                dry_run, time_filter=time_filter,
+            )
+            all_stats.append(stats)
+        except Exception as e:
+            print(f"    ❌ 处理异常: {e}")
+            traceback.print_exc()
+        time.sleep(sleep_between)
 
-        if not dry_run:
+        if not dry_run and src["owner_org_id"]:
             with driver.session() as s:
                 s.run("""
                     MATCH (o:Organization {organization_id: $oid})
                     SET o.last_monitored_at = datetime()
-                """, oid=org["id"])
+                """, oid=src["owner_org_id"])
 
     total_events = sum(s.get("event_created", 0) for s in all_stats)
     total_prog_changed = sum(s.get("prog_changed", 0) for s in all_stats)
@@ -1274,6 +1461,7 @@ VALID_TYPES = {"news", "pipeline", "about", "wechat", "clinical_trials",
 
 
 def add_source(org_id: str, url: str = "", stype: str = "sogou_wechat", label: str = ""):
+    """兼容旧调用：把源挂到某个组织上。新代码请用 add_global_source。"""
     if stype not in VALID_TYPES:
         raise ValueError(f"未知 type: {stype}。可选: {sorted(VALID_TYPES)}")
 
@@ -1292,7 +1480,7 @@ def add_source(org_id: str, url: str = "", stype: str = "sogou_wechat", label: s
             url = build_sogou_url(org_name)
 
         if not label or not label.strip():
-            label = org_name
+            label = _guess_label_from_url(url) or org_name
 
         src_json = _source_to_json({"url": url, "type": stype, "label": label})
 
@@ -1310,16 +1498,8 @@ def add_source(org_id: str, url: str = "", stype: str = "sogou_wechat", label: s
             SET o.monitor_sources = COALESCE(o.monitor_sources, []) + [$src]
         """, oid=org_id, src=src_json)
 
-        check = s.run("""
-            MATCH (o:Organization {organization_id: $oid})
-            RETURN o.monitor_sources AS sources
-        """, oid=org_id).single()
-        actual = check["sources"] if check else []
-        if not actual:
-            raise ValueError(f"写入后回读为空，可能写入失败（org_id={org_id}）")
-
-        print(f"✅ 已为 {org_name} 添加监控源: [{stype}] {url}（当前共 {len(actual)} 个）")
-        return f"已为 {org_name} 添加监控源，当前共 {len(actual)} 个"
+        print(f"✅ 已为 {org_name} 添加监控源: [{stype}] {url}")
+        return f"已为 {org_name} 添加监控源"
 
 
 def remove_source(org_id: str, url: str):
@@ -1348,23 +1528,20 @@ def remove_source(org_id: str, url: str):
         """, oid=org_id, kept=kept)
 
         print(f"✅ 已从 {r['name']} 移除 {removed} 条: {url}")
-        print(f"   剩余: {len(kept)} 个")
         return f"已移除 {removed} 条，剩余 {len(kept)} 个"
 
 
 def list_sources():
     driver = get_driver()
-    orgs = get_monitored_orgs(driver)
-    if not orgs:
-        print("📭 没有配置监控源的组织")
+    srcs = get_all_monitor_sources(driver)
+    if not srcs:
+        print("📭 没有配置监控源")
         return
-    print(f"\n📋 共 {len(orgs)} 个组织配置了监控源:\n")
-    for org in orgs:
-        print(f"🏢 {org['name']}  ({org['id']})")
-        print(f"   上次监控: {org.get('last_monitored') or '从未'}")
-        for s_item in org["sources"]:
-            print(f"   · [{s_item.get('type')}] {s_item.get('label')}")
-            print(f"     {s_item.get('url')}")
+    print(f"\n📋 共 {len(srcs)} 个监控源:\n")
+    for s_item in srcs:
+        print(f"📡 [{s_item['type']}] {s_item['label']}")
+        print(f"   URL:       {s_item['url']}")
+        print(f"   source_id: {s_item['source_id']}")
         print()
 
 
@@ -1374,46 +1551,59 @@ def list_sources():
 
 def collect_for_review(org_filter: Optional[str] = None,
                        type_filter: Optional[str] = None,
+                       source_id_filter: Optional[str] = None,
                        sleep_between: float = 2.0,
-                       today_only: bool = False) -> dict:
+                       time_filter: str = "today") -> dict:
     driver = get_driver()
     session = make_session()
     started = datetime.now()
 
     print(f"\n{'='*70}")
     print(f"🔍 监控抓取（待审核）- {started.strftime('%Y-%m-%d %H:%M:%S')}"
-          f"{'（仅当天）' if today_only else ''}")
+          f"（时间范围：{time_filter}）")
     print(f"{'='*70}")
 
-    orgs = get_monitored_orgs(driver, org_filter, type_filter)
-    if not orgs:
+    all_sources = get_all_monitor_sources(driver)
+    if source_id_filter:
+        all_sources = [s for s in all_sources if s["source_id"] == source_id_filter]
+    if org_filter:
+        all_sources = [s for s in all_sources if s["owner_org_id"] == org_filter]
+    if type_filter:
+        all_sources = [s for s in all_sources if s["type"] == type_filter]
+
+    if not all_sources:
         return {
             "orgs": [], "progs": [], "events": [],
             "stats": {"sources_scanned": 0, "articles_new": 0,
+                      "time_filter": time_filter,
                       "timestamp": started.strftime("%Y-%m-%d %H:%M:%S")},
-            "errors": ["没有配置监控源。请先在监控源配置中为组织添加 URL"],
+            "errors": ["没有匹配的监控源。请先在监控源配置中添加 URL"],
         }
 
     all_orgs, all_progs, all_events, all_errors = [], [], [], []
     sources_scanned = 0
     articles_new = 0
 
-    for org in orgs:
-        print(f"\n🏢 {org['name']} ({org['id']})")
-        for source in org["sources"]:
-            try:
-                r = _collect_one_source(driver, session, source, org["id"],
-                                        today_only=today_only)
-                all_orgs.extend(r["orgs"])
-                all_progs.extend(r["progs"])
-                all_events.extend(r["events"])
-                all_errors.extend(r["errors"])
-                sources_scanned += 1
-                articles_new += r["articles_new"]
-            except Exception as e:
-                all_errors.append(f"{org['name']}: {e}")
-                traceback.print_exc()
-            time.sleep(sleep_between)
+    for src in all_sources:
+        print(f"\n📡 [{src['label']}] {src['url'][:80]}")
+
+        try:
+            r = _collect_one_source(
+                driver, session,
+                {"url": src["url"], "type": src["type"], "label": src["label"]},
+                src["owner_org_id"],
+                time_filter=time_filter,
+            )
+            all_orgs.extend(r["orgs"])
+            all_progs.extend(r["progs"])
+            all_events.extend(r["events"])
+            all_errors.extend(r["errors"])
+            sources_scanned += 1
+            articles_new += r["articles_new"]
+        except Exception as e:
+            all_errors.append(f"{src['label']}: {e}")
+            traceback.print_exc()
+        time.sleep(sleep_between)
 
     print(f"\n✅ 抓取完成：{len(all_orgs)} 组织 / {len(all_progs)} 项目 / {len(all_events)} 事件")
 
@@ -1427,24 +1617,23 @@ def collect_for_review(org_filter: Optional[str] = None,
             "orgs": len(all_orgs),
             "progs": len(all_progs),
             "events": len(all_events),
-            "today_only": today_only,
+            "time_filter": time_filter,
             "timestamp": started.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "errors": all_errors,
     }
 
 
-def _collect_one_source(driver, session, source, owner_org_id,
-                        today_only: bool = False):
+def _collect_one_source(driver, session, source, owner_org_id: Optional[str],
+                        time_filter: str = "today"):
     url = source.get("url", "").strip()
     stype = source.get("type", "mixed")
-    label = source.get("label", stype)
 
     collected = {"orgs": [], "progs": [], "events": [], "errors": [], "articles_new": 0}
 
     if stype == "sogou_wechat" or "weixin.sogou.com" in url:
         return _collect_sogou_wechat(driver, session, source, owner_org_id,
-                                     collected, today_only=today_only)
+                                     collected, time_filter=time_filter)
 
     if stype == "wechat" or "mp.weixin.qq.com" in url:
         m = re.search(r"album_id=([^&]+)", url)
@@ -1460,13 +1649,12 @@ def _collect_one_source(driver, session, source, owner_org_id,
                 data = r.json()
                 articles = data.get("getalbum_resp", {}).get("article_list", []) or []
                 for a in articles:
-                    # 仅当天过滤
-                    if today_only:
+                    if time_filter != "all":
                         ct = a.get("create_time")
                         if ct:
                             try:
-                                d = datetime.fromtimestamp(int(ct)).date()
-                                if d != datetime.now().date():
+                                d = datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d")
+                                if not is_in_time_range(d, time_filter):
                                     continue
                             except Exception:
                                 pass
@@ -1481,8 +1669,16 @@ def _collect_one_source(driver, session, source, owner_org_id,
                         continue
                     title = a.get("title", "")
                     text = html_to_text(raw)
+                    pt_str = ""
+                    ct = a.get("create_time")
+                    if ct:
+                        try:
+                            pt_str = datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d")
+                        except Exception:
+                            pt_str = ""
                     _collect_one_page(driver, art_url, title, text,
-                                      owner_org_id, source, collected)
+                                      owner_org_id, source, collected,
+                                      publish_time=pt_str)
                     time.sleep(3)
                     if collected["articles_new"] >= 10:
                         break
@@ -1498,7 +1694,8 @@ def _collect_one_source(driver, session, source, owner_org_id,
                     text = html_to_text(raw)
                     collected["articles_new"] += 1
                     _collect_one_page(driver, url, title, text,
-                                      owner_org_id, source, collected)
+                                      owner_org_id, source, collected,
+                                      publish_time=datetime.now().strftime("%Y-%m-%d"))
         return collected
 
     raw = fetch_html(session, url)
@@ -1529,30 +1726,85 @@ def _collect_one_source(driver, session, source, owner_org_id,
                             flags=re.DOTALL | re.IGNORECASE)
             title2 = re.sub(r"\s+", " ", tm2.group(1)).strip() if tm2 else ""
             _collect_one_page(driver, art_url, title2, text2,
-                              owner_org_id, source, collected)
+                              owner_org_id, source, collected,
+                              publish_time=datetime.now().strftime("%Y-%m-%d"))
             time.sleep(2)
     else:
         _collect_one_page(driver, url, page_title, text,
-                          owner_org_id, source, collected)
+                          owner_org_id, source, collected,
+                          publish_time=datetime.now().strftime("%Y-%m-%d"))
 
     return collected
 
 
-def _collect_one_page(driver, url, title, text, owner_org_id, source, collected):
-    if is_url_scraped(driver, url):
-        print(f"        ⏭️  已解析过，跳过: {url[:80]}")
-        return
+def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
+                      source, collected, publish_time: str = ""):
+    """
+    处理单篇文章：
+      1. 优先用 (标题 + 创建时间 + 创建人) 做 Redis key 查缓存
+      2. 命中缓存 → 直接用缓存 parsed
+      3. 未命中缓存：
+         - URL 未入库 → 调用 LLM 抽取，回写缓存
+         - URL 已入库且缓存过期 → 跳过（避免重复 LLM 调用）
+      4. 逐条检查 org/prog/event 是否已在数据库，打上 _already_in_db 标记
+      5. 让 ci.py 展示时能显示「✅ 已入库 / 🆕 新增」
+    """
+    creator = source.get("label") or source.get("type") or "monitor"
+    ptime = (publish_time or "").strip() or datetime.now().strftime("%Y-%m-%d")
 
-    try:
-        result = extract_with_llm(url, title, text)
-    except Exception as e:
-        collected["errors"].append(f"LLM {url[:60]}: {e}")
+    url_in_db = is_url_scraped(driver, url)
+    cached = get_cached(title, ptime, creator)
+
+    if cached and cached.get("parsed"):
+        result = cached["parsed"]
+        print(f"        💾 命中缓存: {title[:40]}")
+    elif url_in_db:
+        # URL 已入库但缓存已过期 → 直接跳过，不再重新解析
+        print(f"        ⏭️  已解析过（URL 已在库，无缓存），跳过: {url[:80]}")
         return
+    else:
+        try:
+            result = extract_with_llm(url, title, text)
+        except Exception as e:
+            collected["errors"].append(f"LLM {url[:60]}: {e}")
+            return
+        set_cached(
+            title=title,
+            publish_time=ptime,
+            parsed=result,
+            creator=creator,
+            source_url=url,
+        )
+        print(f"        🆕 新解析并缓存: {title[:40]}")
 
     orgs = result.get("organizations", []) or []
     progs = result.get("programs", []) or []
     events = result.get("events", []) or []
 
+    # ---------- 逐条检查 DB 是否已存在 ----------
+    for o in orgs:
+        nm = (o.get("canonical_name") or "").strip()
+        oid = find_org_exact(driver, nm) if nm else None
+        o["_already_in_db"] = bool(oid)
+        o["_existing_id"] = oid or ""
+
+    for p in progs:
+        nm = (p.get("canonical_name") or "").strip()
+        existing = find_program_full(driver, nm) if nm else None
+        p["_already_in_db"] = bool(existing)
+        p["_existing_id"] = (existing["id"] if existing else "") or ""
+
+    for e in events:
+        oname = (e.get("organization_name") or "").strip()
+        etitle = (e.get("title") or "").strip()
+        edate = (e.get("event_date") or "").strip()
+        oid = find_org_exact(driver, oname) if oname else None
+        if oid and etitle and _event_exists(driver, oid, etitle, edate):
+            e["_already_in_db"] = True
+        else:
+            e["_already_in_db"] = False
+
+    # ---------- 过滤：事件自身的 source_url 已入库（同一篇原文重复出现）----------
     filtered_events = []
     skipped_events = 0
     for e in events:
@@ -1565,10 +1817,11 @@ def _collect_one_page(driver, url, title, text, owner_org_id, source, collected)
     events = filtered_events
 
     owner_name = None
-    with driver.session() as s:
-        r = s.run("MATCH (o:Organization {organization_id: $oid}) "
-                  "RETURN o.canonical_name AS name", oid=owner_org_id).single()
-        owner_name = r["name"] if r else None
+    if owner_org_id:
+        with driver.session() as s:
+            r = s.run("MATCH (o:Organization {organization_id: $oid}) "
+                      "RETURN o.canonical_name AS name", oid=owner_org_id).single()
+            owner_name = r["name"] if r else None
 
     for e in events:
         if not (e.get("organization_name") or "").strip() and owner_name:
@@ -1576,6 +1829,8 @@ def _collect_one_page(driver, url, title, text, owner_org_id, source, collected)
         e["_source_url"] = url
         e["_source_label"] = source.get("label", source.get("type", ""))
         e["_owner_org_id"] = owner_org_id
+        e["_publish_time"] = ptime
+        e["_creator"] = creator
 
     for p in progs:
         if not (p.get("organization_name") or "").strip() and owner_name:
@@ -1583,11 +1838,15 @@ def _collect_one_page(driver, url, title, text, owner_org_id, source, collected)
         p["_source_url"] = url
         p["_source_label"] = source.get("label", source.get("type", ""))
         p["_owner_org_id"] = owner_org_id
+        p["_publish_time"] = ptime
+        p["_creator"] = creator
 
     for o in orgs:
         o["_source_url"] = url
         o["_source_label"] = source.get("label", source.get("type", ""))
         o["_owner_org_id"] = owner_org_id
+        o["_publish_time"] = ptime
+        o["_creator"] = creator
 
     collected["orgs"].extend(orgs)
     collected["progs"].extend(progs)
@@ -1607,15 +1866,16 @@ def _seconds_until_next_run(hour: int, minute: int) -> float:
 
 
 def run_schedule(hour: int = 23, minute: int = 30,
-                 today_only: bool = True,
+                 time_filter: str = "week",
                  org_filter: Optional[str] = None,
                  type_filter: Optional[str] = None):
     """
     常驻调度：每天 hour:minute 自动抓取一次。
+    默认抓一周（time_filter="week"）。
     Ctrl+C 退出。
     """
     print(f"🕒 调度器已启动 — 每天 {hour:02d}:{minute:02d} 抓取"
-          f"{'当天' if today_only else '全部'}文章")
+          f"（时间范围：{time_filter}）")
     print("   Ctrl+C 退出\n")
 
     while True:
@@ -1634,7 +1894,7 @@ def run_schedule(hour: int = 23, minute: int = 30,
         try:
             result = collect_for_review(org_filter=org_filter,
                                         type_filter=type_filter,
-                                        today_only=today_only)
+                                        time_filter=time_filter)
             s = result.get("stats", {})
             print(f"完成：组织 {s.get('orgs',0)} / 项目 {s.get('progs',0)} / "
                   f"事件 {s.get('events',0)} / 新文章 {s.get('articles_new',0)}")
@@ -1654,27 +1914,30 @@ def run_schedule(hour: int = 23, minute: int = 30,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="公司项目 & 事件持续监控")
-    parser.add_argument("--org", help="只监控指定 organization_id")
+    parser.add_argument("--org", help="只监控指定 organization_id（历史组织源）")
     parser.add_argument("--type", help=f"只处理指定 type，可选: {sorted(VALID_TYPES)}")
+    parser.add_argument("--source-id", help="只抓取指定 source_id（来自 list）")
     parser.add_argument("--dry-run", action="store_true", help="只抽取不写入")
     parser.add_argument("--list", action="store_true", help="列出所有配置")
     parser.add_argument("--collect", action="store_true",
                         help="只抓取待审数据（不写库）")
-    parser.add_argument("--today-only", action="store_true",
-                        help="仅抓取当天发布的文章")
+    parser.add_argument("--time", choices=list(VALID_TIME_FILTERS),
+                        default="today",
+                        help="时间范围：today / week / month / all（默认 today）")
     parser.add_argument("--schedule", action="store_true",
-                        help="启动常驻调度器（默认每天 23:30 抓当天）")
+                        help="启动常驻调度器（默认每天 23:30 抓一周）")
     parser.add_argument("--schedule-hour", type=int, default=23,
                         help="调度小时（默认 23）")
     parser.add_argument("--schedule-minute", type=int, default=30,
                         help="调度分钟（默认 30）")
-    parser.add_argument("--schedule-all", action="store_true",
-                        help="调度时不限制当天（默认仅当天）")
-    # nargs="+" 不能配 metavar 元组，用字符串
-    parser.add_argument("--add", nargs="+", metavar="ORG_ID_URL_TYPE_LABEL",
-                        help="添加监控源：--add ORG_ID [URL] [TYPE] [LABEL]")
-    parser.add_argument("--remove", nargs=2, metavar=("ORG_ID", "URL"),
-                        help="移除监控源")
+    parser.add_argument("--schedule-time", choices=list(VALID_TIME_FILTERS),
+                        default="week",
+                        help="调度时的时间范围（默认 week）")
+    parser.add_argument("--add-global", nargs="+",
+                        metavar="URL_TYPE_LABEL",
+                        help="添加监控源：--add-global URL [TYPE] [LABEL]")
+    parser.add_argument("--remove-global", metavar="URL",
+                        help="移除监控源（按 URL）")
     args = parser.parse_args()
 
     if args.list:
@@ -1683,25 +1946,28 @@ if __name__ == "__main__":
         run_schedule(
             hour=args.schedule_hour,
             minute=args.schedule_minute,
-            today_only=not args.schedule_all,
+            time_filter=args.schedule_time,
             org_filter=args.org,
             type_filter=args.type,
         )
     elif args.collect:
         r = collect_for_review(org_filter=args.org, type_filter=args.type,
-                               today_only=args.today_only)
+                               source_id_filter=args.source_id,
+                               time_filter=args.time)
         print(json.dumps(r["stats"], ensure_ascii=False, indent=2))
-    elif args.add:
-        if len(args.add) < 1:
-            print("用法: --add ORG_ID [URL] [TYPE] [LABEL]")
+    elif args.add_global:
+        url = args.add_global[0] if len(args.add_global) > 0 else ""
+        stype = args.add_global[1] if len(args.add_global) > 1 else "sogou_wechat"
+        label = args.add_global[2] if len(args.add_global) > 2 else ""
+        add_global_source(url, stype, label)
+    elif args.remove_global:
+        url = args.remove_global
+        sid = get_global_source_node_id(get_driver(), url)
+        if not sid:
+            print(f"❌ 未找到: {url}")
             sys.exit(1)
-        org_id = args.add[0]
-        url = args.add[1] if len(args.add) > 1 else ""
-        stype = args.add[2] if len(args.add) > 2 else "sogou_wechat"
-        label = args.add[3] if len(args.add) > 3 else ""
-        add_source(org_id, url, stype, label)
-    elif args.remove:
-        remove_source(args.remove[0], args.remove[1])
+        remove_global_source(sid)
     else:
         run_once(org_filter=args.org, type_filter=args.type,
-                 dry_run=args.dry_run, today_only=args.today_only)
+                 source_id_filter=args.source_id,
+                 dry_run=args.dry_run, time_filter=args.time)

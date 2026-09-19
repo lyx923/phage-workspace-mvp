@@ -28,6 +28,7 @@ from src.engineering_intelligence.claim_extractor import (
 from src.engineering_intelligence.technology_assessment import (
     create_technology_assessment)
 from src.ci.competitor_assessment import create_competitor_assessment
+from src.shared.monitor_cache import cache_status, mark_persisted_by_url
 
 
 @st.cache_resource
@@ -483,9 +484,15 @@ def _load_pending():
 def _build_review_df(items, kind):
     rows = []
     for it in items:
+        already = bool(it.get("_already_in_db"))
+        status_txt = "✅ 已入库" if already else "🆕 新增"
+        # ★ 已入库：默认不勾选；新增：默认勾选
+        default_selected = (not already)
+
         if kind == "org":
             rows.append({
-                "选择": True,
+                "选择": default_selected,
+                "状态": status_txt,
                 "名称": it.get("canonical_name", ""),
                 "类型": it.get("organization_type", "biotech"),
                 "别名": _norm_list_to_str(it.get("aliases", [])),
@@ -496,7 +503,8 @@ def _build_review_df(items, kind):
             })
         elif kind == "prog":
             rows.append({
-                "选择": True,
+                "选择": default_selected,
+                "状态": status_txt,
                 "项目名称": it.get("canonical_name", ""),
                 "所属组织": it.get("organization_name", ""),
                 "类型": it.get("program_type", "therapeutic"),
@@ -508,7 +516,8 @@ def _build_review_df(items, kind):
         elif kind == "evt":
             src_url = it.get("_source_url") or it.get("source_url") or ""
             rows.append({
-                "选择": True,
+                "选择": default_selected,
+                "状态": status_txt,
                 "事件类型": it.get("event_type", "publication"),
                 "标题": it.get("title", ""),
                 "事实摘要": it.get("factual_summary", ""),
@@ -525,6 +534,7 @@ def _build_review_df(items, kind):
 def _org_col_config():
     return {
         "选择": st.column_config.CheckboxColumn("✓", width="small"),
+        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
         "名称": st.column_config.TextColumn("名称", required=True, width="medium"),
         "类型": st.column_config.SelectboxColumn(
             "类型", width="small",
@@ -541,6 +551,7 @@ def _org_col_config():
 def _prog_col_config():
     return {
         "选择": st.column_config.CheckboxColumn("✓", width="small"),
+        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
         "项目名称": st.column_config.TextColumn("项目名称", required=True, width="medium"),
         "所属组织": st.column_config.TextColumn("所属组织", required=True, width="medium"),
         "类型": st.column_config.SelectboxColumn(
@@ -561,6 +572,7 @@ def _prog_col_config():
 def _evt_col_config():
     return {
         "选择": st.column_config.CheckboxColumn("✓", width="small"),
+        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
         "事件类型": st.column_config.SelectboxColumn(
             "类型", required=True, width="small",
             options=["regulatory_update", "funding", "acquisition", "merger",
@@ -658,11 +670,14 @@ def _strip_internal(rec, kind):
 
 
 def _apply_reviewed(driver, sel_orgs, sel_progs, sel_events, prior_errors):
-    source_url = ""
+    # 收集所有涉及到的 source_url
+    source_urls = set()
     for r in (sel_orgs + sel_progs + sel_events):
-        if r.get("_source_url"):
-            source_url = r["_source_url"]
-            break
+        u = (r.get("_source_url") or "").strip()
+        if u:
+            source_urls.add(u)
+
+    source_url = next(iter(source_urls)) if source_urls else ""
 
     stats = _commit_scraped_data(
         url=source_url,
@@ -672,6 +687,14 @@ def _apply_reviewed(driver, sel_orgs, sel_progs, sel_events, prior_errors):
     )
     if prior_errors:
         stats.setdefault("errors", []).extend(prior_errors)
+
+    # ★ 同步 Redis 缓存的 already_persisted 标记
+    try:
+        for u in source_urls:
+            mark_persisted_by_url(u)
+    except Exception:
+        pass
+
     return stats
 
 
@@ -1691,11 +1714,11 @@ def ci_mode(driver):
     with ci_tab4:
         st.markdown("### 🎯 监控中心")
         st.caption(
-            "抓取所有已配置监控源，LLM 抽取后逐条审核，勾选保留的写入图谱。"
+            "抓取所有已配置的监控源，LLM 抽取后逐条审核，勾选保留的写入图谱。"
             "**已解析过的事件会自动隐藏，避免重复展示。**"
         )
 
-        # ---------- 顶部提示（rerun 后依然可见）----------
+        # ---------- 顶部提示 ----------
         flash = st.session_state.pop("_monitor_flash", None)
         if flash:
             kind, text = flash
@@ -1708,142 +1731,133 @@ def ci_mode(driver):
 
         # ---------- 监控源配置面板 ----------
         with st.expander("⚙️ 监控源配置", expanded=False):
-            st.caption("为组织添加监控源。选择组织后会自动生成搜狗微信搜索 URL，也可以手动改成官网新闻页等。")
 
-            org_list_for_config = list_organizations(driver)
-            if not org_list_for_config:
-                st.warning("暂无组织，请先到「📋 情报流程」步骤1创建组织")
-            else:
-                org_options = [f"{o['name']} ({o['id']})" for o in org_list_for_config]
-                selected_org_for_src = st.selectbox(
-                    "选择组织", options=org_options, key="monitor_src_org_select"
+            with st.form("monitor_add_source_form"):
+                col_s1, col_s2 = st.columns([4, 1])
+                with col_s1:
+                    src_url = st.text_input(
+                        "监控源 URL",
+                        key="monitor_src_url_input",
+                        placeholder=(
+                            "例如：https://weixin.sogou.com/weixin?type=2&query=BiomX"
+                            "  或  官网新闻页 URL"
+                        ),
+                    )
+                with col_s2:
+                    src_type = st.selectbox(
+                        "类型",
+                        options=["sogou_wechat", "wechat", "news", "publications", "mixed"],
+                        key="monitor_src_type_select",
+                        index=0,
+                    )
+                src_label = st.text_input(
+                    "标签（可选）", value="",
+                    key="monitor_src_label_input",
+                    placeholder="用于在列表和抓取选项里辨识，比如「BiomX 搜狗搜索」；留空则从 URL 自动推断",
+                )
+                submitted_src = st.form_submit_button(
+                    "➕ 添加监控源", width="stretch", type="primary"
                 )
 
-                if selected_org_for_src and "(" in selected_org_for_src:
-                    org_name_for_src = selected_org_for_src.rsplit(" (", 1)[0]
-                    org_id_for_src = selected_org_for_src.rsplit("(", 1)[-1].rstrip(")")
+            if submitted_src:
+                if not src_url.strip():
+                    st.session_state["_monitor_flash"] = ("error", "URL 不能为空")
+                    st.rerun()
                 else:
-                    org_name_for_src = ""
-                    org_id_for_src = None
-
-                last_org_key = "_monitor_last_org_for_src"
-                if st.session_state.get(last_org_key) != org_id_for_src:
-                    default_url = (
-                        "https://weixin.sogou.com/weixin?" + urlencode({
-                            "type": "2",
-                            "s_from": "input",
-                            "query": org_name_for_src,
-                            "ie": "utf8",
-                            "_sug_": "n",
-                            "_sug_type_": "",
-                        })
-                        if org_name_for_src else ""
-                    )
-                    st.session_state["monitor_src_url_input"] = default_url
-                    st.session_state[last_org_key] = org_id_for_src
-
-                with st.form("monitor_add_source_form"):
-                    col_s1, col_s2 = st.columns([4, 1])
-                    with col_s1:
-                        src_url = st.text_input(
-                            "监控源 URL",
-                            key="monitor_src_url_input",
-                            placeholder="选择组织后自动填充搜狗微信搜索 URL，也可手动修改",
-                        )
-                    with col_s2:
-                        src_type = st.selectbox(
-                            "类型",
-                            options=["sogou_wechat", "wechat", "news", "publications", "mixed"],
-                            key="monitor_src_type_select",
-                            index=0,
-                        )
-                    src_label = st.text_input("标签（可选）", value="", key="monitor_src_label_input")
-                    submitted_src = st.form_submit_button("➕ 添加监控源", width="stretch", type="primary")
-
-                if submitted_src:
-                    if not org_id_for_src:
-                        st.session_state["_monitor_flash"] = ("error", "请选择组织")
+                    try:
+                        from scripts.monitor_runner import add_global_source
+                        msg = add_global_source(src_url, src_type, src_label)
+                        st.session_state["_monitor_flash"] = ("success", msg)
                         st.rerun()
-                    else:
-                        try:
-                            from scripts.monitor_runner import add_source
-                            msg = add_source(org_id_for_src, src_url, src_type, src_label)
-                            st.session_state["_monitor_flash"] = ("success", msg)
-                            st.rerun()
-                        except Exception as e:
-                            st.session_state["_monitor_flash"] = ("error", f"添加失败：{e}")
-                            st.rerun()
+                    except Exception as e:
+                        st.session_state["_monitor_flash"] = ("error", f"添加失败：{e}")
+                        st.rerun()
 
-                with driver.session() as session:
-                    result = session.run("""
-                        MATCH (o:Organization {organization_id: $oid})
-                        RETURN o.monitor_sources AS sources, o.canonical_name AS name
-                    """, oid=org_id_for_src).single()
-                    if not result:
-                        st.error(
-                            f"⚠️ 组织 ID `{org_id_for_src}` 在数据库中不存在，"
-                            f"请检查 `list_organizations` 返回的 id 字段"
-                        )
-                        existing_sources = []
-                    else:
-                        existing_sources = result["sources"] or []
-                        st.caption(f"当前组织：**{result['name']}** （id=`{org_id_for_src}`）")
+            # ---------- 已配置的监控源 ----------
+            try:
+                from scripts.monitor_runner import _list_global_sources_raw, _guess_label_from_url
+                global_sources = _list_global_sources_raw(driver)
+            except Exception:
+                global_sources = []
+                _guess_label_from_url = None
 
-                def _parse_src(raw):
-                    if isinstance(raw, dict):
-                        return raw
-                    if isinstance(raw, str):
-                        s_ = raw.strip()
-                        if s_.startswith("{"):
+            st.markdown(f"**📋 已配置的监控源（{len(global_sources)} 条）：**")
+            if not global_sources:
+                st.caption("暂无监控源，请在上方添加")
+            else:
+                for idx, g in enumerate(global_sources):
+                    sid = g.get("source_id")
+                    label_raw = (g.get("label") or "").strip()
+                    url_txt = g.get("url", "")
+                    type_txt = g.get("type", "")
+                    if not label_raw or label_raw == "全局源":
+                        if _guess_label_from_url:
+                            label_raw = _guess_label_from_url(url_txt) or "（未命名）"
+                        else:
+                            label_raw = "（未命名）"
+
+                    cols = st.columns([2, 7, 1])
+                    with cols[0]:
+                        st.markdown(f"**{label_raw}**")
+                        st.caption(f"类型: {type_txt}")
+                    with cols[1]:
+                        st.code(url_txt, language=None)
+                    with cols[2]:
+                        if st.button("🗑️", key=f"del_gsrc_{sid}"):
                             try:
-                                return json.loads(s_)
-                            except Exception:
-                                return None
-                        return {"url": s_, "type": "mixed", "label": "通用"}
-                    return None
+                                from scripts.monitor_runner import remove_global_source
+                                msg = remove_global_source(sid)
+                                st.session_state["_monitor_flash"] = ("success", msg)
+                                st.rerun()
+                            except Exception as e:
+                                st.session_state["_monitor_flash"] = ("error", f"删除失败：{e}")
+                                st.rerun()
 
-                if existing_sources:
-                    st.markdown(f"**已配置的监控源（共 {len(existing_sources)} 条）：**")
-                    for idx, raw in enumerate(existing_sources):
-                        src = _parse_src(raw)
-                        if not src:
-                            st.warning(f"⚠️ 无法解析第 {idx+1} 条监控源：{raw}")
-                            continue
-                        cols = st.columns([4, 1, 1])
-                        with cols[0]:
-                            st.code(src.get("url", ""), language=None)
-                        with cols[1]:
-                            st.caption(f"类型: {src.get('type', '')}")
-                        with cols[2]:
-                            if st.button("🗑️", key=f"del_src_{idx}"):
-                                try:
-                                    from scripts.monitor_runner import remove_source
-                                    msg = remove_source(org_id_for_src, src.get("url", ""))
-                                    st.session_state["_monitor_flash"] = ("success", msg)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.session_state["_monitor_flash"] = ("error", f"删除失败：{e}")
-                                    st.rerun()
-                else:
-                    st.caption("该组织暂无监控源")
+        # ---------- 抓取按钮区域 ----------
+        st.markdown("---")
 
-                with st.expander("🔍 调试：查看数据库原始 monitor_sources 值", expanded=False):
-                    st.write("原始值（JSON）:")
-                    st.json(existing_sources)
+        # 取所有监控源，用于「单源抓取」下拉
+        try:
+            from scripts.monitor_runner import get_all_monitor_sources as _get_all_srcs2
+            _all_srcs = _get_all_srcs2(driver)
+        except Exception:
+            _all_srcs = []
 
-        # ---------- 抓取按钮 ----------
-        col_run0, col_run1, col_run2, col_run3 = st.columns([1, 1, 1, 3])
-        with col_run0:
-            today_only = st.checkbox(
-                "仅抓当天",
-                value=True,
-                key="monitor_today_only",
-                help="只抓取发布日期是今天的文章（定时任务推荐勾选）"
+        src_options = ["全部监控源"]
+        for s_ in _all_srcs:
+            label = (s_.get("label") or "").strip() or "（未命名）"
+            short_url = s_["url"][:50] + ("..." if len(s_["url"]) > 50 else "")
+            src_options.append(f"{label} · {short_url} | id={s_['source_id']}")
+
+        col_pick, col_time, col_run1, col_run2 = st.columns([2, 2, 1, 1])
+        with col_pick:
+            selected_src_str = st.selectbox(
+                "选择要抓取的监控源",
+                options=src_options,
+                key="monitor_source_filter",
+                index=0,
+                help="可以只抓某一个源；选择「全部监控源」则抓所有",
+            )
+        with col_time:
+            time_filter = st.radio(
+                "抓取时间范围",
+                options=["today", "week", "month", "all"],
+                format_func=lambda x: {
+                    "today": "当天",
+                    "week": "一周",
+                    "month": "一个月",
+                    "all": "全部",
+                }.get(x, x),
+                index=0,
+                horizontal=True,
+                key="monitor_time_filter",
             )
         with col_run1:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
             btn_collect = st.button("🔍 立即抓取", type="primary",
                                     width="stretch", key="monitor_collect_btn")
         with col_run2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
             btn_clear = st.button("🗑️ 清空待审", width="stretch",
                                   key="monitor_clear_btn")
 
@@ -1853,29 +1867,39 @@ def ci_mode(driver):
             st.rerun()
 
         if btn_collect:
-            try:
-                from scripts.monitor_runner import collect_for_review
-            except Exception as e:
-                st.error(f"❌ 无法加载 monitor_runner: {e}")
+            if not _all_srcs:
+                st.warning("⚠️ 请先在「⚙️ 监控源配置」中添加监控源")
             else:
-                with st.spinner("🌐 抓取中（首次可能较慢，请稍候）..."):
-                    try:
-                        # ★ 改动点 2：传入 today_only
-                        result = collect_for_review(today_only=today_only)
-                        st.session_state["monitor_pending"] = result
-                        _save_pending(result)
-                        st.success(
-                            f"✅ 抓取完成："
-                            f"{result['stats'].get('orgs', 0)} 组织 / "
-                            f"{result['stats'].get('progs', 0)} 项目 / "
-                            f"{result['stats'].get('events', 0)} 事件"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"抓取失败：{e}")
-                        import traceback as _tb
-                        with st.expander("查看详细错误"):
-                            st.code(_tb.format_exc())
+                source_id_filter = None
+                if not selected_src_str.startswith("全部监控源"):
+                    if "id=" in selected_src_str:
+                        source_id_filter = selected_src_str.rsplit("id=", 1)[-1].strip()
+
+                try:
+                    from scripts.monitor_runner import collect_for_review
+                except Exception as e:
+                    st.error(f"❌ 无法加载 monitor_runner: {e}")
+                else:
+                    with st.spinner("🌐 抓取中（首次可能较慢，请稍候）..."):
+                        try:
+                            result = collect_for_review(
+                                source_id_filter=source_id_filter,
+                                time_filter=time_filter,
+                            )
+                            st.session_state["monitor_pending"] = result
+                            _save_pending(result)
+                            st.success(
+                                f"✅ 抓取完成（{time_filter}）："
+                                f"{result['stats'].get('orgs', 0)} 组织 / "
+                                f"{result['stats'].get('progs', 0)} 项目 / "
+                                f"{result['stats'].get('events', 0)} 事件"
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"抓取失败：{e}")
+                            import traceback as _tb
+                            with st.expander("查看详细错误"):
+                                st.code(_tb.format_exc())
 
         # ---------- 从磁盘恢复 ----------
         if "monitor_pending" not in st.session_state:
@@ -1888,17 +1912,19 @@ def ci_mode(driver):
         if not pending:
             st.info(
                 "📭 **暂无待审数据**\n\n"
-                "1. 先到上方「⚙️ 监控源配置」为组织添加监控源（选择组织后 URL 会自动填充）\n"
-                "2. 回到这里点【🔍 立即抓取】\n"
-                "3. 抓取结果会分组织/项目/事件三类展示，勾选后点【✅ 应用选中项】"
+                "1. 到上方「⚙️ 监控源配置」添加监控源\n"
+                "2. 回到这里选择【监控源】和【时间范围】后点【🔍 立即抓取】\n"
+                "3. 抓取结果会**按组织分组**展示（组织 → 项目 / 事件），"
+                "   **没有项目或事件的组织不会展示**\n"
+                "4. 勾选后点【✅ 应用选中项】写入图谱\n"
+                "5. 已解析过的条目会走 Redis 缓存，不再重复调用 LLM"
             )
         else:
             stats = pending.get("stats", {})
             st.markdown("---")
-            # ★ 改动点 3：显示模式（仅当天 / 全部）
             st.caption(
                 f"📅 抓取时间：{stats.get('timestamp', '—')}  ·  "
-                f"模式：{'仅当天' if stats.get('today_only') else '全部'}  ·  "
+                f"时间范围：{stats.get('time_filter', 'today')}  ·  "
                 f"扫描源 {stats.get('sources_scanned', 0)} 个  ·  "
                 f"新文章 {stats.get('articles_new', 0)} 篇"
             )
@@ -1908,107 +1934,150 @@ def ci_mode(driver):
                     for e in pending["errors"][:30]:
                         st.write(f"- {e}")
 
-            # 过滤：隐藏 source_url 已解析过的事件
-            try:
-                from scripts.monitor_runner import is_url_scraped as _is_url_scraped
-            except Exception:
-                _is_url_scraped = None
-
             org_list_all = pending.get("orgs", [])
             prog_list_all = pending.get("progs", [])
             evt_list_all = pending.get("events", [])
-
-            evt_list_filtered = []
-            skipped_scraped = 0
-            for e in evt_list_all:
-                src_url = (e.get("_source_url") or e.get("source_url") or "").strip()
-                if _is_url_scraped and src_url and _is_url_scraped(driver, src_url):
-                    skipped_scraped += 1
-                    continue
-                evt_list_filtered.append(e)
-
-            if skipped_scraped:
-                st.info(f"ℹ️ 已自动隐藏 **{skipped_scraped}** 条 source_url 已解析过的事件。")
+            evt_list_filtered = evt_list_all
 
             search_kw = st.text_input(
-                "🔎 按 canonical_name 搜索（组织 / 项目），或按标题/组织搜索事件",
+                "🔎 按组织 / 项目 / 事件关键词过滤",
                 value="",
                 key="monitor_search_kw",
                 placeholder="例如: APT、BiomX、BX211、Salmonella...",
             ).strip().lower()
 
-            org_list = org_list_all
-            prog_list = prog_list_all
-            evt_list = evt_list_filtered
-
             if search_kw:
-                org_list = [
-                    o for o in org_list
-                    if search_kw in (o.get("canonical_name") or "").lower()
-                ]
-                prog_list = [
-                    p for p in prog_list
-                    if search_kw in (p.get("canonical_name") or "").lower()
-                ]
-                evt_list = [
-                    e for e in evt_list
+                org_list_all = [o for o in org_list_all
+                                if search_kw in (o.get("canonical_name") or "").lower()]
+                prog_list_all = [p for p in prog_list_all
+                                 if search_kw in (p.get("canonical_name") or "").lower()]
+                evt_list_filtered = [
+                    e for e in evt_list_filtered
                     if search_kw in (e.get("title") or "").lower()
                     or search_kw in (e.get("organization_name") or "").lower()
                 ]
-                st.caption(
-                    f"🔎 关键词 `{search_kw}` — "
-                    f"命中 {len(org_list)} 组织 / {len(prog_list)} 项目 / {len(evt_list)} 事件"
-                )
+
+            # ---------- 按组织分组 ----------
+            UNASSIGNED = "__未归属__"
+
+            progs_by_org = {}
+            for p in prog_list_all:
+                oname = (p.get("organization_name") or "").strip() or UNASSIGNED
+                progs_by_org.setdefault(oname, []).append(p)
+
+            events_by_org = {}
+            for e in evt_list_filtered:
+                oname = (e.get("organization_name") or "").strip() or UNASSIGNED
+                events_by_org.setdefault(oname, []).append(e)
+
+            # ★ 只保留有项目或事件的组织
+            all_org_names = []
+            for n in list(progs_by_org.keys()) + list(events_by_org.keys()):
+                if n and n not in all_org_names:
+                    all_org_names.append(n)
+
+            org_entry_map = {(o.get("canonical_name") or "").strip(): o
+                             for o in org_list_all}
 
             st.markdown("---")
 
-            # 组织
-            st.markdown(f"#### 🏢 组织 ({len(org_list)} 条)")
-            if not org_list:
-                st.caption("无")
-                edited_orgs = []
+            if not all_org_names:
+                st.caption("无待审记录（只抽到组织实体本身、没有项目/事件的，已自动隐藏）。")
+                edited_orgs, edited_progs, edited_events = [], [], []
             else:
-                df_org = _build_review_df(org_list, "org")
-                edited_orgs_df = st.data_editor(
-                    df_org,
-                    column_config=_org_col_config(),
-                    num_rows="dynamic",
-                    width="stretch",
-                    key="monitor_org_editor",
+                st.caption(
+                    f"共 **{len(all_org_names)}** 个组织 · "
+                    f"{sum(len(v) for v in progs_by_org.values())} 项目 · "
+                    f"{sum(len(v) for v in events_by_org.values())} 事件"
                 )
-                edited_orgs = _df_to_records(edited_orgs_df, org_list, "org")
 
-            # 项目
-            st.markdown(f"#### 📦 项目 / 管线 ({len(prog_list)} 条)")
-            if not prog_list:
-                st.caption("无")
-                edited_progs = []
-            else:
-                df_prog = _build_review_df(prog_list, "prog")
-                edited_progs_df = st.data_editor(
-                    df_prog,
-                    column_config=_prog_col_config(),
-                    num_rows="dynamic",
-                    width="stretch",
-                    key="monitor_prog_editor",
-                )
-                edited_progs = _df_to_records(edited_progs_df, prog_list, "prog")
+                edited_orgs_acc, edited_progs_acc, edited_events_acc = [], [], []
 
-            # 事件
-            st.markdown(f"#### 📰 事件 ({len(evt_list)} 条)")
-            if not evt_list:
-                st.caption("无")
-                edited_events = []
-            else:
-                df_evt = _build_review_df(evt_list, "evt")
-                edited_events_df = st.data_editor(
-                    df_evt,
-                    column_config=_evt_col_config(),
-                    num_rows="dynamic",
-                    width="stretch",
-                    key="monitor_evt_editor",
-                )
-                edited_events = _df_to_records(edited_events_df, evt_list, "evt")
+                for org_name in all_org_names:
+                    org_data = org_entry_map.get(org_name)
+                    org_progs = progs_by_org.get(org_name, [])
+                    org_events = events_by_org.get(org_name, [])
+
+                    if org_name == UNASSIGNED:
+                        status_tag = "❓ 未识别组织"
+                        display_name = "（待补充组织）"
+                    else:
+                        existing_id = _find_org_exact(org_name) if org_name else None
+                        status_tag = "♻️ 已存在（复用）" if existing_id else "🆕 新增"
+                        display_name = org_name
+
+                    header = (f"{status_tag}  🏢 {display_name}  "
+                              f"（{len(org_progs)} 项目 / {len(org_events)} 事件）")
+
+                    with st.expander(header, expanded=True):
+                        # --- 组织本体（如果有）---
+                        if org_data:
+                            df_org = _build_review_df([org_data], "org")
+                            key_org = f"monitor_org_editor_{abs(hash(org_name)) % 10**9}"
+                            edited_df = st.data_editor(
+                                df_org,
+                                column_config=_org_col_config(),
+                                num_rows="fixed",
+                                width="stretch",
+                                key=key_org,
+                            )
+                            edited_orgs_acc.extend(
+                                _df_to_records(edited_df, [org_data], "org"))
+
+                        # --- 项目 ---
+                        if org_progs:
+                            st.markdown("**📦 项目 / 管线**")
+                            df_prog = _build_review_df(org_progs, "prog")
+                            key_prog = f"monitor_prog_editor_{abs(hash(org_name)) % 10**9}"
+                            edited_prog_df = st.data_editor(
+                                df_prog,
+                                column_config=_prog_col_config(),
+                                num_rows="dynamic",
+                                width="stretch",
+                                key=key_prog,
+                            )
+                            edited_progs_acc.extend(
+                                _df_to_records(edited_prog_df, org_progs, "prog"))
+
+                        # --- 事件 ---
+                        if org_events:
+                            st.markdown("**📰 情报事件**")
+                            df_evt = _build_review_df(org_events, "evt")
+                            key_evt = f"monitor_evt_editor_{abs(hash(org_name)) % 10**9}"
+                            edited_evt_df = st.data_editor(
+                                df_evt,
+                                column_config=_evt_col_config(),
+                                num_rows="dynamic",
+                                width="stretch",
+                                key=key_evt,
+                            )
+                            edited_events_acc.extend(
+                                _df_to_records(edited_evt_df, org_events, "evt"))
+
+                        # --- Redis 缓存状态 ---
+                        cached_n = 0
+                        persisted_n = 0
+                        items_for_cache = ([org_data] if org_data else []) + org_progs + org_events
+                        for item in items_for_cache:
+                            t = (item or {}).get("canonical_name") or (item or {}).get("title") or ""
+                            if not t:
+                                continue
+                            pt = (item or {}).get("_publish_time", "")
+                            cr = (item or {}).get("_creator", "")
+                            st_ = cache_status(t, pt, cr)
+                            if st_.startswith("✅"):
+                                persisted_n += 1
+                            elif st_.startswith("💾"):
+                                cached_n += 1
+                        if cached_n or persisted_n:
+                            st.caption(
+                                f"💾 Redis 缓存命中 {cached_n} 条 · "
+                                f"✅ 已入库 {persisted_n} 条"
+                            )
+
+                edited_orgs = edited_orgs_acc
+                edited_progs = edited_progs_acc
+                edited_events = edited_events_acc
 
             st.markdown("---")
             col_a1, col_a2 = st.columns([3, 1])
