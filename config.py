@@ -23,9 +23,9 @@ class Config:
     REDIS_MAXIDLE = int(os.getenv("REDIS_MAXIDLE", "30"))
     REDIS_MINIDLE = int(os.getenv("REDIS_MINIDLE", "10"))
     REDIS_MAXTOTAL = int(os.getenv("REDIS_MAXTOTAL", "5000"))
-    REDIS_URL = os.getenv("REDIS_URL", "150.242.82.214")
+    REDIS_URL = os.getenv("REDIS_URL")
     REDIS_PORT = int(os.getenv("REDIS_PORT", "7491"))
-    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "!Redis-hz#2021")
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
     REDIS_KEY_PREFIX = os.getenv("REDIS_KEY_PREFIX", "localhost_lyx")
 
     # 数据路径
