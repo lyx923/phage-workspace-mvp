@@ -30,12 +30,44 @@ from src.engineering_intelligence.technology_assessment import (
 from src.ci.competitor_assessment import create_competitor_assessment
 from src.shared.monitor_cache import cache_status, mark_persisted_by_url
 
+# ★ 新增：CI 信号链路
+from src.ci.ci_monitor import (
+    CIMonitorService,
+    decide_signal_review,
+    promote_signal_to_event,
+)
+
 
 @st.cache_resource
 def get_db():
     return get_driver()
 
 driver = get_db()
+
+
+# ============================================================
+# LLM 适配器
+# ============================================================
+
+class _SimpleLLMAdapter:
+    def __init__(self, client, model):
+        self.client = client
+        self.model = model
+
+    def chat(self, prompt: str) -> str:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content or ""
+
+
+def _build_ci_monitor_service():
+    client = OpenAI(api_key=Config.DS_API_KEY, base_url=Config.DS_BASE_URL)
+    adapter = _SimpleLLMAdapter(client, Config.DS_MODEL)
+    return CIMonitorService(adapter, driver=driver)
 
 
 # ============================================================
@@ -325,8 +357,12 @@ def _commit_scraped_data(url: str, orgs, progs, events) -> dict:
         "prog_created": 0, "prog_reused": 0,
         "event_created": 0, "event_skipped": 0, "event_failed": 0,
         "errors": [],
+        # ★ 新增：供上层做后处理（创建 Review + 生成 Brief）
+        "created_event_ids": [],
+        "affected_org_ids": [],
     }
     org_id_map = {}
+    _affected_orgs = set()   # ★
 
     for org in orgs:
         name = (org.get("canonical_name") or "").strip()
@@ -425,7 +461,8 @@ def _commit_scraped_data(url: str, orgs, progs, events) -> dict:
             pass
 
         try:
-            capture_intelligence_event(
+            # ★ 捕获返回的 event_id
+            eid = capture_intelligence_event(
                 driver,
                 event_type=evt.get("event_type") or "publication",
                 title=evt.get("title") or "",
@@ -438,6 +475,9 @@ def _commit_scraped_data(url: str, orgs, progs, events) -> dict:
                 actor_id="url_scraper",
             )
             stats["event_created"] += 1
+            if eid:
+                stats["created_event_ids"].append(eid)     # ★
+            _affected_orgs.add(oid)                        # ★
         except ValueError as e:
             if "重复" in str(e) or "已存在" in str(e):
                 stats["event_skipped"] += 1
@@ -448,6 +488,7 @@ def _commit_scraped_data(url: str, orgs, progs, events) -> dict:
             stats["event_failed"] += 1
             stats["errors"].append(f"事件 '{evt.get('title','')}' 写入失败：{e}")
 
+    stats["affected_org_ids"] = list(_affected_orgs)       # ★
     return stats
 
 
@@ -486,7 +527,6 @@ def _build_review_df(items, kind):
     for it in items:
         already = bool(it.get("_already_in_db"))
         status_txt = "✅ 已入库" if already else "🆕 新增"
-        # ★ 已入库：默认不勾选；新增：默认勾选
         default_selected = (not already)
 
         if kind == "org":
@@ -670,7 +710,6 @@ def _strip_internal(rec, kind):
 
 
 def _apply_reviewed(driver, sel_orgs, sel_progs, sel_events, prior_errors):
-    # 收集所有涉及到的 source_url
     source_urls = set()
     for r in (sel_orgs + sel_progs + sel_events):
         u = (r.get("_source_url") or "").strip()
@@ -688,7 +727,6 @@ def _apply_reviewed(driver, sel_orgs, sel_progs, sel_events, prior_errors):
     if prior_errors:
         stats.setdefault("errors", []).extend(prior_errors)
 
-    # ★ 同步 Redis 缓存的 already_persisted 标记
     try:
         for u in source_urls:
             mark_persisted_by_url(u)
@@ -748,7 +786,9 @@ def ci_mode(driver):
         mermaid_html = """
         <div class="mermaid">
         graph LR
-            A[情报源<br>SourceArtifact] -->|HAS_SOURCE| B[情报事件<br>IntelligenceEvent]
+            A[情报源<br>SourceArtifact] -->|GENERATED_SIGNAL| S[情报信号<br>IntelligenceSignal]
+            S -->|PROMOTED_TO| B[情报事件<br>IntelligenceEvent]
+            R[审核<br>Review] -->|REVIEWS| S
             B -->|AFFECTS| C[开发项目<br>DevelopmentProgram]
             C -->|TARGETS_PATHOGEN| D[病原体<br>Pathogen]
             B -->|AFFECTS| E[组织<br>Organization]
@@ -761,6 +801,7 @@ def ci_mode(driver):
             J -.->|CLAIMS_ABOUT| L[技术主张<br>TechnicalClaim]
             J -.->|RESULT_FOR| M[技术结果<br>TechnicalResult]
             style A fill:#dbeafe,stroke:#2563eb
+            style S fill:#a5f3fc,stroke:#0891b2
             style B fill:#fef3c7,stroke:#d97706
             style C fill:#e0e7ff,stroke:#4338ca
             style D fill:#fce7f3,stroke:#db2777
@@ -773,6 +814,7 @@ def ci_mode(driver):
             style K fill:#fde047,stroke:#ca8a04
             style L fill:#fca5a5,stroke:#dc2626
             style M fill:#93c5fd,stroke:#2563eb
+            style R fill:#fecaca,stroke:#dc2626
         </div>
         <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
         <script>
@@ -788,7 +830,7 @@ def ci_mode(driver):
             })();
         </script>
         """
-        st.iframe(mermaid_html, height=330)
+        st.iframe(mermaid_html, height=360)
         st.caption("💡 实线表示主要链路，虚线表示可选关联（工程情报分支）。")
 
     # ========== Tab1: 情报流程 ==========
@@ -1416,12 +1458,13 @@ def ci_mode(driver):
 
     # ========== Tab3: 情报抓取 ==========
     with ci_tab3:
-        st.markdown("### 📡 从 URL 抓取情报")
+        st.markdown("### 📡 从 URL 抓取情报（信号 → 审核 → 事件 → 简报）")
         st.caption(
-            "输入网页地址，系统自动抓取并识别其中的**公司 / 项目 / 事件**。"
-            "每行都会标注「🆕 新增 / ♻️ 已存在」，确认后写入图谱。"
+            "抓取网页 → 落 SourceArtifact → LLM 抽取 IntelligenceSignal → 生成待审 Review。"
+            "人工审核通过后可晋升为 IntelligenceEvent，并自动生成 Competitor Brief。"
         )
         st.markdown("---")
+
         col_u1, col_u2 = st.columns([4, 1])
         with col_u1:
             url_input = st.text_input(
@@ -1432,13 +1475,15 @@ def ci_mode(driver):
             )
         with col_u2:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            btn_extract = st.button("🔍 抓取并分析", type="primary", width="stretch", key="scrape_extract_btn")
+            btn_extract = st.button("🔍 抓取并生成信号", type="primary",
+                                    width="stretch", key="scrape_extract_btn")
 
         if btn_extract:
             if not url_input.strip():
                 st.warning("请输入 URL")
             else:
                 st.session_state.scrape_url = url_input.strip()
+
                 with st.spinner("🌐 正在抓取网页..."):
                     try:
                         fetched = _fetch_url_content(url_input.strip())
@@ -1446,268 +1491,253 @@ def ci_mode(driver):
                     except Exception as e:
                         st.error(f"抓取失败：{e}")
                         st.session_state.scrape_raw = None
-                        st.session_state.scrape_result = None
+
                 if st.session_state.scrape_raw:
-                    with st.spinner("🤖 正在用 LLM 抽取结构化信息..."):
-                        try:
-                            result = _extract_with_llm(
-                                url=url_input.strip(),
-                                title=st.session_state.scrape_raw.get("title", ""),
-                                content=st.session_state.scrape_raw.get("text", ""),
-                            )
-                            st.session_state.scrape_result = result
-                        except Exception as e:
-                            st.error(f"LLM 抽取失败：{e}")
-                            st.session_state.scrape_result = None
+                    raw = st.session_state.scrape_raw
 
-        if st.session_state.scrape_result:
-            result = st.session_state.scrape_result
-            raw = st.session_state.scrape_raw or {}
-            scrape_url = st.session_state.scrape_url
+                    src_id = None
+                    try:
+                        src_id = create_source_artifact(
+                            driver,
+                            source_type="url_scrape",
+                            title=(raw.get("title") or "URL 抓取")[:120],
+                            url=url_input.strip(),
+                            published_date="unknown",
+                            credibility_tier="secondary",
+                            actor_id="url_scraper",
+                        )
+                    except Exception as e:
+                        st.error(f"SourceArtifact 创建失败：{e}")
 
-            if result.get("_parse_error"):
-                st.warning(
-                    f"⚠️ JSON 解析失败：{result['_parse_error']}\n\n"
-                    "可能原因：LLM 输出过长被截断。可尝试：\n"
-                    "1. 刷新重试（偶发）\n"
-                    "2. 换用信息量更少的页面\n"
-                    "3. 如果是超长周报，只截取感兴趣的部分单独抓取"
+                    if src_id:
+                        with st.spinner("🤖 正在抽取情报信号..."):
+                            try:
+                                svc = _build_ci_monitor_service()
+                                out = svc.ingest_article(
+                                    text=raw.get("text", ""),
+                                    source_artifact_id=src_id,
+                                    reviewer_id="pending",
+                                )
+                                sig = out["signal"]
+                                st.session_state["last_signal"] = {
+                                    "signal_id": sig.signal_id,
+                                    "review_id": out["review_id"],
+                                    "source_artifact_id": src_id,
+                                    "title": sig.title,
+                                    "summary": sig.summary,
+                                    "signal_type": sig.signal_type,
+                                    "organization": sig.organization,
+                                    "confidence": sig.confidence,
+                                }
+                                st.success(
+                                    f"✅ 已生成信号 + 待审 Review\n\n"
+                                    f"- signal_id: `{sig.signal_id}`\n"
+                                    f"- source_artifact_id: `{src_id}`"
+                                )
+                            except Exception as e:
+                                st.error(f"信号抽取失败：{e}")
+
+        last = st.session_state.get("last_signal")
+        if last:
+            st.markdown("---")
+            st.markdown("#### 🧾 待审信号")
+            col_s1, col_s2 = st.columns([3, 2])
+            with col_s1:
+                st.write(f"**标题**: {last['title'] or '（无）'}")
+                st.write(f"**类型**: `{last['signal_type']}`")
+                st.write(f"**组织（LLM 抽取）**: {last['organization'] or '（未识别）'}")
+                st.write(f"**置信度**: {last['confidence']}")
+                st.write(f"**摘要**: {last['summary'] or '（无）'}")
+            with col_s2:
+                st.json({
+                    "signal_id": last["signal_id"],
+                    "review_id": last["review_id"],
+                    "source_artifact_id": last["source_artifact_id"],
+                })
+
+            signal_org_text = (last.get("organization") or "").strip()
+            if signal_org_text:
+                _existing_org = _find_org_exact(signal_org_text)
+                if _existing_org:
+                    st.caption(f"♻️ LLM 抽出的组织「{signal_org_text}」已存在于库 → `{_existing_org}`（晋升时自动复用）")
+                else:
+                    st.caption(f"🆕 LLM 抽出的组织「{signal_org_text}」在库中不存在 → 晋升时可一键新建")
+
+            st.markdown("##### 📝 人工审核")
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                decision = st.selectbox(
+                    "审核决策",
+                    ["approved", "rejected"],
+                    key="signal_decision",
                 )
-                with st.expander("查看被截断的原文片段（末尾 500 字）"):
-                    st.code(result.get("_raw_snippet", ""))
-                if not (result.get("organizations") or result.get("programs") or result.get("events")):
-                    st.info("未抽取到任何结构化数据。")
-                    st.session_state.scrape_result = None
-                    st.stop()
+            with col_r2:
+                reviewer = st.text_input("审核人", value="analyst_01",
+                                         key="signal_reviewer")
 
-            if result.get("_repaired"):
-                st.info("ℹ️ 本次 LLM 输出被截断，已自动修复保留了完整部分。")
+            comment = st.text_area("审核意见", value="", key="signal_comment")
 
-            orgs_raw = result.get("organizations", []) or []
-            progs_raw = result.get("programs", []) or []
-            events_raw = result.get("events", []) or []
+            if st.button("✅ 提交审核", type="primary", key="signal_submit_review"):
+                try:
+                    decide_signal_review(
+                        driver,
+                        signal_id=last["signal_id"],
+                        decision=decision,
+                        reviewer_id=reviewer,
+                        comment=comment,
+                    )
+                    st.success(f"信号 `{last['signal_id']}` 审核结果：{decision}")
+                    st.session_state["last_signal"]["decision"] = decision
+                except Exception as e:
+                    st.error(f"审核失败：{e}")
 
-            org_status = {}
-            for o in orgs_raw:
-                nm = o.get("canonical_name", "")
-                if nm and nm not in org_status:
-                    org_status[nm] = _check_org_status(nm, url=scrape_url)
+            current_decision = st.session_state.get("last_signal", {}).get("decision")
+            if current_decision == "approved":
+                st.markdown("---")
+                st.markdown("#### ⬆️ 晋升为情报事件（Signal → IntelligenceEvent）")
+                st.caption(
+                    "所属组织必填。可复用已有组织，也可选「➕ 新建组织…」用 LLM 抽出的名字一键新建"
+                    "（自动去重）。晋升成功后自动生成 Competitor Brief。"
+                )
 
-            prog_status = {}
-            for p in progs_raw:
-                nm = p.get("canonical_name", "")
-                if nm and nm not in prog_status:
-                    prog_status[nm] = _check_program_status(nm)
+                matched_org_id = None
+                if signal_org_text:
+                    try:
+                        matched_org_id = _find_org_exact(signal_org_text)
+                    except Exception:
+                        matched_org_id = None
 
-            evt_status = {}
-            for e in events_raw:
-                key = (e.get("organization_name", ""), e.get("title", ""), e.get("event_date", ""))
-                if key not in evt_status:
-                    evt_status[key] = _check_event_status(
-                        e.get("organization_name", ""), e.get("title", ""),
-                        e.get("event_date", ""), url=scrape_url,
+                try:
+                    org_list = list_organizations(driver)
+                except Exception:
+                    org_list = []
+
+                NEW_ORG_SENTINEL = "__NEW_ORG__"
+                org_opts = [NEW_ORG_SENTINEL] + [
+                    f"{o['name']} ({o['id']})" for o in org_list
+                ]
+
+                default_idx = 0
+                if matched_org_id:
+                    for i, opt in enumerate(org_opts):
+                        if opt != NEW_ORG_SENTINEL and matched_org_id in opt:
+                            default_idx = i
+                            break
+
+                with st.form("promote_signal_form"):
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        evt_type = st.selectbox(
+                            "事件类型",
+                            ["publication", "regulatory_update", "funding",
+                             "acquisition", "partnership", "clinical_trial_update",
+                             "patent_event", "pipeline_update"],
+                            index=0,
+                            key="promote_evt_type",
+                        )
+                        evt_title = st.text_input(
+                            "事件标题", value=last["title"],
+                            key="promote_evt_title",
+                        )
+                        evt_date = st.text_input(
+                            "事件日期 (YYYY-MM-DD)", value="",
+                            key="promote_evt_date",
+                        )
+                    with col_e2:
+                        org_pick = st.selectbox(
+                            "所属组织（必填）",
+                            options=org_opts,
+                            index=default_idx,
+                            format_func=lambda x: "➕ 新建组织…" if x == NEW_ORG_SENTINEL else x,
+                            key="promote_org_pick",
+                        )
+                        new_org_name = st.text_input(
+                            "新建组织名称（当上面选「➕ 新建组织…」时生效）",
+                            value=signal_org_text,
+                            key="promote_new_org_name",
+                            placeholder="例如：中科鑫飞（深圳）生物技术有限公司",
+                        )
+                        prog_id = st.text_input(
+                            "program_id（可选，直接填 ID）",
+                            value="", key="promote_prog_id",
+                        )
+                        pub_at = st.text_input(
+                            "发布日期 (YYYY-MM-DD)", value="",
+                            key="promote_pub_at",
+                        )
+
+                    evt_summary = st.text_area(
+                        "事实摘要", value=last["summary"],
+                        key="promote_evt_summary",
+                    )
+                    submitted = st.form_submit_button(
+                        "🚀 晋升为事件并生成简报", type="primary"
                     )
 
-            n_org_new  = sum(1 for s, _ in org_status.values() if s == "new")
-            n_org_ex   = sum(1 for s, _ in org_status.values() if s == "existing")
-            n_prog_new = sum(1 for s, _ in prog_status.values() if s == "new")
-            n_prog_ex  = sum(1 for s, _ in prog_status.values() if s == "existing")
-            n_evt_new  = sum(1 for s, _ in evt_status.values() if s == "new")
-            n_evt_ex   = sum(1 for s, _ in evt_status.values() if s == "existing")
+                if submitted:
+                    org_id = None
+                    if org_pick == NEW_ORG_SENTINEL:
+                        nm = (new_org_name or "").strip()
+                        if not nm:
+                            st.warning("请填写新组织名称（或在上面选择已有组织）")
+                        else:
+                            try:
+                                existing_id = _find_org_exact(nm)
+                                if existing_id:
+                                    org_id = existing_id
+                                    st.info(f"组织「{nm}」已存在，复用已有节点：`{existing_id}`")
+                                else:
+                                    org_id = create_organization(
+                                        driver,
+                                        canonical_name=nm,
+                                        organization_type="biotech",
+                                        aliases=[],
+                                        actor_id="signal_promoter",
+                                    )
+                                    st.success(f"✅ 已新建组织：`{org_id}`")
+                            except Exception as e:
+                                st.error(f"组织创建失败：{e}")
+                    else:
+                        if org_pick and "(" in org_pick:
+                            org_id = org_pick.rsplit("(", 1)[-1].rstrip(")").strip()
 
-            st.success(
-                f"✅ 抽取完成：识别到 **{len(orgs_raw)}** 个组织、"
-                f"**{len(progs_raw)}** 个项目、**{len(events_raw)}** 个事件"
-            )
+                    if org_id:
+                        try:
+                            with st.spinner("晋升为事件..."):
+                                event_id = promote_signal_to_event(
+                                    driver,
+                                    signal_id=last["signal_id"],
+                                    event_type=evt_type,
+                                    title=evt_title,
+                                    factual_summary=evt_summary,
+                                    organization_id=org_id,
+                                    program_id=(prog_id.strip() or None),
+                                    event_date=(evt_date.strip() or None),
+                                    published_at=(pub_at.strip() or None),
+                                    actor_id="signal_promoter",
+                                )
+                            st.success(f"✅ 已生成 IntelligenceEvent：`{event_id}`")
+                            st.session_state["last_event_id"] = event_id
 
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                st.markdown(f"""
-                <div class="ci-metric-box">
-                    <div class="number">🆕 {n_org_new} · ♻️ {n_org_ex}</div>
-                    <div class="label">组织：新增 / 已存在</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with s2:
-                st.markdown(f"""
-                <div class="ci-metric-box">
-                    <div class="number">🆕 {n_prog_new} · ♻️ {n_prog_ex}</div>
-                    <div class="label">项目：新增 / 已存在</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with s3:
-                st.markdown(f"""
-                <div class="ci-metric-box">
-                    <div class="number">🆕 {n_evt_new} · ♻️ {n_evt_ex}</div>
-                    <div class="label">事件：新增 / 已存在</div>
-                </div>
-                """, unsafe_allow_html=True)
+                            with st.spinner("生成 Competitor Brief..."):
+                                brief = generate_competitor_brief(
+                                    driver, org_id, days_back=365, persist=True
+                                )
+                            brief_id = brief.get("brief_id") if isinstance(brief, dict) else None
+                            st.info(f"📄 Competitor Brief 已生成：`{brief_id}`")
 
-            with st.expander("📄 查看抓取到的网页原文（前 3000 字）", expanded=False):
-                st.caption(f"标题：{raw.get('title', '（无）')}")
-                st.text((raw.get("text") or "")[:3000] + "...")
-
-            st.markdown("---")
-            st.markdown("#### 🏢 组织（可编辑）")
-            if orgs_raw:
-                org_rows = []
-                for o in orgs_raw:
-                    nm = o.get("canonical_name", "")
-                    status, matched = org_status.get(nm, ("empty", ""))
-                    label = _status_emoji(status)
-                    if status == "existing" and matched and matched.lower() != nm.lower():
-                        label = f"♻️ 已存在 → {matched}"
-                    org_rows.append({
-                        "状态": label,
-                        "canonical_name": nm,
-                        "organization_type": o.get("organization_type", "biotech"),
-                        "aliases": _norm_list_to_str(o.get("aliases", [])),
-                        "headquarters_country": o.get("headquarters_country", ""),
-                        "website": o.get("website", ""),
-                        "description": o.get("description", ""),
-                    })
-                org_df = pd.DataFrame(org_rows)
-                edited_orgs = st.data_editor(
-                    org_df,
-                    column_config={
-                        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
-                        "canonical_name": st.column_config.TextColumn("名称", required=True, width="medium"),
-                        "organization_type": st.column_config.SelectboxColumn("类型", width="small", options=["biotech", "pharma", "academic", "CRO", "tech", "food_safety", "other"]),
-                        "aliases": st.column_config.TextColumn("别名（逗号分隔）", width="small"),
-                        "headquarters_country": st.column_config.TextColumn("国家", width="small"),
-                        "website": st.column_config.TextColumn("官网", width="medium"),
-                        "description": st.column_config.TextColumn("描述", width="large"),
-                    },
-                    num_rows="dynamic", width="stretch", key="scrape_org_editor",
-                )
-            else:
-                st.caption("未识别到组织")
-                edited_orgs = pd.DataFrame(columns=["状态", "canonical_name", "organization_type", "aliases", "headquarters_country", "website", "description"])
-
-            st.markdown("#### 📦 项目 / 管线（可编辑）")
-            if progs_raw:
-                prog_rows = []
-                for p in progs_raw:
-                    nm = p.get("canonical_name", "")
-                    status, matched = prog_status.get(nm, ("empty", ""))
-                    label = _status_emoji(status)
-                    if status == "existing" and matched and matched.lower() != nm.lower():
-                        label = f"♻️ 已存在 → {matched}"
-                    prog_rows.append({
-                        "状态": label,
-                        "canonical_name": nm,
-                        "organization_name": p.get("organization_name", ""),
-                        "program_type": p.get("program_type", "therapeutic"),
-                        "development_stage": p.get("development_stage", "discovery"),
-                        "modality": p.get("modality", ""),
-                        "target_pathogen_species": _norm_list_to_str(p.get("target_pathogen_species", [])),
-                    })
-                prog_df = pd.DataFrame(prog_rows)
-                edited_progs = st.data_editor(
-                    prog_df,
-                    column_config={
-                        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
-                        "canonical_name": st.column_config.TextColumn("项目名称", required=True, width="medium"),
-                        "organization_name": st.column_config.TextColumn("所属组织", required=True, width="medium"),
-                        "program_type": st.column_config.SelectboxColumn("类型", width="small", options=["therapeutic", "diagnostic", "platform", "research", "food_safety"]),
-                        "development_stage": st.column_config.SelectboxColumn("阶段", width="small", options=["discovery", "preclinical", "phase_1", "phase_1_2", "phase_2", "phase_2b", "phase_3", "commercial"]),
-                        "modality": st.column_config.TextColumn("模态", width="small"),
-                        "target_pathogen_species": st.column_config.TextColumn("靶向病原（逗号分隔）", width="medium"),
-                    },
-                    num_rows="dynamic", width="stretch", key="scrape_prog_editor",
-                )
-            else:
-                st.caption("未识别到项目")
-                edited_progs = pd.DataFrame(columns=["状态", "canonical_name", "organization_name", "program_type", "development_stage", "modality", "target_pathogen_species"])
-
-            st.markdown("#### 📰 事件（可编辑）")
-            if events_raw:
-                evt_rows = []
-                for e in events_raw:
-                    key = (e.get("organization_name", ""), e.get("title", ""), e.get("event_date", ""))
-                    status, _ = evt_status.get(key, ("empty", ""))
-                    evt_rows.append({
-                        "状态": _status_emoji(status),
-                        "event_type": e.get("event_type", "publication"),
-                        "title": e.get("title", ""),
-                        "factual_summary": e.get("factual_summary", ""),
-                        "organization_name": e.get("organization_name", ""),
-                        "program_name": e.get("program_name", ""),
-                        "event_date": e.get("event_date", ""),
-                        "published_at": e.get("published_at", e.get("event_date", "")),
-                    })
-                evt_df = pd.DataFrame(evt_rows)
-                edited_events = st.data_editor(
-                    evt_df,
-                    column_config={
-                        "状态": st.column_config.TextColumn("状态", width="small", disabled=True),
-                        "event_type": st.column_config.SelectboxColumn("事件类型", required=True, width="small", options=["regulatory_update", "funding", "acquisition", "merger", "partnership", "clinical_trial_update", "publication", "patent_event", "pipeline_update"]),
-                        "title": st.column_config.TextColumn("标题", required=True, width="large"),
-                        "factual_summary": st.column_config.TextColumn("事实摘要", width="large"),
-                        "organization_name": st.column_config.TextColumn("所属组织", required=True, width="medium"),
-                        "program_name": st.column_config.TextColumn("关联项目（可选）", width="medium"),
-                        "event_date": st.column_config.TextColumn("事件日期 (YYYY-MM-DD)", width="small"),
-                        "published_at": st.column_config.TextColumn("发布日期", width="small"),
-                    },
-                    num_rows="dynamic", width="stretch", key="scrape_evt_editor",
-                )
-            else:
-                st.caption("未识别到事件")
-                edited_events = pd.DataFrame(columns=["状态", "event_type", "title", "factual_summary", "organization_name", "program_name", "event_date", "published_at"])
-
-            st.markdown("---")
-            col_confirm, col_reset = st.columns([3, 1])
-            with col_confirm:
-                btn_commit = st.button("✅ 确认写入图谱", type="primary", width="stretch", key="scrape_commit_btn")
-            with col_reset:
-                btn_reset = st.button("🗑️ 清除结果", width="stretch", key="scrape_reset_btn")
-
-            if btn_reset:
-                st.session_state.scrape_result = None
-                st.session_state.scrape_raw = None
-                st.rerun()
-
-            if btn_commit:
-                org_records = edited_orgs.drop(columns=["状态"], errors="ignore").fillna("").to_dict("records")
-                prog_records = edited_progs.drop(columns=["状态"], errors="ignore").fillna("").to_dict("records")
-                evt_records = edited_events.drop(columns=["状态"], errors="ignore").fillna("").to_dict("records")
-
-                if not evt_records and not org_records:
-                    st.warning("没有需要写入的内容")
-                else:
-                    with st.spinner("正在写入图谱..."):
-                        stats = _commit_scraped_data(
-                            url=st.session_state.scrape_url,
-                            orgs=org_records,
-                            progs=prog_records,
-                            events=evt_records,
-                        )
-                    parts = []
-                    for k, label in [
-                        ("org_created", "新建企业"), ("org_reused", "复用企业"),
-                        ("prog_created", "新建项目"), ("prog_reused", "复用项目"),
-                        ("event_created", "新建事件"), ("event_skipped", "跳过重复"),
-                        ("event_failed", "失败"),
-                    ]:
-                        if stats.get(k):
-                            parts.append(f"{label} {stats[k]}")
-                    st.success("✅ 写入完成：" + (" · ".join(parts) if parts else "无变更"))
-                    if stats.get("errors"):
-                        with st.expander(f"⚠️ {len(stats['errors'])} 条错误"):
-                            for err in stats["errors"][:30]:
-                                st.write(f"- {err}")
-                    st.session_state.scrape_result = None
-                    st.session_state.scrape_raw = None
+                        except Exception as e:
+                            st.error(f"晋升 / 简报生成失败：{e}")
         else:
             st.info(
-                "💡 使用步骤：\n"
-                "1. 粘贴网页地址（新闻稿、行业周报、公司博客等）\n"
-                "2. 点击「🔍 抓取并分析」\n"
-                "3. 检查识别出的公司 / 项目 / 事件 —— **每行都有状态列**：\n"
-                "   · 🆕 新增 = 数据库中不存在\n"
-                "   · ♻️ 已存在 = 数据库已有（自动复用）\n"
-                "   · ♻️ 已存在 → XXX = 通过别名 / 域名匹配到了 XXX\n"
-                "4. 点击「✅ 确认写入图谱」"
+                "💡 使用流程：\n"
+                "1. 输入网页地址 → 点击「🔍 抓取并生成信号」\n"
+                "2. 系统自动落 SourceArtifact 并抽取 IntelligenceSignal\n"
+                "3. 在「🧾 待审信号」区域做人工审核（approved / rejected）\n"
+                "4. 审核通过后：\n"
+                "   · 若 LLM 抽到的组织名在库里已有 → 下拉自动选中，直接晋升\n"
+                "   · 若库里没有 → 选「➕ 新建组织…」，填好名字一键晋升\n"
+                "5. 晋升成功后自动调用生成简报"
             )
 
     # ========== Tab4: 监控中心 ==========
@@ -1716,9 +1746,9 @@ def ci_mode(driver):
         st.caption(
             "抓取所有已配置的监控源，LLM 抽取后逐条审核，勾选保留的写入图谱。"
             "**已解析过的事件会自动隐藏，避免重复展示。**"
+            "应用选中项后会自动创建审核记录并生成竞争简报。"
         )
 
-        # ---------- 顶部提示 ----------
         flash = st.session_state.pop("_monitor_flash", None)
         if flash:
             kind, text = flash
@@ -1729,7 +1759,6 @@ def ci_mode(driver):
             elif kind == "info":
                 st.info(f"ℹ️ {text}")
 
-        # ---------- 监控源配置面板 ----------
         with st.expander("⚙️ 监控源配置", expanded=False):
 
             with st.form("monitor_add_source_form"):
@@ -1773,7 +1802,6 @@ def ci_mode(driver):
                         st.session_state["_monitor_flash"] = ("error", f"添加失败：{e}")
                         st.rerun()
 
-            # ---------- 已配置的监控源 ----------
             try:
                 from scripts.monitor_runner import _list_global_sources_raw, _guess_label_from_url
                 global_sources = _list_global_sources_raw(driver)
@@ -1813,10 +1841,8 @@ def ci_mode(driver):
                                 st.session_state["_monitor_flash"] = ("error", f"删除失败：{e}")
                                 st.rerun()
 
-        # ---------- 抓取按钮区域 ----------
         st.markdown("---")
 
-        # 取所有监控源，用于「单源抓取」下拉
         try:
             from scripts.monitor_runner import get_all_monitor_sources as _get_all_srcs2
             _all_srcs = _get_all_srcs2(driver)
@@ -1901,7 +1927,6 @@ def ci_mode(driver):
                             with st.expander("查看详细错误"):
                                 st.code(_tb.format_exc())
 
-        # ---------- 从磁盘恢复 ----------
         if "monitor_pending" not in st.session_state:
             loaded = _load_pending()
             if loaded:
@@ -1917,7 +1942,8 @@ def ci_mode(driver):
                 "3. 抓取结果会**按组织分组**展示（组织 → 项目 / 事件），"
                 "   **没有项目或事件的组织不会展示**\n"
                 "4. 勾选后点【✅ 应用选中项】写入图谱\n"
-                "5. 已解析过的条目会走 Redis 缓存，不再重复调用 LLM"
+                "5. 应用成功后会自动创建审核记录并生成竞争简报\n"
+                "6. 已解析过的条目会走 Redis 缓存，不再重复调用 LLM"
             )
         else:
             stats = pending.get("stats", {})
@@ -1957,7 +1983,6 @@ def ci_mode(driver):
                     or search_kw in (e.get("organization_name") or "").lower()
                 ]
 
-            # ---------- 按组织分组 ----------
             UNASSIGNED = "__未归属__"
 
             progs_by_org = {}
@@ -1970,7 +1995,6 @@ def ci_mode(driver):
                 oname = (e.get("organization_name") or "").strip() or UNASSIGNED
                 events_by_org.setdefault(oname, []).append(e)
 
-            # ★ 只保留有项目或事件的组织
             all_org_names = []
             for n in list(progs_by_org.keys()) + list(events_by_org.keys()):
                 if n and n not in all_org_names:
@@ -2010,7 +2034,6 @@ def ci_mode(driver):
                               f"（{len(org_progs)} 项目 / {len(org_events)} 事件）")
 
                     with st.expander(header, expanded=True):
-                        # --- 组织本体（如果有）---
                         if org_data:
                             df_org = _build_review_df([org_data], "org")
                             key_org = f"monitor_org_editor_{abs(hash(org_name)) % 10**9}"
@@ -2024,7 +2047,6 @@ def ci_mode(driver):
                             edited_orgs_acc.extend(
                                 _df_to_records(edited_df, [org_data], "org"))
 
-                        # --- 项目 ---
                         if org_progs:
                             st.markdown("**📦 项目 / 管线**")
                             df_prog = _build_review_df(org_progs, "prog")
@@ -2039,7 +2061,6 @@ def ci_mode(driver):
                             edited_progs_acc.extend(
                                 _df_to_records(edited_prog_df, org_progs, "prog"))
 
-                        # --- 事件 ---
                         if org_events:
                             st.markdown("**📰 情报事件**")
                             df_evt = _build_review_df(org_events, "evt")
@@ -2054,7 +2075,6 @@ def ci_mode(driver):
                             edited_events_acc.extend(
                                 _df_to_records(edited_evt_df, org_events, "evt"))
 
-                        # --- Redis 缓存状态 ---
                         cached_n = 0
                         persisted_n = 0
                         items_for_cache = ([org_data] if org_data else []) + org_progs + org_events
@@ -2120,6 +2140,57 @@ def ci_mode(driver):
                         f"新建事件 {stats_apply['event_created']} · "
                         f"跳过重复 {stats_apply['event_skipped']}"
                     )
+
+                    # ==================================================
+                    # ★ 自动创建 Review（审核记录）
+                    # ==================================================
+                    created_event_ids = stats_apply.get("created_event_ids", []) or []
+                    review_ids = []
+                    if created_event_ids:
+                        with st.spinner(f"为 {len(created_event_ids)} 个事件创建审核记录..."):
+                            for eid in created_event_ids:
+                                try:
+                                    rid = create_review(
+                                        driver,
+                                        review_type="ci_fact_review",
+                                        target_object_type="IntelligenceEvent",
+                                        target_object_id=eid,
+                                        reviewer_id="monitor_operator",
+                                        decision="approved",
+                                        comment="监控中心批量审核通过",
+                                        update_target_status=True,
+                                        actor_id="monitor_center",
+                                    )
+                                    review_ids.append(rid)
+                                except Exception as e:
+                                    stats_apply.setdefault("errors", []).append(
+                                        f"Review 创建失败 (event={eid})：{e}"
+                                    )
+                        if review_ids:
+                            st.info(f"📝 已为 {len(review_ids)} 个事件创建审核记录（approved）")
+
+                    # ==================================================
+                    # ★ 自动生成 Competitor Brief
+                    # ==================================================
+                    affected_org_ids = stats_apply.get("affected_org_ids", []) or []
+                    brief_ids = []
+                    if affected_org_ids:
+                        with st.spinner(f"为 {len(affected_org_ids)} 个组织生成竞争简报..."):
+                            for oid in affected_org_ids:
+                                try:
+                                    brief = generate_competitor_brief(
+                                        driver, oid, days_back=365, persist=True
+                                    )
+                                    bid = brief.get("brief_id") if isinstance(brief, dict) else None
+                                    if bid:
+                                        brief_ids.append(bid)
+                                except Exception as e:
+                                    stats_apply.setdefault("errors", []).append(
+                                        f"Brief 生成失败 (org={oid})：{e}"
+                                    )
+                        if brief_ids:
+                            st.info(f"📄 已生成 {len(brief_ids)} 份 Competitor Brief：{', '.join(brief_ids)}")
+
                     if stats_apply.get("errors"):
                         with st.expander(f"⚠️ {len(stats_apply['errors'])} 条错误"):
                             for e in stats_apply["errors"][:30]:

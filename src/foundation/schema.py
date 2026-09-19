@@ -4,10 +4,89 @@ from neo4j import GraphDatabase
 import hashlib
 import json
 
+
+# =====================================================
+# CI 信号链路契约（声明式，供文档 / 测试 / 治理使用）
+# 注意：Neo4j 不支持对关系类型建唯一约束，
+#       只支持对关系属性建索引（Neo4j 4.3+）。
+# =====================================================
+
+CI_SIGNAL_CHAIN = [
+    {
+        "from": "SourceArtifact",
+        "rel": "GENERATED_SIGNAL",
+        "to": "IntelligenceSignal",
+        "cardinality": "1..N",
+        "props": ["source_id"],
+        "desc": "来源生成信号（一篇文章可抽取多条信号）",
+    },
+    {
+        "from": "Review",
+        "rel": "REVIEWS",
+        "to": "IntelligenceSignal",
+        "cardinality": "1..N",
+        "props": ["target_object_id"],
+        "desc": "审核作用于信号；决策驱动信号状态",
+    },
+    {
+        "from": "IntelligenceSignal",
+        "rel": "PROMOTED_TO",
+        "to": "IntelligenceEvent",
+        "cardinality": "0..1",
+        "props": ["event_id"],
+        "desc": "审核通过后信号晋升为正式情报事件",
+    },
+    {
+        "from": "IntelligenceEvent",
+        "rel": "AFFECTS",
+        "to": ["Organization", "DevelopmentProgram"],
+        "cardinality": "1..N",
+        "props": ["target_type"],
+        "desc": "事件影响到的组织或研发项目",
+    },
+    {
+        "from": "IntelligenceProduct",
+        "rel": "COVERS",
+        "to": "Organization",
+        "cardinality": "1..N",
+        "props": ["organization_id"],
+        "desc": "竞争简报覆盖的组织",
+    },
+]
+
+
+def declare_ci_signal_chain(driver):
+    """
+    把 CI 链路契约写成一个 OntologyModule 节点，
+    便于审计 / 前端读取 / 版本对比。
+    """
+    payload = json.dumps(CI_SIGNAL_CHAIN, ensure_ascii=False, sort_keys=True)
+    schema_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    with driver.session() as session:
+        session.run(
+            """
+            MERGE (m:OntologyModule {module_id: 'CI-SIGNAL-CHAIN'})
+            SET m.module_name = 'ci-signal-chain',
+                m.domain      = 'ci',
+                m.version     = '1.0.0',
+                m.status      = 'active',
+                m.owner       = 'platform_team',
+                m.schema_hash = $hash,
+                m.contract    = $payload,
+                m.created_at  = COALESCE(m.created_at, datetime()),
+                m.activated_at = datetime()
+            """,
+            hash=schema_hash,
+            payload=payload,
+        )
+    print(f"✅ CI-SIGNAL-CHAIN 契约已声明 (hash={schema_hash})")
+
+
 def create_schema(driver):
     """创建所有约束和索引（幂等，支持重复执行）"""
     with driver.session() as session:
-        
+
         # 1. Pathogen 唯一约束
         session.run("CREATE CONSTRAINT pathogen_id_unique IF NOT EXISTS FOR (p:Pathogen) REQUIRE p.pathogen_id IS UNIQUE;")
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:Pathogen) ON (p.taxonomy_id);")
@@ -20,11 +99,9 @@ def create_schema(driver):
         session.run("CREATE CONSTRAINT interaction_id_unique IF NOT EXISTS FOR (i:PhageHostInteraction) REQUIRE i.interaction_id IS UNIQUE;")
 
         # -------- 第二阶段新增对象（科学子网） --------
-        # HostStrain：以 host_strain_id 为主键，strain_label 加索引加速查询
         session.run("CREATE CONSTRAINT host_strain_id_unique IF NOT EXISTS FOR (h:HostStrain) REQUIRE h.host_strain_id IS UNIQUE;")
         session.run("CREATE INDEX host_strain_label_idx IF NOT EXISTS FOR (h:HostStrain) ON (h.strain_label);")
 
-        # LysisAssay：assay_id 唯一
         session.run("CREATE CONSTRAINT assay_id_unique IF NOT EXISTS FOR (a:LysisAssay) REQUIRE a.assay_id IS UNIQUE;")
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.assay_type);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.qc_status);")
@@ -32,9 +109,8 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.evidence_level);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.source_domain);")
 
-        # EvidenceSource：evidence_id 唯一（保留兼容，但不再使用）
         session.run("CREATE CONSTRAINT evidence_id_unique IF NOT EXISTS FOR (e:EvidenceSource) REQUIRE e.evidence_id IS UNIQUE;")
-        
+
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SourceArtifact) REQUIRE s.source_id IS UNIQUE")
         session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_domain)")
         session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_type)")
@@ -44,23 +120,21 @@ def create_schema(driver):
         session.run("CREATE CONSTRAINT program_id_unique IF NOT EXISTS FOR (d:DevelopmentProgram) REQUIRE d.program_id IS UNIQUE;")
         session.run("CREATE CONSTRAINT event_id_unique IF NOT EXISTS FOR (e:IntelligenceEvent) REQUIRE e.event_id IS UNIQUE;")
 
-        # （可选）为市场对象添加常用查询索引
         session.run("CREATE INDEX org_name_idx IF NOT EXISTS FOR (o:Organization) ON (o.canonical_name);")
         session.run("CREATE INDEX program_name_idx IF NOT EXISTS FOR (d:DevelopmentProgram) ON (d.canonical_name);")
         session.run("CREATE INDEX event_type_idx IF NOT EXISTS FOR (e:IntelligenceEvent) ON (e.event_type);")
         session.run("CREATE INDEX event_dedup_key_idx IF NOT EXISTS FOR (e:IntelligenceEvent) ON (e.deduplication_key);")
 
-        # 证据升级提案
         session.run("CREATE CONSTRAINT proposal_id_unique IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) REQUIRE p.proposal_id IS UNIQUE;")
         session.run("CREATE INDEX proposal_status_idx IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) ON (p.status);")
-        
+
         # -------- AuditEvent 约束与索引 --------
         session.run("CREATE CONSTRAINT audit_event_id_unique IF NOT EXISTS FOR (ae:AuditEvent) REQUIRE ae.audit_event_id IS UNIQUE;")
         session.run("CREATE INDEX audit_event_correlation_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.correlation_id);")
         session.run("CREATE INDEX audit_event_domain_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.domain);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.reason);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.actor_id);")
-        
+
         # -------- Review 约束与索引 --------
         session.run("CREATE CONSTRAINT review_id_unique IF NOT EXISTS FOR (r:Review) REQUIRE r.review_id IS UNIQUE;")
         session.run("CREATE INDEX IF NOT EXISTS FOR (r:Review) ON (r.review_type);")
@@ -76,7 +150,7 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:ScientificEvidencePackage) ON (p.status);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:ScientificEvidencePackage) ON (p.review_status);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:ScientificEvidencePackage) ON (p.package_type);")
-        
+
         # -------- ControlledVocabulary 约束与索引 --------
         session.run("CREATE CONSTRAINT vocabulary_id_unique IF NOT EXISTS FOR (v:ControlledVocabulary) REQUIRE v.vocabulary_id IS UNIQUE;")
         session.run("CREATE CONSTRAINT term_id_unique IF NOT EXISTS FOR (t:ControlledTerm) REQUIRE t.term_id IS UNIQUE;")
@@ -111,7 +185,7 @@ def create_schema(driver):
         session.run("CREATE INDEX comp_assessment_subject_idx IF NOT EXISTS FOR (ca:CompetitorAssessment) ON (ca.subject_type);")
         session.run("CREATE INDEX tech_assessment_subject_idx IF NOT EXISTS FOR (ta:TechnologyAssessment) ON (ta.subject_type);")
 
-         # -------- 工程化噬菌体情报关系类型索引 --------
+        # -------- 工程化噬菌体情报关系类型索引 --------
         session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:CLAIMS_ABOUT]-() ON (r.claim_type);")
         session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:RESULT_FOR]-() ON (r.result_type);")
         session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:REPORTED_IN]-() ON (r.source_id);")
@@ -120,7 +194,29 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:USES_CONSTRUCT]-() ON (r.program_id);")
         session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:ASSESSES]-() ON (r.subject_type);")
 
-        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网 + 工程情报 + 决策支持）")
+        # -------- IntelligenceSignal 节点索引 --------
+        session.run("CREATE CONSTRAINT intelligence_signal_id_unique IF NOT EXISTS FOR (s:IntelligenceSignal) REQUIRE s.signal_id IS UNIQUE;")
+        session.run("CREATE INDEX intelligence_signal_type_idx IF NOT EXISTS FOR (s:IntelligenceSignal) ON (s.signal_type);")
+        session.run("CREATE INDEX signal_review_status_idx IF NOT EXISTS FOR (s:IntelligenceSignal) ON (s.review_status);")
+        session.run("CREATE INDEX signal_source_idx IF NOT EXISTS FOR (s:IntelligenceSignal) ON (s.source_artifact_id);")
+
+        # -------- CI 链路关系属性索引（Neo4j 4.3+） --------
+        try:
+            session.run("CREATE INDEX rel_generated_signal_src_idx IF NOT EXISTS FOR ()-[r:GENERATED_SIGNAL]-() ON (r.source_id);")
+            session.run("CREATE INDEX rel_reviews_target_idx IF NOT EXISTS FOR ()-[r:REVIEWS]-() ON (r.target_object_id);")
+            session.run("CREATE INDEX rel_promoted_to_event_idx IF NOT EXISTS FOR ()-[r:PROMOTED_TO]-() ON (r.event_id);")
+            session.run("CREATE INDEX rel_affects_target_idx IF NOT EXISTS FOR ()-[r:AFFECTS]-() ON (r.target_type);")
+            session.run("CREATE INDEX rel_covers_org_idx IF NOT EXISTS FOR ()-[r:COVERS]-() ON (r.organization_id);")
+        except Exception as _e:
+            print(f"⚠️ CI 关系索引创建跳过（Neo4j 版本可能不支持）: {_e}")
+
+        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网 + 工程情报 + 决策支持 + CI 信号链路）")
+
+    # -------- 声明 CI 链路契约（独立 session） --------
+    try:
+        declare_ci_signal_chain(driver)
+    except Exception as _e:
+        print(f"⚠️ CI 链路契约声明失败: {_e}")
 
 
 def create_ontology_modules(driver):
@@ -134,14 +230,12 @@ def create_ontology_modules(driver):
         {"id": "CI-PLACEHOLDER", "name": "ci-placeholder", "domain": "ci", "version": "0.1.0", "status": "draft"},
         {"id": "CONSUMER-CONTRACT", "name": "consumer-contract", "domain": "foundation", "version": "1.0.0"},
     ]
-    
-    # 为每个模块计算 schema_hash（基于模块 ID + 版本）
+
     with driver.session() as session:
         for mod in modules:
-            # 计算简单的 schema_hash
             schema_content = f"{mod['id']}:{mod['version']}:{mod['domain']}"
             schema_hash = hashlib.sha256(schema_content.encode()).hexdigest()[:16]
-            
+
             session.run("""
                 MERGE (m:OntologyModule {module_id: $id})
                 SET m.module_name = $name,
@@ -184,9 +278,9 @@ def create_controlled_vocabularies(driver):
                 {"code": "evidence_upgrade", "display": "证据升级审核", "description": "证据等级升级提案审核"},
                 {"code": "scientific_package_review", "display": "证据包审核", "description": "ScientificEvidencePackage 审核"},
                 {"code": "knowledge_reuse_review", "display": "知识复用审核", "description": "KnowledgeReuseEvent 审核"},
-                {"code": "ci_fact_review", "display": "情报事实审核", "description": "CI 事实审核（预留）"},
-                {"code": "technical_intelligence_review", "display": "技术情报审核", "description": "技术情报审核（预留）"},
-                {"code": "intelligence_product_review", "display": "情报产品审核", "description": "情报产品审核（预留）"}
+                {"code": "ci_fact_review", "display": "情报事实审核", "description": "CI 事实审核"},
+                {"code": "technical_intelligence_review", "display": "技术情报审核", "description": "技术情报审核"},
+                {"code": "intelligence_product_review", "display": "情报产品审核", "description": "情报产品审核"}
             ]
         },
         {
@@ -388,10 +482,9 @@ def create_controlled_vocabularies(driver):
             ]
         }
     ]
-    
+
     with driver.session() as session:
         for vocab in vocabularies:
-            # 创建或更新 ControlledVocabulary
             session.run("""
                 MERGE (v:ControlledVocabulary {vocabulary_id: $id})
                 SET v.vocabulary_name = $name,
@@ -401,8 +494,7 @@ def create_controlled_vocabularies(driver):
                     v.owner = 'platform_team',
                     v.created_at = datetime()
             """, id=vocab["id"], name=vocab["name"], domain=vocab["domain"], version=vocab["version"])
-            
-            # 创建 ControlledTerm 节点并建立 BELONGS_TO 关系
+
             for term in vocab["terms"]:
                 term_id = f"TERM-{term['code'].upper()[:8]}"
                 session.run("""
@@ -416,5 +508,5 @@ def create_controlled_vocabularies(driver):
                     MERGE (t)-[:BELONGS_TO]->(v)
                 """, vocab_id=vocab["id"], term_id=term_id, code=term["code"],
                     display=term["display"], description=term["description"])
-    
+
     print("✅ ControlledVocabulary 受控词表已创建（含 CI 词表）")

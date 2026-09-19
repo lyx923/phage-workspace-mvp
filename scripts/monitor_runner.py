@@ -2,20 +2,6 @@
 """
 公司项目 & 事件持续监控
 支持：通用网页抓取 / 微信公众号合集 / 搜狗微信搜索关键词
-
-监控源：
-- 全部存于 :GlobalMonitorSource 节点
-- 历史遗留的 Organization.monitor_sources 仍会读取（兼容旧数据）
-
-时间范围：
-- time_filter: today / week / month / all
-- 默认 today（CLI 可用 --time 指定）
-- 定时调度默认抓一周（week）
-
-缓存：
-- Redis 缓存已解析的文章，避免重复调用 LLM
-- key = {prefix}:monitor:article:{md5(title|publish_time|creator)[:16]}
-- 值 = 结构化抽取结果 + 状态标记
 """
 import os
 import sys
@@ -52,58 +38,133 @@ from src.shared.monitor_cache import (
 # 时间范围判断
 # ============================================================
 
-TIME_FILTER_DAYS = {
-    "today": 1,
-    "week": 7,
-    "month": 30,
-    "all": None,
-}
-
+TIME_FILTER_DAYS = {"today": 1, "week": 7, "month": 30, "all": None}
 VALID_TIME_FILTERS = tuple(TIME_FILTER_DAYS.keys())
 
 
 def parse_publish_time(pt: str):
-    """把搜狗/微信的发布时间字符串解析成 date 对象，解析不出来返回 None"""
+    """
+    把搜狗/微信/通用页面里的发布时间字符串解析成 date 对象。
+    无法可靠解析时返回 None。
+    """
     if not pt:
         return None
-    pt = pt.strip()
+    pt = str(pt).strip()
+    if not pt:
+        return None
+
     today = datetime.now().date()
 
-    if pt in ("刚刚", "刚才", "刚刚发布"):
+    # --- ★ 搜狗列表页的 JS 时间戳：document.write(timeConvert('1788859380')) ---
+    m = re.search(r"timeConvert\(\s*['\"]?(\d{9,13})['\"]?\s*\)", pt)
+    if m:
+        raw_ts = m.group(1)
+        try:
+            if len(raw_ts) == 13:           # 毫秒
+                ts = int(raw_ts) / 1000
+            else:                            # 10 位秒级
+                ts = int(raw_ts)
+            return datetime.fromtimestamp(ts).date()
+        except Exception:
+            return None
+
+    # --- 裸数字时间戳（10 位秒 或 13 位毫秒） ---
+    if re.fullmatch(r"\d{10}", pt):
+        try:
+            return datetime.fromtimestamp(int(pt)).date()
+        except Exception:
+            return None
+    if re.fullmatch(r"\d{13}", pt):
+        try:
+            return datetime.fromtimestamp(int(pt) / 1000).date()
+        except Exception:
+            return None
+
+    # --- 相对时间：刚刚 / 分钟前 / 小时前 ---
+    if pt in ("刚刚", "刚才", "刚刚发布", "刚刚更新", "刚刚发表"):
         return today
 
-    m = re.match(r"(\d+)\s*分钟前", pt)
+    m = re.match(r"^(\d+)\s*分钟前", pt)
     if m:
         return today
 
-    m = re.match(r"(\d+)\s*小时前", pt)
+    m = re.match(r"^(\d+)\s*小时前", pt)
     if m:
         return today
 
+    # --- 相对时间：昨天 / 前天 ---
     if pt in ("昨天", "昨日"):
         return today - timedelta(days=1)
+    if pt in ("前天",):
+        return today - timedelta(days=2)
 
-    m = re.match(r"(\d+)\s*天前", pt)
+    # --- 相对时间：X天前 / X周前 / X月前 / X年前 ---
+    m = re.match(r"^(\d+)\s*天前", pt)
     if m:
         return today - timedelta(days=int(m.group(1)))
 
-    m = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", pt)
+    m = re.match(r"^(\d+)\s*周前", pt)
     if m:
+        return today - timedelta(days=int(m.group(1)) * 7)
+
+    m = re.match(r"^(\d+)\s*个?月前", pt)
+    if m:
+        n = int(m.group(1))
+        y, mo = today.year, today.month - n
+        while mo <= 0:
+            mo += 12
+            y -= 1
         try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+            return datetime(y, mo, min(today.day, 28)).date()
         except Exception:
             return None
 
-    m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", pt)
+    m = re.match(r"^(\d+)\s*年前", pt)
     if m:
         try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+            return datetime(today.year - int(m.group(1)), today.month,
+                            min(today.day, 28)).date()
         except Exception:
             return None
 
-    if pt.isdigit() and len(pt) >= 9:
+    # --- ISO：2024-09-19T10:30:00 / 2024-09-19 10:30:00 ---
+    m = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})[T\s]", pt)
+    if m:
         try:
-            return datetime.fromtimestamp(int(pt)).date()
+            return datetime(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3))).date()
+        except Exception:
+            return None
+
+    # --- 标准日期格式：2024-09-19 / 2024/9/19 / 2024.9.19 ---
+    m = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", pt)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3))).date()
+        except Exception:
+            return None
+
+    # --- 中文日期：2024年9月19日 ---
+    m = re.match(r"^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", pt)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3))).date()
+        except Exception:
+            return None
+
+    # --- 只有月日（没年份）：09月19日 / 9月19日 / 09-19 / 9/19 ---
+    m = re.match(r"^(\d{1,2})\s*月\s*(\d{1,2})\s*日", pt)
+    if not m:
+        m = re.match(r"^(\d{1,2})[-/](\d{1,2})$", pt)
+    if m:
+        try:
+            mo, day = int(m.group(1)), int(m.group(2))
+            cand = datetime(today.year, mo, day).date()
+            if cand > today:
+                cand = datetime(today.year - 1, mo, day).date()
+            return cand
         except Exception:
             return None
 
@@ -111,25 +172,21 @@ def parse_publish_time(pt: str):
 
 
 def is_in_time_range(publish_time: str, time_filter: str = "today") -> bool:
-    """
-    判断发布时间是否落在指定时间范围内。
-    - time_filter: today / week / month / all
-    - all → 全部通过
-    - 无法解析时间的 → 返回 True，靠 is_url_scraped / 缓存兜底去重
-    """
+    if time_filter == "all":
+        return True
     days_back = TIME_FILTER_DAYS.get(time_filter, 1)
     if days_back is None:
         return True
     d = parse_publish_time(publish_time)
     if d is None:
-        return True
+        print(f"        ⚠️  时间无法解析，默认过滤: {publish_time!r}")
+        return False
     today = datetime.now().date()
     cutoff = today - timedelta(days=days_back - 1)
     return d >= cutoff
 
 
 def is_today(publish_time: str) -> bool:
-    """兼容旧调用"""
     return is_in_time_range(publish_time, "today")
 
 
@@ -138,16 +195,16 @@ def is_today(publish_time: str) -> bool:
 # ============================================================
 
 def build_sogou_url(org_name: str) -> str:
-    """根据组织名称自动构造搜狗微信搜索 URL"""
-    params = {
-        "type": "2",
-        "s_from": "input",
-        "query": org_name,
-        "ie": "utf8",
-        "_sug_": "n",
-        "_sug_type_": "",
-    }
-    return "https://weixin.sogou.com/weixin?" + urlencode(params)
+    # ★ 与手动可用 URL 参数顺序保持一致：type, s_from, query, ie, _sug_, _sug_type_
+    parts = [
+        ("type", "2"),
+        ("s_from", "input"),
+        ("query", org_name),
+        ("ie", "utf8"),
+        ("_sug_", "n"),
+        ("_sug_type_", ""),
+    ]
+    return "https://weixin.sogou.com/weixin?" + urlencode(parts)
 
 
 def _source_to_json(src: dict) -> str:
@@ -185,14 +242,12 @@ def _source_from_any(raw) -> Optional[dict]:
 
 
 def _make_source_id(owner_id: Optional[str], url: str) -> str:
-    """监控源的稳定 ID：由 owner + url 派生"""
     key = f"{owner_id or '__global__'}|{url or ''}"
     h = hashlib.md5(key.encode("utf-8")).hexdigest()[:14]
     return f"src-{h}"
 
 
 def _guess_label_from_url(url: str) -> str:
-    """从 URL 里尽量猜一个友好标签（搜狗微信取 query，其他取域名+尾段）"""
     if not url:
         return ""
     try:
@@ -249,18 +304,15 @@ def html_to_text(raw_html: str) -> str:
 def extract_links(raw_html: str, base_url: str, same_host: bool = True) -> List[Dict]:
     links = []
     base_host = urlparse(base_url).netloc
-
     for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
                          raw_html, flags=re.DOTALL | re.IGNORECASE):
         href, text_raw = m.groups()
         href = html.unescape(href).strip()
         text = re.sub(r"<[^>]+>", "", text_raw).strip()
         text = re.sub(r"\s+", " ", text)
-
         if not href or href.startswith(("javascript:", "mailto:", "#", "tel:")):
             continue
         full = urljoin(base_url, href)
-
         if same_host and urlparse(full).netloc != base_host:
             continue
         if any(x in full.lower() for x in ("/tag/", "/category/", "/author/", "/page/",
@@ -268,9 +320,7 @@ def extract_links(raw_html: str, base_url: str, same_host: bool = True) -> List[
             continue
         if len(text) < 8:
             continue
-
         links.append({"url": full, "title": text})
-
     seen = set()
     unique = []
     for l in links:
@@ -561,12 +611,12 @@ def _parse_sogou_articles(html_text: str, session) -> list:
     articles = []
 
     blocks = re.findall(
-        r'<div\s+class="txt-box">(.*?)</div>\s*</div>\s*</div>',
+        r'<li[^>]*id="sogou_vr_11002601_box_\d+"[^>]*>(.*?)</li>',
         html_text, re.DOTALL
     )
     if not blocks:
         blocks = re.findall(
-            r'<li[^>]*id="sogou_vr_11002601_box_\d+"[^>]*>(.*?)</li>',
+            r'<div\s+class="txt-box"[^>]*>(.*?)(?=<div\s+class="txt-box"|<div\s+class="footer|</ul>\s*</div>)',
             html_text, re.DOTALL
         )
     if not blocks:
@@ -574,32 +624,67 @@ def _parse_sogou_articles(html_text: str, session) -> list:
             r'(<h3>\s*<a[^>]+href="[^"]+"[^>]*>.*?</a>\s*</h3>.*?<p\s+class="txt-info".*?</p>)',
             html_text, re.DOTALL
         )
+    if not blocks:
+        blocks = re.findall(
+            r'(<h3>[^<]*<a[^>]+href="[^"]+"[^>]*>.*?</a>[^<]*</h3>.*?<p[^>]*>.*?</p>)',
+            html_text, re.DOTALL
+        )
 
-    for block in blocks:
+    print(f"     🔍 解析器切到 {len(blocks)} 个候选块")
+
+    for idx, block in enumerate(blocks):
         try:
-            title_match = re.search(
+            tm = re.search(
                 r'<h3>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h3>',
                 block, re.DOTALL
             )
-            if not title_match:
+            if not tm:
+                tm = re.search(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+                               block, re.DOTALL)
+                if not tm:
+                    continue
+
+            sogou_link = html.unescape(tm.group(1).strip())
+            title = _clean_html(tm.group(2))
+            if not title or not sogou_link:
                 continue
-            sogou_link = html.unescape(title_match.group(1).strip())
-            title = _clean_html(title_match.group(2))
 
-            summary_match = re.search(
-                r'<p\s+class="txt-info"[^>]*>(.*?)</p>', block, re.DOTALL
-            )
-            summary = _clean_html(summary_match.group(1)) if summary_match else ""
+            sm = re.search(r'<p\s+class="txt-info"[^>]*>(.*?)</p>',
+                           block, re.DOTALL)
+            summary = _clean_html(sm.group(1)) if sm else ""
 
-            account_match = re.search(
-                r'<a[^>]+class="account"[^>]*>(.*?)</a>', block, re.DOTALL
-            )
-            account = _clean_html(account_match.group(1)) if account_match else ""
+            am = re.search(r'<a[^>]+class="account"[^>]*>(.*?)</a>',
+                           block, re.DOTALL)
+            account = _clean_html(am.group(1)) if am else ""
 
-            time_match = re.search(
-                r'<span\s+class="s2">(.*?)</span>', block, re.DOTALL
-            )
-            publish_time = _clean_html(time_match.group(1)) if time_match else ""
+            publish_time = ""
+            for tpat in [
+                r'<span\s+class="s2"[^>]*>(.*?)</span>',
+                r'<span\s+class="all-time-y2"[^>]*>(.*?)</span>',
+                r'<span[^>]*class="[^"]*time[^"]*"[^>]*>(.*?)</span>',
+                r'<span[^>]*class="s-p"[^>]*>.*?<span[^>]*>(.*?)</span>',
+            ]:
+                tmm = re.search(tpat, block, re.DOTALL)
+                if tmm:
+                    publish_time = _clean_html(tmm.group(1))
+                    if publish_time:
+                        break
+
+            if not publish_time:
+                tmm = re.search(r'(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})', block)
+                if tmm:
+                    publish_time = tmm.group(1)
+                else:
+                    tmm = re.search(
+                        r'(\d+\s*(?:分钟|小时|天|周|个月|年)前|昨天|前天|刚刚)',
+                        block
+                    )
+                    if tmm:
+                        publish_time = tmm.group(1)
+                if not publish_time:
+                    tmm = re.search(r'\b(1[5-9]\d{8}|1[5-9]\d{11})\b', block)
+                    if tmm:
+                        publish_time = tmm.group(1)
 
             articles.append({
                 "title": title,
@@ -608,7 +693,8 @@ def _parse_sogou_articles(html_text: str, session) -> list:
                 "publish_time": publish_time,
                 "sogou_link": sogou_link,
             })
-        except Exception:
+        except Exception as e:
+            print(f"     ⚠️ 解析第 {idx} 块失败: {e}")
             continue
 
     return articles
@@ -616,15 +702,21 @@ def _parse_sogou_articles(html_text: str, session) -> list:
 
 def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
                           time_filter: str = "today"):
+    """
+    ★ 核心修复：
+      1. 不注入 tsn 参数（搜狗加了 tsn 会跳回首页）
+      2. 参数顺序与手动可用 URL 一致
+      3. 时间过滤完全依赖客户端 is_in_time_range()
+      4. 不往项目里写任何 debug 文件
+      5. ★ 智能翻页：本页 < 10 条 或 与上一页重复 → 停止
+    """
     base_url = source["url"].strip()
     if not base_url:
         collected["errors"].append("搜狗搜索 URL 为空")
         return collected
 
     parsed = urlparse(base_url)
-    query_params = parse_qs(parsed.query)
-    keyword = query_params.get("query", [""])[0]
-
+    keyword = (parse_qs(parsed.query).get("query", [""])[0] or "").strip()
     if not keyword:
         collected["errors"].append("搜狗搜索 URL 缺少 query 参数")
         return collected
@@ -646,47 +738,90 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
 
-    max_pages = 3
+    max_pages = 6
+    any_in_range = False
+    seen_sogou_links = set()      # ★ 跨页去重：记录已经见过的 sogou_link
 
     for page in range(1, max_pages + 1):
-        if page == 1:
-            req_url = base_url
-        else:
-            q = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-            q["page"] = str(page)
-            req_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?" + urlencode(q)
+        q = [
+            ("type", "2"),
+            ("s_from", "input"),
+            ("query", keyword),
+            ("ie", "utf8"),
+            ("_sug_", "n"),
+            ("_sug_type_", ""),
+        ]
+        if page > 1:
+            q.append(("page", str(page)))
 
-        print(f"     📄 第 {page} 页: {req_url[:120]}")
+        req_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?" + urlencode(q)
+        print(f"     📄 第 {page} 页: {req_url[:160]}")
 
         try:
             resp = session.get(req_url, headers=sogou_headers, timeout=20)
+
+            resp.encoding = "utf-8"
             html_text = resp.text
+            if "搜狗" not in html_text and "微信" not in html_text:
+                resp.encoding = "gb18030"
+                html_text = resp.text
+            if "搜狗" not in html_text and "微信" not in html_text:
+                resp.encoding = resp.apparent_encoding or "utf-8"
+                html_text = resp.text
 
-            print(f"     📊 返回长度 {len(html_text)}，"
-                  f"含 txt-box: {'txt-box' in html_text}，"
-                  f"含 sogou_vr: {'sogou_vr' in html_text}")
+            print(f"     📊 HTTP {resp.status_code} 长度={len(html_text)} "
+                  f"含txt-box={'txt-box' in html_text} "
+                  f"含sogou_vr={'sogou_vr' in html_text} "
+                  f"含news-list={'news-list' in html_text}")
 
-            if "验证" in html_text and "验证码" in html_text:
-                print(f"     ⚠️ 第 {page} 页触发验证码")
-                collected["errors"].append(
-                    f"搜狗第 {page} 页触发验证码，请稍后重试或减少翻页"
-                )
-                break
-
-            articles = _parse_sogou_articles(html_text, session)
-            if not articles:
-                print(f"     📭 第 {page} 页无结果（可能页面结构变了或没有更多）")
-                if page == 1:
-                    snippet = re.sub(r"\s+", " ", html_text)[:300]
+            # 反爬检测
+            for kw in ("请输入验证码", "访问过于频繁", "反爬虫", "请输入验证码后继续"):
+                if kw in html_text:
+                    print(f"     ⚠️ 第 {page} 页触发反爬：{kw}")
                     collected["errors"].append(
-                        f"搜狗第1页未解析到文章。页面片段: {snippet}"
+                        f"搜狗第 {page} 页触发反爬：{kw}"
+                    )
+                    return collected
+
+            # 跳首页检测
+            if ('id="vrResultContainer"' in html_text
+                    and "news-list" not in html_text
+                    and "txt-box" not in html_text):
+                print(f"     ⚠️ 搜狗返回首页（关键词 '{keyword}' 可能无结果）")
+                if page == 1:
+                    collected["errors"].append(
+                        f"搜狗返回首页（关键词 '{keyword}' 可能无结果）"
                     )
                 break
 
-            print(f"     📋 第 {page} 页解析到 {len(articles)} 篇文章")
+            articles = _parse_sogou_articles(html_text, session)
 
-            page_has_in_range = False
-            for art in articles:
+            if not articles:
+                print(f"     📭 第 {page} 页未解析到文章")
+                if page == 1:
+                    class_set = sorted(set(re.findall(r'class="([^"]+)"', html_text)))
+                    print(f"     🔬 HTML 里的 class 种类（前 40）：{class_set[:40]}")
+                    collected["errors"].append("搜狗第 1 页未解析到文章")
+                break
+
+            # ★ 计算本页"新文章"（去掉前面页已经见过的）
+            new_articles = []
+            for a in articles:
+                link = a.get("sogou_link", "")
+                if link and link not in seen_sogou_links:
+                    new_articles.append(a)
+                    seen_sogou_links.add(link)
+
+            print(f"     📋 第 {page} 页解析到 {len(articles)} 篇文章"
+                  f"（其中新文章 {len(new_articles)} 篇）")
+
+            # ★ 如果整页内容都是重复的（page>1），说明搜狗在重复返回最后一页
+            if page > 1 and not new_articles:
+                print(f"     ⏹️  第 {page} 页全部为重复内容，停止翻页")
+                break
+
+            # 处理本页新文章
+            for art in new_articles:
                 sogou_link = art.get("sogou_link", "")
                 if not sogou_link:
                     continue
@@ -694,19 +829,19 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
                 if time_filter != "all":
                     pt = art.get("publish_time", "")
                     if not is_in_time_range(pt, time_filter):
-                        print(f"        ⏭️  超出时间范围，跳过: {art.get('title','')[:40]} ({pt})")
+                        parsed_d = parse_publish_time(pt)
+                        print(f"        ⏭️  超出时间范围，跳过: "
+                              f"{art.get('title','')[:40]} | 原文时间={pt!r} | 解析={parsed_d}")
                         continue
-                page_has_in_range = True
+                    any_in_range = True
 
                 real_url = _extract_sogou_real_url(sogou_link, session)
                 if not real_url or "mp.weixin.qq.com" not in real_url:
                     print(f"        ⏭️  跳过（无法还原微信链接）: {art.get('title','')[:40]}")
-                    collected["errors"].append(
-                        f"无法还原微信链接: {art.get('title','')[:40]}"
-                    )
                     continue
 
                 if is_url_scraped(driver, real_url):
+                    print(f"        ♻️  URL 已入库，跳过: {art.get('title','')[:40]}")
                     continue
 
                 collected["articles_new"] += 1
@@ -723,8 +858,9 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
                                   publish_time=pt)
                 time.sleep(3)
 
-            if time_filter != "all" and not page_has_in_range and page == 1:
-                print(f"     ⏹️  第 1 页已无时间范围内文章，停止翻页")
+            # ★ 关键：本页结果不足 10 条 → 搜狗已经到末页 → 停止翻页
+            if len(articles) < 10:
+                print(f"     ⏹️  第 {page} 页只有 {len(articles)} 条结果（<10），已到末页，停止翻页")
                 break
 
             time.sleep(5)
@@ -733,6 +869,9 @@ def _collect_sogou_wechat(driver, session, source, owner_org_id, collected,
             collected["errors"].append(f"搜狗第 {page} 页异常: {e}")
             traceback.print_exc()
             break
+
+    if time_filter != "all" and not any_in_range:
+        print(f"     ℹ️  本次共翻若干页，未找到 {time_filter} 范围内的文章")
 
     return collected
 
@@ -1205,11 +1344,10 @@ def _process_wechat(driver, session, source: dict, owner_org_id: Optional[str],
 
 
 # ============================================================
-# 监控源管理（全部 GlobalMonitorSource；兼容历史组织源读取）
+# 监控源管理
 # ============================================================
 
 def _list_global_sources_raw(driver) -> List[dict]:
-    """列出所有全局监控源"""
     with driver.session() as s:
         rs = s.run("""
             MATCH (g:GlobalMonitorSource)
@@ -1222,21 +1360,8 @@ def _list_global_sources_raw(driver) -> List[dict]:
 
 
 def get_all_monitor_sources(driver) -> List[dict]:
-    """
-    返回统一的监控源列表（含历史组织源，为兼容旧数据；新加的都在 GlobalMonitorSource）：
-    [
-      {
-        "source_id": "src-xxxxxx",
-        "owner_org_id": "<org_id>" or None,
-        "owner_name": "<org_name>" or None,
-        "url": "...", "type": "...", "label": "..."
-      },
-      ...
-    ]
-    """
     result_list = []
 
-    # 历史组织源（兼容读取）
     with driver.session() as s:
         rs = s.run("""
             MATCH (o:Organization)
@@ -1263,7 +1388,6 @@ def get_all_monitor_sources(driver) -> List[dict]:
                     "label": label_txt,
                 })
 
-    # 全局源
     for g in _list_global_sources_raw(driver):
         url = (g.get("url") or "").strip()
         if not url:
@@ -1284,7 +1408,6 @@ def get_all_monitor_sources(driver) -> List[dict]:
 
 
 def add_global_source(url: str, stype: str = "sogou_wechat", label: str = ""):
-    """添加全局监控源（不归属任何组织）"""
     if stype not in VALID_TYPES:
         raise ValueError(f"未知 type: {stype}。可选: {sorted(VALID_TYPES)}")
     if not url or not url.strip():
@@ -1295,7 +1418,6 @@ def add_global_source(url: str, stype: str = "sogou_wechat", label: str = ""):
 
     driver = get_driver()
     with driver.session() as s:
-        # 检查重复
         r = s.run("""
             MATCH (g:GlobalMonitorSource {url: $url})
             RETURN g.source_id AS sid LIMIT 1
@@ -1319,7 +1441,6 @@ def add_global_source(url: str, stype: str = "sogou_wechat", label: str = ""):
 
 
 def remove_global_source(source_id: str):
-    """删除全局监控源（source_id 为节点上的 source_id 字段）"""
     driver = get_driver()
     with driver.session() as s:
         r = s.run("""
@@ -1336,7 +1457,6 @@ def remove_global_source(source_id: str):
 
 
 def get_global_source_node_id(driver, url: str) -> Optional[str]:
-    """根据 url 找到源的节点 source_id（用于删除）"""
     if not url:
         return None
     with driver.session() as s:
@@ -1353,7 +1473,6 @@ def get_global_source_node_id(driver, url: str) -> Optional[str]:
 
 def get_monitored_orgs(driver, org_filter: Optional[str] = None,
                        type_filter: Optional[str] = None) -> List[dict]:
-    """兼容旧调用：返回有历史监控源的组织"""
     with driver.session() as s:
         if org_filter:
             result = s.run("""
@@ -1461,7 +1580,6 @@ VALID_TYPES = {"news", "pipeline", "about", "wechat", "clinical_trials",
 
 
 def add_source(org_id: str, url: str = "", stype: str = "sogou_wechat", label: str = ""):
-    """兼容旧调用：把源挂到某个组织上。新代码请用 add_global_source。"""
     if stype not in VALID_TYPES:
         raise ValueError(f"未知 type: {stype}。可选: {sorted(VALID_TYPES)}")
 
@@ -1739,16 +1857,6 @@ def _collect_one_source(driver, session, source, owner_org_id: Optional[str],
 
 def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
                       source, collected, publish_time: str = ""):
-    """
-    处理单篇文章：
-      1. 优先用 (标题 + 创建时间 + 创建人) 做 Redis key 查缓存
-      2. 命中缓存 → 直接用缓存 parsed
-      3. 未命中缓存：
-         - URL 未入库 → 调用 LLM 抽取，回写缓存
-         - URL 已入库且缓存过期 → 跳过（避免重复 LLM 调用）
-      4. 逐条检查 org/prog/event 是否已在数据库，打上 _already_in_db 标记
-      5. 让 ci.py 展示时能显示「✅ 已入库 / 🆕 新增」
-    """
     creator = source.get("label") or source.get("type") or "monitor"
     ptime = (publish_time or "").strip() or datetime.now().strftime("%Y-%m-%d")
 
@@ -1759,7 +1867,6 @@ def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
         result = cached["parsed"]
         print(f"        💾 命中缓存: {title[:40]}")
     elif url_in_db:
-        # URL 已入库但缓存已过期 → 直接跳过，不再重新解析
         print(f"        ⏭️  已解析过（URL 已在库，无缓存），跳过: {url[:80]}")
         return
     else:
@@ -1781,7 +1888,6 @@ def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
     progs = result.get("programs", []) or []
     events = result.get("events", []) or []
 
-    # ---------- 逐条检查 DB 是否已存在 ----------
     for o in orgs:
         nm = (o.get("canonical_name") or "").strip()
         oid = find_org_exact(driver, nm) if nm else None
@@ -1804,7 +1910,6 @@ def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
         else:
             e["_already_in_db"] = False
 
-    # ---------- 过滤：事件自身的 source_url 已入库（同一篇原文重复出现）----------
     filtered_events = []
     skipped_events = 0
     for e in events:
@@ -1854,7 +1959,7 @@ def _collect_one_page(driver, url, title, text, owner_org_id: Optional[str],
 
 
 # ============================================================
-# 内置调度器（每天固定时间跑一次）
+# 内置调度器
 # ============================================================
 
 def _seconds_until_next_run(hour: int, minute: int) -> float:
@@ -1869,11 +1974,6 @@ def run_schedule(hour: int = 23, minute: int = 30,
                  time_filter: str = "week",
                  org_filter: Optional[str] = None,
                  type_filter: Optional[str] = None):
-    """
-    常驻调度：每天 hour:minute 自动抓取一次。
-    默认抓一周（time_filter="week"）。
-    Ctrl+C 退出。
-    """
     print(f"🕒 调度器已启动 — 每天 {hour:02d}:{minute:02d} 抓取"
           f"（时间范围：{time_filter}）")
     print("   Ctrl+C 退出\n")
