@@ -71,6 +71,7 @@ def create_engineering_strategy(
         existing = session.run("""
             MATCH (es:EngineeringStrategy {strategy_type: $strategy_type})
             RETURN es.strategy_id AS id
+            LIMIT 1
         """, strategy_type=strategy_type).single()
         
         if existing:
@@ -144,6 +145,7 @@ def get_strategy_by_type(driver: Driver, strategy_type: str) -> Optional[Dict]:
         result = session.run("""
             MATCH (es:EngineeringStrategy {strategy_type: $strategy_type})
             RETURN es
+            LIMIT 1
         """, strategy_type=strategy_type).single()
         if result:
             return dict(result['es'])

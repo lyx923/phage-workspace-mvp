@@ -172,6 +172,20 @@ def create_schema(driver):
         session.run("CREATE CONSTRAINT decision_record_id_unique IF NOT EXISTS FOR (dr:DecisionRecord) REQUIRE dr.decision_id IS UNIQUE;")
         session.run("CREATE CONSTRAINT decision_option_id_unique IF NOT EXISTS FOR (do:DecisionOption) REQUIRE do.option_id IS UNIQUE;")
         session.run("CREATE CONSTRAINT watchlist_item_id_unique IF NOT EXISTS FOR (wi:WatchlistItem) REQUIRE wi.watchlist_item_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT patent_family_id_unique IF NOT EXISTS FOR (pf:PatentFamily) REQUIRE pf.patent_family_id IS UNIQUE;")
+        session.run("CREATE INDEX patent_family_title_idx IF NOT EXISTS FOR (pf:PatentFamily) ON (pf.title);")
+        session.run("CREATE INDEX patent_family_legal_idx IF NOT EXISTS FOR (pf:PatentFamily) ON (pf.legal_status);")
+        session.run("CREATE CONSTRAINT clinical_trial_id_unique IF NOT EXISTS FOR (ct:ClinicalTrial) REQUIRE ct.trial_id IS UNIQUE;")
+        session.run("CREATE INDEX clinical_trial_nct_idx IF NOT EXISTS FOR (ct:ClinicalTrial) ON (ct.nct_id);")
+        session.run("CREATE INDEX clinical_trial_phase_idx IF NOT EXISTS FOR (ct:ClinicalTrial) ON (ct.phase);")
+        session.run("CREATE INDEX clinical_trial_status_idx IF NOT EXISTS FOR (ct:ClinicalTrial) ON (ct.status);")
+        session.run("CREATE CONSTRAINT question_id_unique IF NOT EXISTS FOR (iq:IntelligenceQuestion) REQUIRE iq.question_id IS UNIQUE;")
+        session.run("CREATE INDEX question_type_idx IF NOT EXISTS FOR (iq:IntelligenceQuestion) ON (iq.question_type);")
+        session.run("CREATE INDEX question_status_idx IF NOT EXISTS FOR (iq:IntelligenceQuestion) ON (iq.status);")
+        session.run("CREATE CONSTRAINT watchlist_item_id_unique IF NOT EXISTS FOR (wi:WatchlistItem) REQUIRE wi.watchlist_item_id IS UNIQUE;")
+        session.run("CREATE INDEX watchlist_target_idx IF NOT EXISTS FOR (wi:WatchlistItem) ON (wi.target_type);")
+        session.run("CREATE INDEX watchlist_status_idx IF NOT EXISTS FOR (wi:WatchlistItem) ON (wi.status);")
+        session.run("CREATE INDEX watchlist_priority_idx IF NOT EXISTS FOR (wi:WatchlistItem) ON (wi.priority);")
 
         # -------- 新增索引（提升查询性能） --------
         session.run("CREATE INDEX indication_name_idx IF NOT EXISTS FOR (ci:ClinicalIndication) ON (ci.name);")
@@ -480,7 +494,79 @@ def create_controlled_vocabularies(driver):
                 {"code": "capability", "display": "能力", "description": "竞争对手能力评估"},
                 {"code": "uncertainty", "display": "不确定性", "description": "不确定性评估"}
             ]
-        }
+        },        
+        {
+            "id": "VOC-PATENT-LEGAL-STATUS",
+            "name": "patent_legal_status",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "pending",   "display": "审查中",   "description": "申请已提交，尚未授权"},
+                {"code": "granted",   "display": "已授权",   "description": "已获授权"},
+                {"code": "expired",   "display": "已过期",   "description": "专利已过期"},
+                {"code": "abandoned", "display": "已放弃",   "description": "申请人主动放弃"},
+                {"code": "unknown",   "display": "未知",     "description": "法律状态不明"}
+            ]
+        },
+        {
+            "id": "VOC-TRIAL-PHASE",
+            "name": "clinical_trial_phase",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "preclinical", "display": "临床前",  "description": "尚未进入临床"},
+                {"code": "phase_1",     "display": "I期",     "description": "安全性/剂量探索"},
+                {"code": "phase_1_2",   "display": "I/II期",  "description": "I/II 期联合"},
+                {"code": "phase_2",     "display": "II期",    "description": "有效性探索"},
+                {"code": "phase_2b",    "display": "IIb期",   "description": "剂量确认"},
+                {"code": "phase_3",     "display": "III期",   "description": "确证性试验"},
+                {"code": "phase_4",     "display": "IV期",    "description": "上市后研究"},
+                {"code": "unknown",     "display": "未知",    "description": "阶段不明"}
+            ]
+        },
+        {
+            "id": "VOC-TRIAL-STATUS",
+            "name": "clinical_trial_status",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "not_yet_recruiting", "display": "尚未招募", "description": "已登记未启动"},
+                {"code": "recruiting",         "display": "招募中",   "description": "正在入组"},
+                {"code": "active",             "display": "进行中",   "description": "已入组，试验进行中"},
+                {"code": "completed",          "display": "已完成",   "description": "试验已完成"},
+                {"code": "terminated",         "display": "已终止",   "description": "提前终止"},
+                {"code": "suspended",          "display": "已暂停",   "description": "暂时暂停"},
+                {"code": "withdrawn",          "display": "已撤回",   "description": "启动前撤回"},
+                {"code": "unknown",            "display": "未知",     "description": "状态不明"}
+            ]
+        },
+        {
+            "id": "VOC-IQ-TYPE",
+            "name": "intelligence_question_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "market",     "display": "市场",     "description": "竞争格局/份额类问题"},
+                {"code": "technology", "display": "技术",     "description": "技术路线/成熟度类问题"},
+                {"code": "ip",         "display": "IP",       "description": "专利/FTO 类问题"},
+                {"code": "clinical",   "display": "临床",     "description": "适应症/试验类问题"},
+                {"code": "bd",         "display": "BD",       "description": "合作/引进/并购类问题"}
+            ]
+        },
+        {
+            "id": "VOC-WATCH-TARGET",
+            "name": "watchlist_target_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "organization",        "display": "组织",     "description": "竞争对手组织"},
+                {"code": "development_program", "display": "研发项目", "description": "某竞争对手的管线"},
+                {"code": "engineering_strategy","display": "工程策略", "description": "某类技术路线"},
+                {"code": "pathogen",            "display": "病原菌",   "description": "某类目标病原"},
+                {"code": "patent_family",       "display": "专利族",   "description": "某族专利"},
+                {"code": "clinical_trial",      "display": "临床试验", "description": "某项临床试验"}
+            ]
+        },
     ]
 
     with driver.session() as session:

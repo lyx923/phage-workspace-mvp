@@ -98,7 +98,7 @@ def phage_typing_mode(driver):
                 phages_raw = st.session_state.ret_phage_result
                 st.write(f"找到 {len(phages_raw)} 个匹配噬菌体：")
                 for p in phages_raw[:5]:
-                    st.write(f"   - {p['name']} (L{p['evidence_level']}) 概率: {p['infection_probability']}")
+                    st.write(f"   - {p['name']} ({p['evidence_level']}) 概率: {p['infection_probability']}")
                 if len(phages_raw) > 5:
                     st.write(f"   ... 还有 {len(phages_raw)-5} 个")
 

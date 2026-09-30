@@ -21,6 +21,9 @@ from src.foundation.schema import (
     create_controlled_vocabularies,
 )
 
+# ★ 新增：监控源相关
+from scripts.monitor_runner import add_global_source, _list_global_sources_raw
+
 # ---------- 获取项目根目录 ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -124,71 +127,49 @@ with st.sidebar:
             )
             st.write("✅ 事件导入完成")
 
+            # ============================================================
+            # ★ 新增：添加默认监控源
+            # ============================================================
+            status.update(label="添加默认监控源...")
+            DEFAULT_SOURCES = [
+                {
+                    "url": (
+                        "https://weixin.sogou.com/weixin?type=2&s_from=input"
+                        "&query=创噬纪CreatiPhage&ie=utf8&_sug_=n&_sug_type_="
+                    ),
+                    "type": "sogou_wechat",
+                    "label": "创噬纪 CreatiPhage",
+                },
+            ]
+
+            # 先读取已有监控源，做幂等去重
+            try:
+                existing_urls = {
+                    (g.get("url") or "").strip()
+                    for g in _list_global_sources_raw(driver)
+                }
+            except Exception:
+                existing_urls = set()
+
+            added_src, skipped_src = 0, 0
+            for src in DEFAULT_SOURCES:
+                if src["url"] in existing_urls:
+                    skipped_src += 1
+                    st.write(f"⏭️ 监控源已存在，跳过：{src['label']}")
+                    continue
+                try:
+                    add_global_source(src["url"], src["type"], src["label"])
+                    added_src += 1
+                    st.write(f"✅ 已添加监控源：{src['label']}")
+                except Exception as e:
+                    st.write(f"⚠️ 监控源 '{src['label']}' 添加失败：{e}")
+
+            st.write(f"✅ 监控源添加完成（新增 {added_src}，跳过 {skipped_src}）")
+
             status.update(label="全部完成！", state="complete")
 
         st.success("🎉 所有数据已重新导入！")
         st.rerun()
-
-    with st.expander("📄 裂解谱最广的噬菌体"):
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
-                WHERE ANY(ref IN a.evidence_ref WHERE ref CONTAINS '合作方裂解谱数据')
-                WITH ph.phage_id AS phage_id, count(a) AS host_count
-                RETURN phage_id, host_count
-                ORDER BY host_count DESC
-                LIMIT 5
-            """)
-            for record in result:
-                st.write(f"   - {record['phage_id']}: {record['host_count']} 个菌株")
-
-    with st.expander("📄 数据完整性验证"):
-        @st.cache_data(ttl=600)
-        def get_v1_validation():
-            with driver.session() as session:
-                result = session.run("""
-                    MATCH (c:ClinicalCase)-[:INVOLVES_PATHOGEN]->(p:Pathogen)
-                    RETURN count(c) AS total,
-                           count(c.case_id) AS case_id_filled,
-                           count(c.infection_type) AS infection_type_filled,
-                           count(c.infection_site) AS infection_site_filled,
-                           count(c.specimen_type) AS specimen_type_filled,
-                           count(p.pathogen_id) AS pathogen_id_filled,
-                           count(p.species) AS species_filled,
-                           count(p.resistance_mechanism) AS resistance_filled,
-                           count(p.verification_status) AS verification_filled
-                """)
-                stats = result.single()
-                total = stats['total']
-                if total > 0:
-                    filled = {
-                        "case_id": stats['case_id_filled'],
-                        "infection_type": stats['infection_type_filled'],
-                        "infection_site": stats['infection_site_filled'],
-                        "specimen_type": stats['specimen_type_filled'],
-                        "pathogen_id": stats['pathogen_id_filled'],
-                        "species": stats['species_filled'],
-                        "resistance_mechanism": stats['resistance_filled'],
-                        "verification_status": stats['verification_filled']
-                    }
-                    total_fields = len(filled) * total
-                    total_filled = sum(filled.values())
-                    rate = (total_filled / total_fields) * 100
-                    return {"total": total, "filled": filled, "rate": rate}
-                else:
-                    return {"error": "数据库中无病例数据"}
-
-        v1_data = get_v1_validation()
-        if "error" in v1_data:
-            st.warning(v1_data["error"])
-        else:
-            st.metric("必填字段填充率", f"{v1_data['rate']:.1f}%")
-            for field, count in v1_data['filled'].items():
-                st.write(f"   - {field}: {count}/{v1_data['total']} ({count/v1_data['total']*100:.0f}%)")
-            if v1_data['rate'] >= 90:
-                st.success("验证通过！填充率 ≥ 90%")
-            else:
-                st.warning(f"⚠️ V1 验证未通过（{v1_data['rate']:.1f}% < 90%）")
 
     st.markdown("---")
 

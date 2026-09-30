@@ -29,6 +29,8 @@ from src.engineering_intelligence.technology_assessment import (
     create_technology_assessment)
 from src.ci.competitor_assessment import create_competitor_assessment
 from src.shared.monitor_cache import cache_status, mark_persisted_by_url
+from src.engineering_intelligence.technology_brief import generate_technology_brief
+from src.engineering_intelligence.strategy_classifier import get_all_strategies
 
 # ★ 新增：CI 信号链路
 from src.ci.ci_monitor import (
@@ -775,63 +777,11 @@ def ci_mode(driver):
     if "scrape_url" not in st.session_state:
         st.session_state.scrape_url = ""
 
-    ci_tab0, ci_tab1, ci_tab2, ci_tab3, ci_tab4 = st.tabs([
-        "📊 决策链图", "📋 情报流程", "🔍 情报查询", "📡 情报抓取", "🎯 监控中心"
+    # ★ 已删除「📊 决策链图」Tab
+    ci_tab1, ci_tab2, ci_tab3, ci_tab4, ci_tab5 = st.tabs([
+        "📋 情报流程", "🔍 情报查询",
+        "📡 情报抓取", "🎯 监控中心", "🧬 技术简报"
     ])
-
-    # ========== Tab0: 决策链图 ==========
-    with ci_tab0:
-        st.markdown("### 🧭 情报与决策 Ontology 链路")
-        st.caption("下图展示了从情报源到组织决策的完整数据链路，包括市场情报与工程情报的融合。")
-        mermaid_html = """
-        <div class="mermaid">
-        graph LR
-            A[情报源<br>SourceArtifact] -->|GENERATED_SIGNAL| S[情报信号<br>IntelligenceSignal]
-            S -->|PROMOTED_TO| B[情报事件<br>IntelligenceEvent]
-            R[审核<br>Review] -->|REVIEWS| S
-            B -->|AFFECTS| C[开发项目<br>DevelopmentProgram]
-            C -->|TARGETS_PATHOGEN| D[病原体<br>Pathogen]
-            B -->|AFFECTS| E[组织<br>Organization]
-            E -->|COVERS| F[简报<br>IntelligenceProduct]
-            F -->|REVIEWS| G[审核<br>Review]
-            G -->|BASED_ON| H[决策记录<br>DecisionRecord]
-            H -->|CONSUMES| I[情报使用事件<br>IntelligenceUseEvent]
-            C -.->|USES_CONSTRUCT| J[工程化构建体<br>EngineeredPhageConstruct]
-            J -->|IMPLEMENTS| K[工程策略<br>EngineeringStrategy]
-            J -.->|CLAIMS_ABOUT| L[技术主张<br>TechnicalClaim]
-            J -.->|RESULT_FOR| M[技术结果<br>TechnicalResult]
-            style A fill:#dbeafe,stroke:#2563eb
-            style S fill:#a5f3fc,stroke:#0891b2
-            style B fill:#fef3c7,stroke:#d97706
-            style C fill:#e0e7ff,stroke:#4338ca
-            style D fill:#fce7f3,stroke:#db2777
-            style E fill:#d1fae5,stroke:#059669
-            style F fill:#f3e8ff,stroke:#7c3aed
-            style G fill:#fecaca,stroke:#dc2626
-            style H fill:#c7d2fe,stroke:#4f46e5
-            style I fill:#fef08a,stroke:#ca8a04
-            style J fill:#d9f99d,stroke:#65a30d
-            style K fill:#fde047,stroke:#ca8a04
-            style L fill:#fca5a5,stroke:#dc2626
-            style M fill:#93c5fd,stroke:#2563eb
-            style R fill:#fecaca,stroke:#dc2626
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-        <script>
-            (function() {
-                function initMermaid() {
-                    if (typeof mermaid !== 'undefined') {
-                        mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
-                        mermaid.run();
-                    } else { setTimeout(initMermaid, 300); }
-                }
-                if (document.readyState === 'complete') { initMermaid(); }
-                else { window.addEventListener('load', initMermaid); }
-            })();
-        </script>
-        """
-        st.iframe(mermaid_html, height=360)
-        st.caption("💡 实线表示主要链路，虚线表示可选关联（工程情报分支）。")
 
     # ========== Tab1: 情报流程 ==========
     with ci_tab1:
@@ -1129,6 +1079,29 @@ def ci_mode(driver):
                                             st.session_state.ci_context["brief_id"] = brief_id
                                             st.session_state.ci_context["current_brief_id"] = brief_id
                                             st.session_state.ci_step_status["step4_done"] = False
+                                            # ★ 展示专利和临床试验概况
+                                            with st.expander("📜 专利族与临床试验概况", expanded=False):
+                                                with driver.session() as s:
+                                                    pf_cnt = s.run("""
+                                                        MATCH (b:IntelligenceProduct {brief_id: $bid})
+                                                        RETURN b.patent_landscape AS pl, b.clinical_trials AS ct
+                                                    """, bid=brief_id).single()
+                                                if pf_cnt:
+                                                    import json as _json
+                                                    pl = pf_cnt.get("pl") or "{}"
+                                                    ct = pf_cnt.get("ct") or "{}"
+                                                    try:
+                                                        pl = _json.loads(pl) if isinstance(pl, str) else pl
+                                                    except Exception:
+                                                        pl = {}
+                                                    try:
+                                                        ct = _json.loads(ct) if isinstance(ct, str) else ct
+                                                    except Exception:
+                                                        ct = {}
+                                                    st.write(f"**专利族总数**：{pl.get('total_families', 0)}")
+                                                    st.write(f"**法律状态分布**：{pl.get('by_legal_status', {})}")
+                                                    st.write(f"**临床试验总数**：{ct.get('total_trials', 0)}")
+                                                    st.write(f"**阶段分布**：{ct.get('by_phase', {})}")
                                             st.success(f"✅ 简报已生成，ID: {brief_id}")
                                             st.rerun()
                                 except Exception as e:
@@ -1430,7 +1403,7 @@ def ci_mode(driver):
                     MATCH (e:IntelligenceEvent)
                     RETURN e.event_id AS 事件ID, e.title AS 标题, e.event_type AS 类型,
                            e.event_date AS 日期, e.review_status AS 审核状态
-                    ORDER BY e.event_date DESC LIMIT 10
+                    ORDER BY 日期 DESC LIMIT 10
                 """)
                 event_records = [dict(r) for r in events]
                 if event_records:
@@ -1446,7 +1419,7 @@ def ci_mode(driver):
                     MATCH (b:IntelligenceProduct)
                     RETURN b.brief_id AS 简报ID, b.title AS 标题, b.brief_type AS 类型,
                            b.as_of_date AS 截止日期, b.review_status AS 审核状态
-                    ORDER BY b.created_at DESC LIMIT 10
+                    ORDER BY 截止日期 DESC LIMIT 10
                 """)
                 brief_records = [dict(r) for r in briefs]
                 if brief_records:
@@ -2225,6 +2198,150 @@ def ci_mode(driver):
                         f"{len(pending['events'])} 事件"
                     )
                     st.rerun()
+
+    # ========== Tab5: 技术简报 ==========
+    with ci_tab5:
+        st.markdown("### 🧬 工程化噬菌体技术简报")
+        st.caption(
+            "基于图谱中已审核的工程策略、构建体、技术主张、结果与评估生成。"
+            "简报不含 AI 推断内容；所有关键事实均可回溯至 SourceArtifact。"
+        )
+
+        # ---- 选择查询入口 ----
+        mode = st.radio(
+            "按什么维度生成？",
+            ["按工程策略", "按构建体", "按病原菌"],
+            horizontal=True,
+            key="tech_brief_mode",
+        )
+
+        selected_strategy_id = None
+        selected_construct_id = None
+        selected_pathogen_id = None
+
+        # ---- 按策略 ----
+        if mode == "按工程策略":
+            try:
+                strategies = get_all_strategies(driver)
+            except Exception as e:
+                strategies = []
+                st.error(f"加载策略失败：{e}")
+            if not strategies:
+                st.warning("⚠️ 尚无工程策略，请先执行步骤 2 或导入数据")
+            else:
+                opts = {
+                    f"{s['strategy_type']} ({s['id']})": s["id"]
+                    for s in strategies
+                }
+                pick = st.selectbox("选择工程策略", list(opts.keys()), key="tech_brief_strat")
+                selected_strategy_id = opts[pick]
+
+        # ---- 按构建体 ---- ★ 修复：把 ec.created_at 放进 RETURN 后按别名排序
+        elif mode == "按构建体":
+            with driver.session() as session:
+                rows = list(session.run("""
+                    MATCH (ec:EngineeredPhageConstruct)
+                    RETURN ec.construct_id AS id,
+                           ec.public_name AS name,
+                           ec.construct_status AS status,
+                           ec.created_at AS created_at
+                    ORDER BY created_at DESC
+                """))
+            if not rows:
+                st.warning("⚠️ 尚无工程构建体，请先执行步骤 2")
+            else:
+                opts = {
+                    f"{r['name'] or r['id']} ({r['status']}) - {r['id']}": r["id"]
+                    for r in rows
+                }
+                pick = st.selectbox("选择构建体", list(opts.keys()), key="tech_brief_const")
+                selected_construct_id = opts[pick]
+
+        # ---- 按病原菌 ----
+        else:
+            with driver.session() as session:
+                rows = list(session.run("""
+                    MATCH (p:Pathogen)
+                    OPTIONAL MATCH (ec:EngineeredPhageConstruct)-[:TARGETS]->(p)
+                    WITH p, count(DISTINCT ec) AS cnt
+                    WHERE cnt > 0
+                    RETURN p.pathogen_id AS id, p.species AS species, cnt
+                    ORDER BY cnt DESC
+                """))
+            if not rows:
+                st.warning("⚠️ 尚无构建体关联到病原菌")
+            else:
+                opts = {f"{r['species']}（{r['cnt']} 个构建体）": r["id"] for r in rows}
+                pick = st.selectbox("选择病原菌", list(opts.keys()), key="tech_brief_path")
+                selected_pathogen_id = opts[pick]
+
+        # ---- 技术问题（可选） ----
+        tech_question = st.text_input(
+            "技术情报问题（可选）",
+            value="",
+            placeholder="例如：尾纤维工程在扩大宿主范围方面有哪些公开证据？",
+            key="tech_brief_question",
+        )
+
+        # ---- 生成按钮 ----
+        if st.button("📄 生成技术简报", type="primary", key="tech_brief_gen"):
+            try:
+                with st.spinner("正在组织技术简报..."):
+                    brief = generate_technology_brief(
+                        driver,
+                        strategy_id=selected_strategy_id,
+                        construct_id=selected_construct_id,
+                        pathogen_id=selected_pathogen_id,
+                        technology_question=tech_question.strip(),
+                        persist=True,
+                    )
+                st.session_state["tech_brief_last"] = brief
+                st.success(f"✅ 简报已生成，ID: {brief.get('brief_id')}")
+            except Exception as e:
+                st.error(f"生成失败：{e}")
+
+        # ---- 展示 ----
+        brief = st.session_state.get("tech_brief_last")
+        if brief:
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("工程策略", len(brief.get("engineering_strategies", [])))
+            col2.metric("构建体", len(brief.get("known_constructs", [])))
+            col3.metric("技术主张", len(brief.get("technical_claims", [])))
+            col4.metric("技术结果", len(brief.get("technical_results", [])))
+
+            st.markdown("#### 📋 数据截止")
+            st.caption(
+                f"as_of_date = {brief.get('as_of_date')} · "
+                f"brief_id = {brief.get('brief_id')} · "
+                f"review_status = {brief.get('review_status')}"
+            )
+
+            st.markdown("#### ⚡ 建议下一步")
+            for s in brief.get("recommended_next_steps", []):
+                st.write(f"- {s}")
+
+            if brief.get("internal_capability_gaps"):
+                st.markdown("#### 🧩 内部能力差距")
+                for g in brief["internal_capability_gaps"]:
+                    st.write(f"- [{g['gap_level']}] {g['subject_type']} {g['subject_id']}")
+
+            st.markdown("#### 📊 证据成熟度分布")
+            st.json(brief.get("evidence_maturity", {}))
+
+            st.markdown("#### 📚 引用来源")
+            cites = brief.get("citations", [])
+            if not cites:
+                st.info("暂无来源引用（请为技术主张/结果关联 SourceArtifact）")
+            else:
+                for c in cites:
+                    st.write(
+                        f"- `{c.get('source_id')}` · {c.get('source_type')} · "
+                        f"{c.get('title')} · {c.get('published_date')}"
+                    )
+
+            with st.expander("🔍 完整 JSON"):
+                st.json(brief)
 
 
 ci_mode(driver)

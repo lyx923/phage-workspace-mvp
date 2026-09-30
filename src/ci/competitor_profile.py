@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 from neo4j import Driver
 from datetime import datetime
 
+
 def build_competitor_profile(
     driver: Driver,
     organization_id: str,
@@ -14,7 +15,7 @@ def build_competitor_profile(
     """
     if as_of_date is None:
         as_of_date = datetime.now().strftime("%Y-%m-%d")
-    
+
     with driver.session() as session:
         # 1. 获取组织基本信息
         org_result = session.run("""
@@ -31,13 +32,13 @@ def build_competitor_profile(
                    o.review_status AS review_status,
                    o.last_verified_at AS last_verified
         """, oid=organization_id).single()
-        
+
         if not org_result:
             return {"error": f"组织 {organization_id} 不存在"}
-        
+
         org_data = dict(org_result)
-        
-        # 2. 获取研发项目（修改查询，避免 DISTINCT 问题）
+
+        # 2. 获取研发项目
         programs = session.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
             OPTIONAL MATCH (d)-[:TARGETS_PATHOGEN]->(p:Pathogen)
@@ -56,7 +57,7 @@ def build_competitor_profile(
             ORDER BY d.created_at DESC
         """, oid=organization_id)
         program_list = [dict(record) for record in programs]
-        
+
         # 3. 获取情报事件（按时间倒序）
         events = session.run("""
             MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
@@ -74,20 +75,61 @@ def build_competitor_profile(
             ORDER BY e.event_date DESC
         """, oid=organization_id)
         event_list = [dict(record) for record in events]
-        
+
+        # 3.5 获取专利族（通过 Organization -[:OWNS_PATENT]-> PatentFamily）
+        patents = session.run("""
+            MATCH (o:Organization {organization_id: $oid})-[:OWNS_PATENT]->(pf:PatentFamily)
+            OPTIONAL MATCH (dp:DevelopmentProgram)-[:COVERED_BY]->(pf)
+            WITH pf, collect(DISTINCT dp.canonical_name) AS programs
+            RETURN pf.patent_family_id AS patent_family_id,
+                   pf.title AS title,
+                   pf.priority_date AS priority_date,
+                   pf.publication_numbers AS publication_numbers,
+                   pf.jurisdictions AS jurisdictions,
+                   pf.legal_status AS legal_status,
+                   pf.claim_scope_summary AS claim_scope_summary,
+                   programs
+            ORDER BY pf.priority_date DESC
+        """, oid=organization_id)
+        patent_list = [dict(record) for record in patents]
+
+        # 3.6 获取临床试验（通过 Organization -[:SPONSORS]-> ClinicalTrial）
+        trials = session.run("""
+            MATCH (o:Organization {organization_id: $oid})-[:SPONSORS]->(ct:ClinicalTrial)
+            OPTIONAL MATCH (dp:DevelopmentProgram)-[:HAS_TRIAL]->(ct)
+            WITH ct, collect(DISTINCT dp.canonical_name) AS programs
+            RETURN ct.trial_id AS trial_id,
+                   ct.nct_id AS nct_id,
+                   ct.title AS title,
+                   ct.phase AS phase,
+                   ct.status AS status,
+                   ct.indication AS indication,
+                   ct.start_date AS start_date,
+                   ct.completion_date AS completion_date,
+                   ct.enrollment AS enrollment,
+                   programs
+            ORDER BY ct.start_date DESC
+        """, oid=organization_id)
+        trial_list = [dict(record) for record in trials]
+
         # 4. 统计信息
         stats = {
             "total_programs": len(program_list),
             "active_programs": sum(1 for p in program_list if p.get('status') == 'active'),
             "total_events": len(event_list),
-            "recent_events": sum(1 for e in event_list if e.get('event_date') and e['event_date'] > "2026-01-01"),
+            "recent_events": sum(
+                1 for e in event_list
+                if e.get('event_date') and e['event_date'] > "2026-01-01"
+            ),
             "pathogens_covered": list(set(
-                p['species'] for prog in program_list 
-                for p in prog.get('target_pathogens', []) 
+                p['species'] for prog in program_list
+                for p in prog.get('target_pathogens', [])
                 if p.get('species')
-            ))
+            )),
+            "total_patents": len(patent_list),
+            "total_trials": len(trial_list),
         }
-        
+
         # 5. 数据缺口
         gaps = []
         if not program_list:
@@ -100,17 +142,24 @@ def build_competitor_profile(
             gaps.append("缺少公司描述")
         if not org_data.get('public_private') or org_data['public_private'] == 'unknown':
             gaps.append("公司类型（上市/私有）未确认")
-        
+        if not patent_list:
+            gaps.append("尚未收集到专利族信息")
+        if not trial_list:
+            gaps.append("尚未收集到临床试验信息")
+
         return {
             "organization": org_data,
             "active_programs": program_list,
             "recent_events": event_list,
+            "patent_families": patent_list,
+            "clinical_trials": trial_list,
             "target_pathogens": stats["pathogens_covered"],
             "statistics": stats,
             "data_gaps": gaps,
             "as_of_date": as_of_date,
             "generated_at": datetime.now().isoformat()
         }
+
 
 def list_organizations(driver: Driver) -> List[Dict]:
     """列出所有组织（用于选择）"""

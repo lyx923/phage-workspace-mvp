@@ -74,6 +74,7 @@ def create_engineered_construct(
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
                 CREATE (ec)-[:DERIVED_FROM]->(ph)
                 RETURN ph.name AS name
+                LIMIT 1
             """, parent_name=parent_phage_name, construct_id=construct_id)
             if not result.single():
                 print(f"⚠️ 亲本噬菌体 '{parent_phage_name}' 未找到，跳过关联")
