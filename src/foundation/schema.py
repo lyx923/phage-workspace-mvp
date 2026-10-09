@@ -109,7 +109,7 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.evidence_level);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.source_domain);")
 
-        session.run("CREATE CONSTRAINT evidence_id_unique IF NOT EXISTS FOR (e:EvidenceSource) REQUIRE e.evidence_id IS UNIQUE;")
+        # session.run("CREATE CONSTRAINT evidence_id_unique IF NOT EXISTS FOR (e:EvidenceSource) REQUIRE e.evidence_id IS UNIQUE;")
 
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SourceArtifact) REQUIRE s.source_id IS UNIQUE")
         session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_domain)")
@@ -224,7 +224,39 @@ def create_schema(driver):
         except Exception as _e:
             print(f"⚠️ CI 关系索引创建跳过（Neo4j 版本可能不支持）: {_e}")
 
-        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网 + 工程情报 + 决策支持 + CI 信号链路）")
+        # ========================================================
+        # ★ P1 质量能力：新增索引
+        # ========================================================
+        session.run("CREATE INDEX IF NOT EXISTS FOR (o:Organization) ON (o.legal_name);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (o:Organization) ON (o.website_domain);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.credibility_score);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (pf:PatentFamily) ON (pf.claim_scope_summary);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (tc:TechnicalClaim) ON (tc.claim_text);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (tc:TechnicalClaim) ON (tc.claim_status);")
+        session.run("CREATE INDEX IF NOT EXISTS FOR (tr:TechnicalResult) ON (tr.outcome_direction);")
+
+        # P1 关系属性索引（Neo4j 4.3+）
+        try:
+            session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:OWNS_OR_CONTROLS]-() ON (r.relation_type);")
+            session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:MAPS_TO]-() ON (r.similarity);")
+            session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:CONTRADICTS]-() ON (r.conflict_type);")
+        except Exception as _e:
+            print(f"⚠️ P1 关系索引创建跳过（Neo4j 版本可能不支持）: {_e}")
+
+        # ========================================================
+        # ★ PRD 14.3 时间语义：valid_from / valid_to 索引
+        # ========================================================
+        for label in [
+            "Organization", "DevelopmentProgram", "IntelligenceEvent",
+            "EngineeringStrategy", "EngineeredPhageConstruct",
+            "TechnicalClaim", "TechnicalResult", "PatentFamily",
+            "ClinicalTrial", "IntelligenceProduct", "DecisionRecord",
+            "TechnologyAssessment", "CompetitorAssessment",
+        ]:
+            session.run(f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.valid_from);")
+            session.run(f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.valid_to);")
+
+        print("✅ 所有数据库约束与索引创建完成（含科学子网 + 市场情报子网 + 工程情报 + 决策支持 + CI 信号链路 + P1 质量能力 + 时间语义）")
 
     # -------- 声明 CI 链路契约（独立 session） --------
     try:
@@ -567,6 +599,59 @@ def create_controlled_vocabularies(driver):
                 {"code": "clinical_trial",      "display": "临床试验", "description": "某项临床试验"}
             ]
         },
+        # ========================================================
+        # ★ P1 质量能力：新增词表
+        # ========================================================
+        {
+            "id": "VOC-ORG-RELATION",
+            "name": "organization_relation_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "parent_of",      "display": "母公司",   "description": "A 是 B 的母公司"},
+                {"code": "subsidiary_of",  "display": "子公司",   "description": "A 是 B 的子公司"},
+                {"code": "brand_of",       "display": "品牌归属", "description": "A 是 B 的品牌"},
+                {"code": "renamed_to",     "display": "更名",     "description": "A 更名为 B"},
+                {"code": "acquired",       "display": "收购",     "description": "A 收购了 B"},
+            ],
+        },
+        {
+            "id": "VOC-CONFLICT-TYPE",
+            "name": "conflict_type",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "claim_status_conflict",   "display": "主张状态冲突", "description": "同一 construct 下同类 claim 一个 supported 一个 contradicted"},
+                {"code": "result_direction_conflict","display": "结果方向冲突", "description": "同一 construct 下同类 result 方向相反"},
+                {"code": "cross_construct_conflict","display": "跨构建体冲突", "description": "同一 strategy 下不同 construct 的结果方向相反"},
+            ],
+        },
+        {
+            "id": "VOC-CREDIBILITY-TIER",
+            "name": "credibility_tier",
+            "domain": "ci",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "primary",    "display": "一手来源", "description": "监管公告 / 官方披露 / 同行评议论文"},
+                {"code": "secondary",  "display": "二手来源", "description": "新闻稿 / 会议摘要 / 专利文本"},
+                {"code": "tertiary",   "display": "三手来源", "description": "媒体报道 / 二手转述"},
+                {"code": "unknown",    "display": "未知",     "description": "来源不明"},
+            ],
+        },
+        # ========================================================
+        # ★ PRD 14.3 时间语义
+        # ========================================================
+        {
+            "id": "VOC-TIME-SEMANTICS",
+            "name": "time_semantics",
+            "domain": "foundation",
+            "version": "1.0.0",
+            "terms": [
+                {"code": "valid_from",   "display": "生效时间", "description": "对象开始有效的时间"},
+                {"code": "valid_to",     "display": "失效时间", "description": "对象失效时间，null 表示当前仍有效"},
+                {"code": "as_of_date",   "display": "截止日期", "description": "查询某时刻有效对象的参照时间"},
+            ],
+        },
     ]
 
     with driver.session() as session:
@@ -595,4 +680,4 @@ def create_controlled_vocabularies(driver):
                 """, vocab_id=vocab["id"], term_id=term_id, code=term["code"],
                     display=term["display"], description=term["description"])
 
-    print("✅ ControlledVocabulary 受控词表已创建（含 CI 词表）")
+    print("✅ ControlledVocabulary 受控词表已创建（含 CI 词表 + P1 质量能力词表 + 时间语义词表）")

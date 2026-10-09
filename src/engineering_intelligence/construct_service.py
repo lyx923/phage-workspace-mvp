@@ -21,6 +21,7 @@ def create_engineered_construct(
     strategy_ids: Optional[List[str]] = None,
     construct_status: str = "proposed",
     first_public_date: Optional[str] = None,
+    target_pathogen_text: Optional[str] = None,            # 新增：原文中的目标病原菌描述
     actor_id: str = "system"
 ) -> str:
     """
@@ -30,6 +31,7 @@ def create_engineered_construct(
     参数：
         target_pathogen_ids: 已废弃，建议使用 target_pathogen_species
         target_pathogen_species: 靶向病原体物种名称列表（如 ["Klebsiella pneumoniae"]）
+        target_pathogen_text: 原文中的目标病原菌描述（来自 DeepSeek 抽取，可为空）
     """
     construct_id = generate_construct_id()
     intended_effects = intended_effects or []
@@ -57,6 +59,7 @@ def create_engineered_construct(
                 construct_code: $construct_code,
                 construct_status: $construct_status,
                 intended_effects: $intended_effects,
+                target_pathogen_text: $target_pathogen_text,
                 first_public_date: $first_public_date,
                 review_status: 'pending',
                 created_at: datetime(),
@@ -64,7 +67,9 @@ def create_engineered_construct(
             })
         """, construct_id=construct_id, public_name=public_name,
            construct_code=construct_code, construct_status=construct_status,
-           intended_effects=intended_effects, first_public_date=first_public_date)
+           intended_effects=intended_effects,
+           target_pathogen_text=target_pathogen_text or "",
+           first_public_date=first_public_date)
 
         # 关联亲本噬菌体
         if parent_phage_name:
@@ -108,6 +113,7 @@ def create_engineered_construct(
                 "strategy_ids": strategy_ids,
                 "target_pathogen_ids": target_pathogen_ids,
                 "target_pathogen_species": target_pathogen_species,
+                "target_pathogen_text": target_pathogen_text,
             },
             reason=f"创建工程化构建体: {public_name or construct_code or construct_id}"
         )
