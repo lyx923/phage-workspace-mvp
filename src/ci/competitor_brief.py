@@ -1,15 +1,38 @@
 # src/ci/competitor_brief.py
+"""
+CompetitorBrief / IntelligenceProductService
+合并服务（PRD 13.1 / 16.1）
+
+本模块包含两部分：
+    Part 1: Competitor Brief —— 生成竞争对手情报简报
+    Part 2: IntelligenceProductService —— 情报产品（IntelligenceProduct）的
+            创建、查询、审核状态更新。
+
+竞争简报生成原则：
+    - 只基于图谱中已有的结构化对象，不调用 LLM 生成事实
+    - 竞争信号由规则引擎聚合，须由情报分析师审核后方可引用
+    - 白空间 / 格局矩阵 / 来源可信度 / 实体消歧 / 冲突检测均为辅助信息，
+      不构成最终判断
+"""
+
+# ==================================================================
+# Part 1: Competitor Brief (原 competitor_brief.py)
+# ==================================================================
 from typing import Dict, Optional, List
 from neo4j import Driver
 from datetime import datetime
 import json
-
+import uuid
 from src.ci.competitor_profile import build_competitor_profile
 from src.ci import organization_service
-from src.ci.intelligence_product_service import create_intelligence_product
+from src.shared.audit_service import write_audit_event
 
 
-# ==================== P1-2 新增常量 ====================
+# ---------- P1-2 常量 ----------
+# 事件类型 → 信号方向基础映射
+# threat        = 对内部构成威胁
+# opportunity   = 对内部构成机会
+# uncertainty   = 方向不明确，需要人工判断
 EVENT_SIGNAL_MAP = {
     "acquisition": "threat", "merger": "threat", "regulatory_approval": "threat",
     "ipo": "threat", "funding": "threat", "clinical_milestone": "threat",
@@ -21,10 +44,25 @@ EVENT_SIGNAL_MAP = {
 
 
 def _assign_signal_direction(event: dict) -> str:
+    """
+    判断一个情报事件对内部而言是威胁 / 机会 / 不确定。
+
+    规则：
+        1. 优先使用 EVENT_SIGNAL_MAP 中的基础方向
+        2. 若基础方向为 uncertainty 且影响级别为 critical/high，
+           再根据标题关键词（收购/兼并/合并等）升级为 threat
+
+    Args:
+        event: 事件字典，至少包含 event_type / impact_level / title
+
+    Returns:
+        str: "threat" / "opportunity" / "uncertainty"
+    """
     event_type = event.get("event_type", "")
     impact_level = event.get("impact_level", "low")
     title = event.get("title", "").lower()
     base_direction = EVENT_SIGNAL_MAP.get(event_type, "uncertainty")
+    # 基础方向不确定 + 高影响 + 标题含并购关键词 → 升级为威胁
     if base_direction == "uncertainty" and impact_level in ("critical", "high"):
         for kw in ["acqui", "merger", "merge", "takeover", "收购", "兼并", "合并"]:
             if kw in title:
@@ -33,6 +71,21 @@ def _assign_signal_direction(event: dict) -> str:
 
 
 def _aggregate_competitive_signals(events, claims=None, assessments=None) -> Dict:
+    """
+    规则引擎聚合竞争信号，不调用 LLM。
+
+    将事件按方向分类为 threats / opportunities / uncertainties，
+    并为每条信号生成可追溯的元数据（source_object / source_id / basis 等）。
+
+    Args:
+        events: 事件列表（通常来自 competitor_profile 的 recent_events）
+        claims: 预留参数，暂未使用
+        assessments: 预留参数，暂未使用
+
+    Returns:
+        Dict: 包含 threats / opportunities / uncertainties / signal_count
+              以及聚合方法与声明
+    """
     threats, opportunities, uncertainties = [], [], []
     for evt in events:
         direction = _assign_signal_direction(evt)
@@ -53,17 +106,27 @@ def _aggregate_competitive_signals(events, claims=None, assessments=None) -> Dic
         else:
             uncertainties.append(entry)
     return {
-        "threats": threats, "opportunities": opportunities, "uncertainties": uncertainties,
+        "threats": threats, "opportunities": opportunities,
+        "uncertainties": uncertainties,
         "signal_count": len(threats) + len(opportunities) + len(uncertainties),
         "aggregation_method": "rule_based_no_llm", "aggregation_version": "0.5.0",
         "requires_expert_review": True,
-        "auto_generated_note": "以上竞争信号由规则引擎自动聚合，基于图谱中已有的结构化对象，不包含 AI 推断内容。须由情报分析师审核后方可引用。",
+        "auto_generated_note": "以上竞争信号由规则引擎自动聚合，基于图谱中已有的结构化对象，"
+                               "不包含 AI 推断内容。须由情报分析师审核后方可引用。",
     }
 
 
-# ==================== P1 新增：白空间 / 格局矩阵 ====================
+# ---------- P1 新增：白空间 / 格局矩阵 ----------
 
 def _build_white_space_block(driver, organization_id):
+    """
+    构建白空间分析块。
+
+    步骤：
+        1. 从组织已布局的病原体范围（pathogen_scope）出发
+        2. 调用 identify_landscape_white_space 识别覆盖不足的策略-病原组合
+        3. 返回精简后的 underrepresented_combinations 与 summary
+    """
     with driver.session() as s:
         rows = list(s.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->
@@ -72,7 +135,7 @@ def _build_white_space_block(driver, organization_id):
         """, oid=organization_id))
     pathogen_scope = [r["species"] for r in rows if r["species"]]
     try:
-        from src.ci.landscape_service import identify_landscape_white_space
+        from src.ci.competitor_profile import identify_landscape_white_space
         ws = identify_landscape_white_space(driver, pathogen_scope=pathogen_scope or None)
         return {
             "pathogen_scope": pathogen_scope,
@@ -85,6 +148,12 @@ def _build_white_space_block(driver, organization_id):
 
 
 def _build_landscape_matrix_block(driver, organization_id):
+    """
+    构建格局矩阵块。
+
+    取该组织前 5 个研发项目，调用 compare_competitor_programs 生成
+    strategy × pathogen 的覆盖矩阵（x_axis / y_axis / cells）。
+    """
     with driver.session() as s:
         prog_ids = [r["pid"] for r in s.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
@@ -93,7 +162,7 @@ def _build_landscape_matrix_block(driver, organization_id):
     if not prog_ids:
         return {"x_axis": [], "y_axis": [], "cells": [], "program_ids": []}
     try:
-        from src.ci.landscape_service import compare_competitor_programs
+        from src.ci.competitor_profile import compare_competitor_programs
         r = compare_competitor_programs(driver, prog_ids)
         return {"program_ids": prog_ids, "x_axis": r["matrix"]["x_axis"],
                 "y_axis": r["matrix"]["y_axis"], "cells": r["matrix"]["cells"]}
@@ -101,10 +170,16 @@ def _build_landscape_matrix_block(driver, organization_id):
         return {"program_ids": prog_ids, "x_axis": [], "y_axis": [], "cells": [], "error": str(e)}
 
 
-# ==================== ★ P1 质量能力接入：三个新函数 ====================
+# ---------- P1 质量能力：三个新函数 ----------
 
 def _build_source_credibility_breakdown(driver, organization_id):
-    """按来源可信度分层统计该组织引用的所有 SourceArtifact。"""
+    """
+    统计该组织相关来源的可信度分布。
+
+    - 统计 total_sources
+    - 按 credibility_tier 分桶（primary/secondary/tertiary/unknown）
+    - 计算已评分来源的平均 credibility_score
+    """
     with driver.session() as s:
         rows = list(s.run("""
             MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
@@ -133,9 +208,13 @@ def _build_source_credibility_breakdown(driver, organization_id):
 
 
 def _build_entity_resolution_hints(driver, organization_id):
-    """检测该组织是否可能与其他组织重复"""
+    """
+    检测疑似重复的组织，返回候选列表。
+
+    只给出候选，不自动合并；须由情报分析师人工确认。
+    """
     try:
-        from src.ci.entity_resolution_service import find_duplicate_candidates
+        from src.ci.entity_resolution import find_duplicate_candidates
         candidates = find_duplicate_candidates(driver, organization_id, min_score=0.4)
         return {
             "duplicate_candidates": candidates[:5],
@@ -148,12 +227,14 @@ def _build_entity_resolution_hints(driver, organization_id):
 
 def _build_conflict_summary(driver, organization_id):
     """
-    检测该组织关联的所有构建体是否有技术冲突。
+    汇总该组织关联的所有构建体的技术冲突。
 
-    v0.6 修复：同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
+    - 收集该组织研发项目关联的所有 EngineeredPhageConstruct
+    - 对每个构建体调用 detect_conflicts
+    - 汇总 claim_status_conflicts / result_direction_conflicts
     """
     try:
-        from src.engineering_intelligence.claim_conflict_service import detect_conflicts
+        from src.engineering_intelligence.technology_assessment import detect_conflicts
         with driver.session() as s:
             cids = [r["cid"] for r in s.run("""
                 MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
@@ -182,15 +263,34 @@ def _build_conflict_summary(driver, organization_id):
                 "result_direction_conflicts": [], "error": str(e)}
 
 
-# ==================== 主入口 ====================
+# ---------- 主入口 ----------
 
-def generate_competitor_brief(
-    driver: Driver,
-    organization_id: str,
-    days_back: int = 90,
-    include_all_programs: bool = True,
-    persist: bool = True,
-) -> Dict:
+def generate_competitor_brief(driver: Driver, organization_id: str,
+                              days_back: int = 90, include_all_programs: bool = True,
+                              persist: bool = True) -> Dict:
+    """
+    生成竞争对手情报简报的主入口。
+
+    流程：
+        1. 构建组织档案（build_competitor_profile）
+        2. 检测重大变化（detect_material_changes）
+        3. 拉取引用来源（_fetch_citations_for_organization）
+        4. 聚合竞争信号（_aggregate_competitive_signals）
+        5. 构建专利格局 / 临床试验 / 白空间 / 格局矩阵
+        6. 构建来源可信度 / 实体消歧 / 冲突摘要
+        7. 组装 brief_data
+        8. 可选持久化为 IntelligenceProduct
+
+    Args:
+        driver: Neo4j 驱动
+        organization_id: 组织 ID
+        days_back: 回溯天数（默认 90）
+        include_all_programs: 预留参数
+        persist: 是否持久化
+
+    Returns:
+        Dict: 完整简报数据（若 persist=True 会带 brief_id）
+    """
     profile = build_competitor_profile(driver, organization_id)
     if "error" in profile:
         return profile
@@ -203,7 +303,6 @@ def generate_competitor_brief(
     white_space_analysis = _build_white_space_block(driver, organization_id)
     landscape_matrix = _build_landscape_matrix_block(driver, organization_id)
 
-    # ★ 新增：三个质量能力区块
     source_credibility = _build_source_credibility_breakdown(driver, organization_id)
     entity_resolution_hints = _build_entity_resolution_hints(driver, organization_id)
     conflict_summary = _build_conflict_summary(driver, organization_id)
@@ -229,9 +328,9 @@ def generate_competitor_brief(
         "clinical_trials": clinical_trials_block,
         "white_space_analysis": white_space_analysis,
         "landscape_matrix": landscape_matrix,
-        "source_credibility_breakdown": source_credibility,     # ★ 新增
-        "entity_resolution_hints": entity_resolution_hints,     # ★ 新增
-        "conflict_summary": conflict_summary,                   # ★ 新增
+        "source_credibility_breakdown": source_credibility,
+        "entity_resolution_hints": entity_resolution_hints,
+        "conflict_summary": conflict_summary,
         "changes_summary": {
             "new_events": changes.get("total_new_events", 0),
             "new_programs": changes.get("total_new_programs", 0),
@@ -244,6 +343,7 @@ def generate_competitor_brief(
         "review_status": "pending",
     }
 
+    # 精简 active_programs
     for prog in profile.get("active_programs", []):
         pathogens = [p["species"] for p in prog.get("target_pathogens", []) if p.get("species")]
         brief_data["active_programs"].append({
@@ -252,6 +352,7 @@ def generate_competitor_brief(
             "target_pathogens": pathogens, "program_type": prog.get("program_type", "unknown"),
         })
 
+    # 精简 recent_events（最多 10 条）
     for evt in profile.get("recent_events", [])[:10]:
         brief_data["recent_events"].append({
             "date": evt.get("event_date"), "type": evt.get("event_type"),
@@ -261,7 +362,7 @@ def generate_competitor_brief(
             "affected_program": evt.get("affected_program"),
         })
 
-    # 建议下一步
+    # 根据各区块结果生成建议下一步
     if changes.get("has_material_change", False):
         brief_data["recommended_next_steps"].append("建议跟进近期重大事件，评估对内部战略的影响")
     if patent_landscape.get("total_families", 0) > 0:
@@ -280,7 +381,6 @@ def generate_competitor_brief(
             brief_data["recommended_next_steps"].append(
                 f"识别到 {ws_summary['minimal_count']} 个 minimal 覆盖组合，建议持续观察")
 
-    # ★ 新增：质量能力相关建议
     if source_credibility.get("by_tier", {}).get("tertiary", 0) > 0:
         brief_data["recommended_next_steps"].append(
             f"存在 {source_credibility['by_tier']['tertiary']} 条三手来源，建议人工核验")
@@ -294,10 +394,10 @@ def generate_competitor_brief(
     if profile.get("data_gaps"):
         brief_data["recommended_next_steps"].append("补充数据缺口，完善竞争对手档案")
 
+    # 持久化：创建 IntelligenceProduct，并回写质量能力字段
     if persist:
         brief_id = create_intelligence_product(
-            driver,
-            brief_type="competitor",
+            driver, brief_type="competitor",
             title=f"竞争情报简报 - {profile['organization']['name']}",
             executive_summary="; ".join(
                 [t["signal_text"] for t in competitive_assessment.get("threats", [])[:3]]),
@@ -334,44 +434,27 @@ def generate_competitor_brief(
     return brief_data
 
 
-# ==================== citations：v0.6 统一版 ====================
+# ---------- citations ----------
 
 def _fetch_citations_for_organization(driver, organization_id):
     """
-    从图谱中动态查询该组织相关的所有 SourceArtifact。
+    拉取该组织相关的所有引用来源。
 
-    v0.6 P0-2 修复：
-      - 所有事件查询显式过滤 organization_id，避免通过共享 Pathogen 造成跨组织语义污染。
+    两条路径：
+        A. 组织 ← INVOLVES ← 事件 ← HAS_SOURCE ← 来源
+        B. 组织 → DEVELOPS → 项目 → 构建体 → TechnicalClaim → SUPPORTED_BY → 来源
 
-    v0.6 补充修复：
-      - 分支 B 支持 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
-
-    来源路径（合并去重）：
-      A. Organization <-[:INVOLVES]- IntelligenceEvent -[:HAS_SOURCE]-> SourceArtifact
-         （且 e.organization_id = org.organization_id）
-      B. Organization -[:DEVELOPS]-> DevelopmentProgram
-         <-[:ASSOCIATED_WITH | USES_CONSTRUCT]- EngineeredPhageConstruct
-         <-[:CLAIMS_ABOUT]- TechnicalClaim -[:SUPPORTED_BY]-> SourceArtifact
-
-    返回结构：
-        [{
-            source_id, source_type, title, url,
-            published_date, credibility_tier,
-            referenced_by_event_ids: [...]
-        }, ...]
+    结果按 published_date 倒序。
     """
     citations_map: Dict[str, Dict] = {}
-
     with driver.session() as session:
-        # 分支 A：事件来源（INVOLVES + organization_id 双重过滤）
+        # 路径 A：事件来源
         result_a = session.run("""
             MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
                   -[:HAS_SOURCE]->(s:SourceArtifact)
             WHERE e.organization_id = $oid
-            RETURN s.source_id AS source_id,
-                   s.source_type AS source_type,
-                   s.title AS title,
-                   s.url AS url,
+            RETURN s.source_id AS source_id, s.source_type AS source_type,
+                   s.title AS title, s.url AS url,
                    s.published_date AS published_date,
                    s.credibility_tier AS credibility_tier,
                    collect(DISTINCT e.event_id) AS referenced_by_event_ids
@@ -383,20 +466,17 @@ def _fetch_citations_for_organization(driver, organization_id):
                 continue
             if sid not in citations_map:
                 citations_map[sid] = {
-                    "source_id": sid,
-                    "source_type": r["source_type"],
-                    "title": r["title"],
-                    "url": r["url"],
+                    "source_id": sid, "source_type": r["source_type"],
+                    "title": r["title"], "url": r["url"],
                     "published_date": r["published_date"],
                     "credibility_tier": r["credibility_tier"],
                     "referenced_by_event_ids": list(r["referenced_by_event_ids"] or []),
                 }
             else:
                 citations_map[sid]["referenced_by_event_ids"].extend(
-                    r["referenced_by_event_ids"] or []
-                )
+                    r["referenced_by_event_ids"] or [])
 
-        # 分支 B：技术主张来源（v0.6：支持 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径）
+        # 路径 B：技术主张来源
         result_b = session.run("""
             MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
             OPTIONAL MATCH (ec1:EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(d)
@@ -406,10 +486,8 @@ def _fetch_citations_for_organization(driver, organization_id):
             WITH DISTINCT ec WHERE ec IS NOT NULL
             MATCH (tc:TechnicalClaim)-[:CLAIMS_ABOUT]->(ec)
             MATCH (tc)-[:SUPPORTED_BY]->(s:SourceArtifact)
-            RETURN DISTINCT s.source_id AS source_id,
-                   s.source_type AS source_type,
-                   s.title AS title,
-                   s.url AS url,
+            RETURN DISTINCT s.source_id AS source_id, s.source_type AS source_type,
+                   s.title AS title, s.url AS url,
                    s.published_date AS published_date,
                    s.credibility_tier AS credibility_tier
         """, oid=organization_id)
@@ -420,24 +498,24 @@ def _fetch_citations_for_organization(driver, organization_id):
                 continue
             if sid not in citations_map:
                 citations_map[sid] = {
-                    "source_id": sid,
-                    "source_type": r["source_type"],
-                    "title": r["title"],
-                    "url": r["url"],
+                    "source_id": sid, "source_type": r["source_type"],
+                    "title": r["title"], "url": r["url"],
                     "published_date": r["published_date"],
                     "credibility_tier": r["credibility_tier"],
                     "referenced_by_event_ids": [],
                 }
 
-    # 去重后按发布日期倒序
-    return sorted(
-        citations_map.values(),
-        key=lambda x: (x.get("published_date") or ""),
-        reverse=True,
-    )
+    return sorted(citations_map.values(),
+                  key=lambda x: (x.get("published_date") or ""), reverse=True)
 
 
 def _build_patent_landscape(patent_list):
+    """
+    构建专利格局汇总。
+
+    - 按 legal_status 和 jurisdiction 计数
+    - 按 priority_date 倒序取最近 10 个专利族
+    """
     if not patent_list:
         return {"total_families": 0, "by_legal_status": {}, "by_jurisdiction": {},
                 "recent_families": [], "note": "尚未收集到专利族信息"}
@@ -464,6 +542,12 @@ def _build_patent_landscape(patent_list):
 
 
 def _build_clinical_trials_block(trial_list):
+    """
+    构建临床试验汇总。
+
+    - 按 phase / status 计数
+    - 筛选 active_trials（recruiting / active / not_yet_recruiting）
+    """
     if not trial_list:
         return {"total_trials": 0, "by_phase": {}, "by_status": {},
                 "active_trials": [], "note": "尚未收集到临床试验信息"}
@@ -488,7 +572,220 @@ def _build_clinical_trials_block(trial_list):
     }
 
 
-def generate_technology_brief(driver, strategy_id=None, construct_id=None, pathogen_id=None, **kwargs):
+def generate_technology_brief(driver, strategy_id=None, construct_id=None,
+                              pathogen_id=None, **kwargs):
+    """
+    技术简报生成入口（转发到 engineering_intelligence.technology_brief）。
+    """
     from src.engineering_intelligence.technology_brief import generate_technology_brief as _gen
     return _gen(driver, strategy_id=strategy_id, construct_id=construct_id,
                 pathogen_id=pathogen_id, **kwargs)
+
+
+# ==================================================================
+# Part 2: IntelligenceProductService
+# ==================================================================
+
+def generate_brief_id() -> str:
+    """生成 IntelligenceProduct ID（格式：CI:BRIEF:XXXXXXXX）。"""
+    return f"CI:BRIEF:{uuid.uuid4().hex[:8].upper()}"
+
+
+def _deserialize_brief(data: Dict) -> Dict:
+    """
+    将 Neo4j 返回的 JSON 字符串字段反序列化为 Python 对象。
+
+    处理的字段：citations / competitive_assessment / data_gaps / recommended_next_steps
+    """
+    defaults = {"citations": [], "competitive_assessment": {},
+                "data_gaps": [], "recommended_next_steps": []}
+    for k, default in defaults.items():
+        v = data.get(k)
+        if v is None:
+            data[k] = default
+        elif isinstance(v, str):
+            try:
+                data[k] = json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                data[k] = default
+    return data
+
+
+def create_intelligence_product(
+    driver: Driver, brief_type: str, title: str, executive_summary,
+    organization_id: Optional[str] = None, as_of_date: str = None,
+    citations: Optional[List[Dict]] = None,
+    competitive_assessment: Optional[Dict] = None,
+    data_gaps: Optional[List[str]] = None,
+    recommended_next_steps: Optional[List[str]] = None,
+    actor_id: str = "system",
+) -> str:
+    """
+    创建 IntelligenceProduct 节点，建立 COVERS 关系，写审计日志。
+
+    Args:
+        brief_type: 简报类型（competitor / engineered_phage_technology 等）
+        title: 标题
+        executive_summary: 执行摘要（str 或 list）
+        organization_id: 关联组织（可选）
+        as_of_date: 信息截止日期
+        citations: 引用来源列表
+        competitive_assessment: 竞争评估
+        data_gaps: 数据缺口
+        recommended_next_steps: 建议下一步
+        actor_id: 操作者
+
+    Returns:
+        str: brief_id
+    """
+    brief_id = generate_brief_id()
+    citations = citations or []
+    competitive_assessment = competitive_assessment or {}
+    data_gaps = data_gaps or []
+    recommended_next_steps = recommended_next_steps or []
+
+    citations_json = json.dumps(citations, ensure_ascii=False, default=str)
+    assessment_json = json.dumps(competitive_assessment, ensure_ascii=False, default=str)
+    gaps_json = json.dumps(data_gaps, ensure_ascii=False, default=str)
+    steps_json = json.dumps(recommended_next_steps, ensure_ascii=False, default=str)
+
+    # 统一执行摘要为字符串
+    if isinstance(executive_summary, list):
+        summary_str = " ".join(str(item) for item in executive_summary)
+    else:
+        summary_str = str(executive_summary) if executive_summary is not None else ""
+
+    with driver.session() as session:
+        session.run("""
+            CREATE (b:IntelligenceProduct {
+                brief_id: $brief_id, brief_type: $brief_type,
+                title: $title, executive_summary: $summary,
+                organization_id: $org_id, as_of_date: $as_of_date,
+                citations: $citations_json,
+                competitive_assessment: $assessment_json,
+                data_gaps: $gaps_json,
+                recommended_next_steps: $steps_json,
+                review_status: 'pending',
+                created_at: datetime(), updated_at: datetime()
+            })
+        """, brief_id=brief_id, brief_type=brief_type, title=title,
+             summary=summary_str, org_id=organization_id, as_of_date=as_of_date,
+             citations_json=citations_json, assessment_json=assessment_json,
+             gaps_json=gaps_json, steps_json=steps_json)
+
+        # 关联组织
+        if organization_id:
+            session.run("""
+                MATCH (b:IntelligenceProduct {brief_id: $bid})
+                MATCH (o:Organization {organization_id: $oid})
+                CREATE (b)-[:COVERS]->(o)
+            """, bid=brief_id, oid=organization_id)
+
+        write_audit_event(
+            driver, action_type="CREATE",
+            object_type="IntelligenceProduct", object_id=brief_id,
+            actor_id=actor_id,
+            delta={"brief_type": brief_type, "title": title,
+                   "organization_id": organization_id},
+            reason=f"创建情报产品: {title}",
+        )
+        return brief_id
+
+
+def get_intelligence_product(driver, brief_id):
+    """按 ID 查询 IntelligenceProduct，返回反序列化后的字典。"""
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (b:IntelligenceProduct {brief_id: $bid})
+            OPTIONAL MATCH (b)-[:COVERS]->(o:Organization)
+            RETURN b, o.organization_id AS organization_id,
+                   o.canonical_name AS organization_name
+        """, bid=brief_id).single()
+        if not result:
+            return None
+        data = _deserialize_brief(dict(result["b"]))
+        data["organization_id"] = result.get("organization_id")
+        data["organization_name"] = result.get("organization_name")
+        return data
+
+
+def get_brief_by_id(driver, brief_id):
+    """get_intelligence_product 的别名。"""
+    return get_intelligence_product(driver, brief_id)
+
+
+def get_approved_briefs(driver, brief_type=None, limit=100):
+    """查询所有已批准的情报产品，按创建时间倒序。"""
+    with driver.session() as session:
+        if brief_type:
+            result = session.run("""
+                MATCH (b:IntelligenceProduct {review_status: 'approved', brief_type: $bt})
+                OPTIONAL MATCH (b)-[:COVERS]->(o:Organization)
+                RETURN b, o.organization_id AS organization_id,
+                       o.canonical_name AS organization_name
+                ORDER BY b.created_at DESC LIMIT $limit
+            """, bt=brief_type, limit=limit)
+        else:
+            result = session.run("""
+                MATCH (b:IntelligenceProduct {review_status: 'approved'})
+                OPTIONAL MATCH (b)-[:COVERS]->(o:Organization)
+                RETURN b, o.organization_id AS organization_id,
+                       o.canonical_name AS organization_name
+                ORDER BY b.created_at DESC LIMIT $limit
+            """, limit=limit)
+        out = []
+        for r in result:
+            data = _deserialize_brief(dict(r["b"]))
+            data["organization_id"] = r.get("organization_id")
+            data["organization_name"] = r.get("organization_name")
+            out.append(data)
+        return out
+
+
+def get_competitor_programs(driver, organization_id):
+    """
+    查询某组织的所有研发项目，附带目标病原物种列表。
+    """
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
+            OPTIONAL MATCH (d)-[:TARGETS_PATHOGEN]->(p:Pathogen)
+            WITH d, collect(DISTINCT p.species) AS target_pathogens
+            RETURN d.program_id AS program_id, d.canonical_name AS canonical_name,
+                   d.development_stage AS development_stage, d.modality AS modality,
+                   d.program_type AS program_type, d.program_status AS program_status,
+                   d.review_status AS review_status, target_pathogens
+            ORDER BY d.canonical_name
+        """, oid=organization_id)
+        return [dict(r) for r in result]
+
+
+def update_intelligence_product_review_status(driver, brief_id, new_status, actor_id="system"):
+    """
+    更新 IntelligenceProduct 的审核状态。
+
+    Args:
+        new_status: pending / approved / rejected
+    """
+    valid_statuses = ["pending", "approved", "rejected"]
+    if new_status not in valid_statuses:
+        raise ValueError(f"状态必须是 {valid_statuses} 之一")
+
+    with driver.session() as session:
+        check = session.run(
+            "MATCH (b:IntelligenceProduct {brief_id: $bid}) RETURN b",
+            bid=brief_id,
+        ).single()
+        if not check:
+            raise ValueError(f"简报 {brief_id} 不存在")
+        session.run("""
+            MATCH (b:IntelligenceProduct {brief_id: $bid})
+            SET b.review_status = $status, b.updated_at = datetime()
+        """, bid=brief_id, status=new_status)
+        write_audit_event(
+            driver, action_type="STATUS_CHANGE",
+            object_type="IntelligenceProduct", object_id=brief_id,
+            actor_id=actor_id, delta={"review_status": new_status},
+            reason=f"简报审核状态更新为 {new_status}",
+        )
+        return True

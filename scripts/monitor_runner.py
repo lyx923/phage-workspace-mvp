@@ -28,7 +28,7 @@ from config import get_driver, Config
 from src.ci.organization_service import create_organization
 from src.ci.program_service import create_development_program
 from src.ci.event_service import capture_intelligence_event
-from src.shared.source_artifact_service import create_source_artifact
+from src.shared.evidence_source import create_source_artifact
 from src.shared.monitor_cache import (
     get_cached, set_cached, mark_persisted, mark_persisted_by_url, cache_status,
 )

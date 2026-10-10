@@ -1,11 +1,25 @@
 # src/shared/review.py
+"""
+通用审核（Review）服务。
+
+职责：
+    - create_review：创建审核记录，联动目标对象的 review_status
+    - get_reviews_for_object / get_latest_review：查询
+    - update_review_decision：更新审核决策
+    - get_review_by_id：按 ID 查询
+
+支持的 target_object_type 见 TARGET_ID_MAP；
+未知类型回退为 {object_type.lower()}_id 作为 id 属性。
+"""
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
 from src.shared.audit_service import write_audit_event
 
+# 受控词表：审核决策
 REVIEW_DECISIONS = ["approved", "rejected", "needs_revision", "confirmed", "unverified"]
 
+# target_object_type → id 属性名
 TARGET_ID_MAP = {
     "Organization": "organization_id",
     "DevelopmentProgram": "program_id",
@@ -29,6 +43,7 @@ TARGET_ID_MAP = {
 
 
 def generate_review_id() -> str:
+    """生成 Review ID（格式：REV-XXXXXXXX）。"""
     return f"REV-{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -43,16 +58,42 @@ def create_review(
     actor_id: str = "system",
     update_target_status: bool = True,
 ) -> str:
+    """
+    创建审核记录。
+
+    - 校验目标对象存在
+    - 建立 (Review)-[:REVIEWS]->(目标对象) 关系
+    - 可选：把目标对象的 review_status 同步为 decision
+    - 审计：approved → REVIEW_APPROVE；rejected/needs_revision → REVIEW_REJECT；其他 → STATUS_CHANGE
+
+    Args:
+        review_type: 审核类型（assay_qc / evidence_upgrade / ci_fact_review / ...）
+        target_object_type: 目标对象类型
+        target_object_id: 目标对象 ID
+        reviewer_id: 审核人
+        decision: 审核决策
+        comment: 审核意见
+        actor_id: 操作者
+        update_target_status: 是否同步更新目标的 review_status
+
+    Returns:
+        str: review_id
+
+    Raises:
+        ValueError: decision 非法或目标对象不存在
+    """
     if decision not in REVIEW_DECISIONS:
         raise ValueError(f"decision 必须是 {REVIEW_DECISIONS} 之一")
 
     id_prop = TARGET_ID_MAP.get(target_object_type)
     if not id_prop:
+        # 未知类型回退策略
         id_prop = f"{target_object_type.lower()}_id"
 
     review_id = generate_review_id()
 
     with driver.session() as session:
+        # 校验目标对象存在
         check_query = (
             f"MATCH (n:{target_object_type} {{`{id_prop}`: $oid}}) RETURN n"
         )
@@ -62,6 +103,7 @@ def create_review(
                 f"目标对象 {target_object_type} (ID: {target_object_id}) 不存在"
             )
 
+        # 创建 Review 并建立 REVIEWS 关系
         session.run(
             f"""
             MATCH (n:{target_object_type} {{`{id_prop}`: $oid}})
@@ -88,6 +130,7 @@ def create_review(
             comment=comment,
         )
 
+        # 可选：更新目标对象的 review_status
         if update_target_status:
             try:
                 has_status = session.run(
@@ -142,6 +185,7 @@ def get_reviews_for_object(
     target_object_id: str,
     limit: int = 50,
 ) -> List[Dict]:
+    """查询某对象的所有审核记录，按审核时间倒序。"""
     with driver.session() as session:
         result = session.run(
             """
@@ -162,6 +206,7 @@ def get_latest_review(
     target_object_type: str,
     target_object_id: str,
 ) -> Optional[Dict]:
+    """查询某对象的最新一条审核记录。"""
     reviews = get_reviews_for_object(
         driver, target_object_type, target_object_id, limit=1
     )
@@ -175,6 +220,18 @@ def update_review_decision(
     actor_id: str = "system",
     comment: Optional[str] = None,
 ) -> bool:
+    """
+    更新审核决策（不改变目标对象状态）。
+
+    Args:
+        review_id: 审核 ID
+        new_decision: 新决策
+        actor_id: 操作者
+        comment: 意见（可选，不传则保留原 comment）
+
+    Returns:
+        bool: 成功返回 True
+    """
     if new_decision not in REVIEW_DECISIONS:
         raise ValueError(f"decision 必须是 {REVIEW_DECISIONS} 之一")
 
@@ -212,6 +269,7 @@ def update_review_decision(
 
 
 def get_review_by_id(driver: Driver, review_id: str) -> Optional[Dict]:
+    """按 ID 查询审核记录。"""
     with driver.session() as session:
         result = session.run(
             "MATCH (r:Review {review_id: $rid}) RETURN r", rid=review_id

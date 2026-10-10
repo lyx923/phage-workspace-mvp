@@ -1,14 +1,22 @@
 # src/scientific/validator_service.py
 """
-配型效果验证工具
-支持 L1-L5 五级证据等级（基于新模型 LysisAssay + HostStrain）
+配型效果验证工具。
+
+支持 L1-L5 五级证据等级（基于新模型 LysisAssay + HostStrain）。
+
+职责：
+    - query_phages_for_host / query_hosts_for_phage：正反向查询
+    - get_phage_recommendation：一站式推荐
+    - query_l3_evidence / batch_validate_hosts / validate_without_sequencing：验证
+    - cluster_strains_from_csv / query_phages_by_pseudo_type_from_mapping：
+      基于裂解谱聚类的伪型别推荐
 """
 from typing import List, Dict, Optional
 import pandas as pd
 from config import get_driver
 from src.scientific.evidence_package_service import build_evidence_package_from_db
 
-# 证据等级排序映射（L5 最高）
+# 证据等级排序映射（L5 最高；GOLDEN_RULE 优先级最高）
 EVIDENCE_ORDER = {'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5, 'GOLDEN_RULE': 0}
 
 
@@ -18,7 +26,15 @@ def query_phages_for_host(
     evidence_level: Optional[str] = None
 ) -> List[Dict]:
     """
-    查询某个宿主菌株能匹配哪些噬菌体（基于 LysisAssay 和 HostStrain）
+    查询某个宿主菌株能匹配哪些噬菌体（基于 LysisAssay 和 HostStrain）。
+
+    Args:
+        host_strain: 宿主菌株编号
+        limit: 返回上限
+        evidence_level: 可选，只返回指定等级的噬菌体
+
+    Returns:
+        List[Dict]: 每条含 phage_name / phage_id / evidence_level / qc_status
     """
     host_strain = host_strain.strip()
     with get_driver() as driver:
@@ -57,14 +73,20 @@ def query_hosts_for_phage(
     limit: int = 10,
     evidence_level: Optional[str] = None
 ) -> List[Dict]:
-    """反向查询：给定噬菌体，返回能裂解的宿主菌株列表"""
+    """
+    反向查询：给定噬菌体，返回能裂解的宿主菌株列表。
+
+    Args:
+        phage_name: 噬菌体名称（支持 name 字段匹配）
+        limit: 返回上限
+        evidence_level: 可选，只返回指定等级
+    """
     with get_driver() as driver:
         with driver.session() as session:
             level_filter = ""
             if evidence_level:
                 level_filter = f"AND a.evidence_level = '{evidence_level}'"
 
-            # 支持用 phage_id 或 phage_name 查询
             result = session.run(f"""
                 MATCH (ph:Phage {{name: $phage_name}})-[:USED_IN]->(a:LysisAssay)
                 {level_filter}
@@ -92,6 +114,12 @@ def get_phage_recommendation(
     infection_type: str = "Pneumonia",
     verbose: bool = True
 ) -> Dict:
+    """
+    一站式推荐入口：
+
+    - 若提供 host_strain：走菌株级查询（query_phages_for_host）
+    - 否则走 Evidence Package 全流程（build_evidence_package_from_db）
+    """
     if host_strain:
         phages = query_phages_for_host(host_strain, limit=20)
         if verbose:
@@ -121,7 +149,11 @@ def get_phage_recommendation(
 
 
 def query_l3_evidence(host_strain: Optional[str] = None) -> List[Dict]:
-    """查询 L3/L4/L5 证据（基于 LysisAssay）"""
+    """
+    查询 L3/L4/L5 证据（基于 LysisAssay）。
+
+    可按宿主菌株过滤。
+    """
     with get_driver() as driver:
         with driver.session() as session:
             strain_filter = ""
@@ -155,10 +187,16 @@ def batch_validate_hosts(
     limit: int = 20,
     show_details: bool = False
 ) -> pd.DataFrame:
+    """
+    批量验证多个宿主菌株，返回 DataFrame 汇总。
+
+    列：菌株 / 总匹配 / L1-L5 分级计数 / 其他 / 高等级噬菌体(L3+)
+    """
     results = []
     for host in host_strains:
         phages = query_phages_for_host(host, limit=limit)
 
+        # 统计各等级数量
         level_counts = {}
         l3_phages = []
         for p in phages:
@@ -184,7 +222,12 @@ def batch_validate_hosts(
 
 
 def validate_without_sequencing(host_strain: str) -> Dict:
-    """不依赖测序，仅凭菌株编号推荐噬菌体"""
+    """
+    不依赖测序，仅凭菌株编号推荐噬菌体。
+
+    Returns:
+        Dict: 含 total_phages / has_high_level_evidence / l2_phages 等
+    """
     phages = query_phages_for_host(host_strain, limit=20)
 
     has_high_evidence = any(p['evidence_level'] in ['L3', 'L4', 'L5'] for p in phages)
@@ -211,7 +254,15 @@ import pandas as pd
 
 
 def cluster_strains_from_csv(csv_path: str, n_clusters: int = 8, random_state: int = 42):
-    """从裂解谱 CSV 读取数据，对菌株进行聚类（不变）"""
+    """
+    从裂解谱 CSV 读取数据，对菌株进行 KMeans 聚类。
+
+    CSV 结构：首列为噬菌体名，中间列为宿主菌株，最后一列为备注列。
+    菌株矩阵为 宿主 x 噬菌体，值 1/0。
+
+    Returns:
+        (strain_to_cluster, matrix_scaled, kmeans)
+    """
     df = pd.read_csv(csv_path, encoding="utf-8")
     host_cols = df.columns[1:-1]
     matrix = df[host_cols].T.values.astype(int)
@@ -231,7 +282,17 @@ def query_phages_by_pseudo_type_from_mapping(
 ) -> List[Dict]:
     """
     基于聚类映射，查询某个伪型别（簇）中，至少覆盖 min_host_count 个菌株的噬菌体。
+
     使用新模型 LysisAssay 和 HostStrain。
+
+    Args:
+        strain_to_cluster: 菌株 → 簇标签 映射
+        pseudo_type_label: 目标簇标签
+        min_host_count: 至少覆盖的菌株数
+        limit: 返回上限
+
+    Returns:
+        List[Dict]: 每条含 phage_name / evidence_level / host_count
     """
     strains_in_group = [strain for strain, label in strain_to_cluster.items() if label == pseudo_type_label]
     if not strains_in_group:

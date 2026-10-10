@@ -15,8 +15,7 @@ DecisionBrief 表示围绕一个 IntelligenceQuestion 形成的决策辅助简�
     (DecisionBrief)-[:USES_CLAIM]->(TechnicalClaim)
     (DecisionBrief)-[:USES_RESULT]->(TechnicalResult)
     (DecisionBrief)-[:CITES]->(SourceArtifact)
-    (DecisionBrief)-[:INCLUDES_ASSESSMENT]->(CompetitorAssessment)
-    (DecisionBrief)-[:INCLUDES_ASSESSMENT]->(TechnologyAssessment)
+    (DecisionBrief)-[:INCLUDES_ASSESSMENT]->(CompetitorAssessment / TechnologyAssessment)
     (DecisionBrief)-[:DERIVED_FROM]->(IntelligenceProduct)   可选
 
 边界：
@@ -37,6 +36,7 @@ from neo4j import Driver
 from src.shared.audit_service import write_audit_event
 
 
+# 受控词表
 BRIEF_TYPES = {"competitor", "technology", "landscape", "alert"}
 GENERATED_BY = {"analyst", "deepseek_assisted", "system"}
 
@@ -47,7 +47,10 @@ def generate_decision_brief_id() -> str:
 
 
 def _to_json_field(v: Any) -> Optional[str]:
-    """把 dict / list 转 JSON 字符串；字符串原样返回；None 返回 None。"""
+    """
+    把 dict / list 转 JSON 字符串；字符串原样返回；None 返回 None。
+    用于把复杂字段序列化后存入 Neo4j。
+    """
     if v is None:
         return None
     if isinstance(v, str):
@@ -116,7 +119,7 @@ def create_decision_brief(
         str: brief_id（CI:DBRIEF:XXXXXXXX）
 
     Raises:
-        ValueError: brief_type / generated_by 非法，或关联对象不存在
+        ValueError: brief_type / generated_by 非法
     """
     if brief_type not in BRIEF_TYPES:
         raise ValueError(f"brief_type 必须是 {sorted(BRIEF_TYPES)} 之一")
@@ -125,6 +128,7 @@ def create_decision_brief(
     if not title or not title.strip():
         raise ValueError("title 不能为空")
 
+    # 默认空值
     key_facts = key_facts or []
     assessments = assessments or []
     uncertainties = uncertainties or []
@@ -360,7 +364,10 @@ def create_decision_brief(
 # ============================================================
 
 def get_decision_brief(driver: Driver, brief_id: str) -> Optional[Dict]:
-    """按 ID 查询 DecisionBrief，反序列化 JSON 字段。"""
+    """
+    按 ID 查询 DecisionBrief，反序列化 JSON 字段（key_facts / assessments / options）。
+    附带 question_id。
+    """
     with driver.session() as session:
         r = session.run(
             """
@@ -390,7 +397,11 @@ def update_decision_brief_review_status(
     new_status: str,
     actor_id: str = "system",
 ) -> bool:
-    """更新 DecisionBrief 的 review_status。"""
+    """
+    更新 DecisionBrief 的 review_status。
+
+    合法状态：pending / reviewed / approved / rejected
+    """
     valid = ["pending", "reviewed", "approved", "rejected"]
     if new_status not in valid:
         raise ValueError(f"状态必须是 {valid} 之一")

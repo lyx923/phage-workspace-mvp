@@ -1,5 +1,14 @@
 # src/decision_support/intelligence_question.py
-"""IntelligenceQuestion 服务 —— 符合 PRD 10.1"""
+"""
+IntelligenceQuestion 服务 —— 符合 PRD 10.1
+
+职责：
+    - 创建情报问题（market / technology / ip / clinical / bd）
+    - 关联目标对象（Organization / DevelopmentProgram 等）
+    - 查询问题及回答情况
+    - 标记已回答
+    - 关联简报与问题（ANSWERS 关系）
+"""
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -9,11 +18,13 @@ from neo4j import Driver
 from src.shared.audit_service import write_audit_event
 
 
+# 受控词表
 QUESTION_TYPES = {"market", "technology", "ip", "clinical", "bd"}
 QUESTION_STATUSES = {"open", "answered", "archived"}
 
 
 def generate_question_id() -> str:
+    """生成情报问题 ID（格式：CI:IQ:XXXXXXXX）。"""
     return f"CI:IQ:{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -27,13 +38,31 @@ def create_intelligence_question(
     target_object_id: Optional[str] = None,
     actor_id: str = "system",
 ) -> str:
-    """创建情报问题。"""
+    """
+    创建情报问题。
+
+    可选：关联目标对象（建立 ABOUT 关系）。
+
+    Args:
+        question_text: 问题文本
+        question_type: market / technology / ip / clinical / bd
+        requester_id: 提问者
+        priority: 优先级
+        target_object_type: 目标对象类型（organization / development_program /
+                            engineering_strategy / pathogen / patent_family / clinical_trial）
+        target_object_id: 目标对象 ID
+        actor_id: 操作者
+
+    Returns:
+        str: question_id
+    """
     if question_type not in QUESTION_TYPES:
         raise ValueError(f"question_type 必须是 {QUESTION_TYPES} 之一")
 
     question_id = generate_question_id()
 
     with driver.session() as session:
+        # 创建问题节点
         session.run(
             """
             CREATE (iq:IntelligenceQuestion {
@@ -58,7 +87,9 @@ def create_intelligence_question(
             tid=target_object_id,
         )
 
+        # 可选：ABOUT 关系
         if target_object_type and target_object_id:
+            # target_object_type → (label, id_prop)
             label_map = {
                 "organization": ("Organization", "organization_id"),
                 "development_program": ("DevelopmentProgram", "program_id"),
@@ -97,6 +128,9 @@ def create_intelligence_question(
 
 
 def get_intelligence_question(driver: Driver, question_id: str) -> Optional[Dict]:
+    """
+    按 ID 查询情报问题，附带 ABOUT 目标对象和已回答它的简报 ID 列表。
+    """
     with driver.session() as session:
         r = session.run(
             """
@@ -127,7 +161,13 @@ def list_intelligence_questions(
     limit: int = 50,
 ) -> List[Dict]:
     """
+    列出情报问题（可按状态和类型过滤）。
+
     v0.6 修复：brief_count 同时计入 DecisionBrief 和 IntelligenceProduct。
+
+    Returns:
+        List[Dict]: 每条包含 question_id / question_text / question_type /
+                    requester_id / priority / status / created_at / brief_count
     """
     filters = []
     params: Dict = {"limit": limit}
@@ -167,6 +207,9 @@ def mark_question_answered(
     question_id: str,
     actor_id: str = "system",
 ) -> bool:
+    """
+    把情报问题标记为已回答（status → 'answered'）。
+    """
     with driver.session() as session:
         check = session.run(
             "MATCH (iq:IntelligenceQuestion {question_id: $qid}) RETURN iq",
@@ -201,8 +244,11 @@ def link_brief_to_question(
     question_id: str,
     actor_id: str = "system",
 ) -> bool:
-    """建立 (DecisionBrief|IntelligenceProduct)-[:ANSWERS]->(IntelligenceQuestion)。"""
+    """
+    建立 (DecisionBrief|IntelligenceProduct)-[:ANSWERS]->(IntelligenceQuestion)。
+    """
     with driver.session() as session:
+        # 校验问题
         check_q = session.run(
             "MATCH (iq:IntelligenceQuestion {question_id: $qid}) RETURN iq",
             qid=question_id,
@@ -210,6 +256,7 @@ def link_brief_to_question(
         if not check_q:
             raise ValueError(f"问题 {question_id} 不存在")
 
+        # 校验简报并获取 label
         check_b = session.run(
             """
             MATCH (b)
@@ -226,6 +273,7 @@ def link_brief_to_question(
             )
         _brief_label = check_b["labels"][0]
 
+        # 建立 ANSWERS 关系（幂等，用 MERGE）
         session.run(
             f"""
             MATCH (b:{_brief_label} {{brief_id: $bid}})

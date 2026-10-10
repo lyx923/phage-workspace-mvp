@@ -380,7 +380,7 @@ def check_product(driver, report: Report):
     # ========================================================
     # P1 函数层验收（对应 PRD 13 的 4 个函数）
     # ========================================================
-    from src.ci.landscape_service import (
+    from src.ci.competitor_profile import (
         compare_competitor_programs,
         map_engineering_landscape,
         compare_engineering_strategies,
@@ -656,10 +656,10 @@ def check_product(driver, report: Report):
     # ========================================================
     # P1 质量能力验收
     # ========================================================
-    from src.ci.entity_resolution_service import find_duplicate_candidates
-    from src.ci.source_scoring import batch_score_sources
-    from src.engineering_intelligence.ip_mapping_service import map_patent_to_claims
-    from src.engineering_intelligence.claim_conflict_service import detect_conflicts
+    from src.ci.entity_resolution import find_duplicate_candidates
+    from src.ci.event_service import batch_score_sources
+    from src.engineering_intelligence.technology_assessment import map_patent_to_claims
+    from src.engineering_intelligence.technology_assessment import detect_conflicts
 
     # CI-P17: 实体消歧可运行
     try:
@@ -778,15 +778,15 @@ def check_product(driver, report: Report):
     # ========================================================
     # PRD 对象缺口验收（CI-P21 ~ CI-P25）
     # ========================================================
-    from src.ci.indication_service import (
+    from src.ci.program_service import (
         create_indication, link_program_to_indication, list_indications)
-    from src.ci.product_asset_service import (
+    from src.ci.program_service import (
         create_product_asset, list_product_assets)
-    from src.decision_support.decision_option_service import (
+    from src.decision_support.decision_record import (
         create_decision_option, list_options_for_brief)
-    from src.engineering_intelligence.payload_service import (
+    from src.engineering_intelligence.construct_service import (
         create_delivery_payload, list_payloads)
-    from src.engineering_intelligence.modification_service import (
+    from src.engineering_intelligence.construct_service import (
         create_engineering_modification, list_modifications)
 
     # CI-P21: ClinicalIndication 可创建、可关联
@@ -1040,7 +1040,7 @@ def check_product(driver, report: Report):
     # ========================================================
     # PRD 14.3 时间语义（CI-P32 ~ CI-P36）
     # ========================================================
-    from src.shared.time_service import (
+    from src.shared.utils import (
         backfill_valid_from, close_validity, query_as_of,
         set_valid_from, time_coverage_report)
 

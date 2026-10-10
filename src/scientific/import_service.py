@@ -1,4 +1,22 @@
 # src/scientific/import_service.py
+"""
+科学域 + 市场情报子网 CSV 批量导入服务。
+
+职责：
+    - 患者主数据导入（load_patients_from_csv）
+    - 病例导入（load_cases_from_csv），含病原、噬菌体、患者关联
+    - 噬菌体互作数据导入（load_phages_from_csv / load_phages_from_lysis_csv）
+    - 市场情报事件导入（load_intelligence_events_from_csv）
+    - 研发项目导入（load_development_programs_from_csv）
+    - 组织导入（load_organizations_from_csv）
+    - 黄金配型规则导入（import_golden_rules）
+    - 数据库清空（clear_database）
+
+关键约定：
+    - SourceArtifact 的 ID 格式统一为 SRC:XXXXXXXX
+    - SourceArtifact 的 MERGE key 统一用 url；无 url 时降级为 urn:source:xxx
+    - LysisAssay 必须带宿主菌株（host_strain）
+"""
 import pandas as pd
 from config import config, get_driver
 import os
@@ -20,6 +38,10 @@ REQUIRED_CASE_FIELDS = [
 
 # ================== 辅助函数 ==================
 def _get_or_create_host_strain(tx, strain_label: str) -> str:
+    """
+    获取或创建 HostStrain（按 strain_label MERGE）。
+    返回 host_strain_id。
+    """
     result = tx.run("""
         MERGE (h:HostStrain {strain_label: $strain_label})
         ON CREATE SET h.host_strain_id = randomUUID()
@@ -27,11 +49,15 @@ def _get_or_create_host_strain(tx, strain_label: str) -> str:
     """, strain_label=strain_label)
     return result.single()["id"]
 
+
 def _fallback_url(title: str, published_date: Optional[str]) -> str:
-    """url 为空时，用 title+published_date 生成一个稳定的伪 url 作为 MERGE key。
-    与 src.shared.source_artifact_service._fallback_url 保持一致。"""
+    """
+    url 为空时，用 title+published_date 生成一个稳定的伪 url 作为 MERGE key。
+    与 src.shared.source_artifact_service._fallback_url 保持一致。
+    """
     raw = f"{(title or '').strip()}|{(published_date or '').strip()}"
     return f"urn:source:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
+
 
 def _get_or_create_source_artifact(
     tx, 
@@ -61,7 +87,7 @@ def _get_or_create_source_artifact(
     if not title:
         title = source_ref
 
-    # 如果提供了 URI 或路径且未提供 document_hash，自动计算
+    # 若提供 uri_or_path 但无 document_hash，自动计算
     if uri_or_path and not document_hash:
         document_hash = hashlib.sha256(uri_or_path.encode()).hexdigest()[:16]
 
@@ -108,10 +134,14 @@ def _get_or_create_source_artifact(
     merge_url=merge_url,
     document_hash=document_hash,
     credibility_tier=credibility_tier)
-    
+
     return result.single()["id"]
 
+
 def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
+    """
+    从 notes 字段中解析 "宿主菌株: XXX" 格式的宿主菌株。
+    """
     if not notes:
         return None
     if '宿主菌株:' in notes:
@@ -122,8 +152,15 @@ def _parse_host_strain_from_notes(notes: str) -> Optional[str]:
                 return strain
     return None
 
+
 # ================== 患者主数据导入 ==================
 def load_patients_from_csv(csv_path: str) -> int:
+    """
+    从 CSV 导入患者主数据。
+
+    必填列：patient_id
+    可选列：age_group, gender, comorbidities（逗号分隔）, admission_date, source_artifact_id
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
@@ -135,6 +172,7 @@ def load_patients_from_csv(csv_path: str) -> int:
             count = 0
             for _, row in df.iterrows():
                 try:
+                    # 解析合并症列表
                     comorbidities_str = row.get('comorbidities', '')
                     if pd.notna(comorbidities_str) and comorbidities_str:
                         comorbidities = [x.strip() for x in str(comorbidities_str).split(',') if x.strip()]
@@ -154,6 +192,7 @@ def load_patients_from_csv(csv_path: str) -> int:
                     comorbidities=comorbidities,
                     admission_date=row.get('admission_date'))
 
+                    # 可选：关联来源
                     src_id = row.get('source_artifact_id')
                     if src_id and pd.notna(src_id):
                         session.run("""
@@ -168,15 +207,21 @@ def load_patients_from_csv(csv_path: str) -> int:
             print(f"✅ 成功导入 {count} 个患者")
             return count
 
+
 # ================== 病例导入 ==================
 def validate_case_row(row):
+    """校验病例行是否含全部必填字段，返回缺失字段列表。"""
     missing = []
     for field in REQUIRED_CASE_FIELDS:
         if pd.isna(row.get(field)) or str(row.get(field)).strip() == "":
             missing.append(field)
     return missing
 
+
 def insert_pathogen(tx, data):
+    """
+    插入或更新病原体（MERGE by pathogen_id）。
+    """
     query = """
     MERGE (p:Pathogen {pathogen_id: $pathogen_id})
     SET p.created_at = coalesce(p.created_at, datetime()),
@@ -200,7 +245,16 @@ def insert_pathogen(tx, data):
     )
     return result.single()[0]
 
+
 def insert_clinical_case(tx, data):
+    """
+    插入一条临床病例，包含：
+        - 病原
+        - ClinicalCase 节点
+        - TREATED_WITH 关系（噬菌体）
+        - HAS_ISOLATE 关系（宿主菌株）
+        - BELONGS_TO_PATIENT 关系（患者）
+    """
     # 1. 插入 Pathogen（传递扩展字段）
     insert_pathogen(tx, {
         "pathogen_id": data["pathogen_id"],
@@ -211,7 +265,7 @@ def insert_clinical_case(tx, data):
         "taxonomy_id": data.get("taxonomy_id"),
         "aliases": data.get("aliases")
     })
-    
+
     # 2. 创建 ClinicalCase
     query1 = """
     MERGE (c:ClinicalCase {case_id: $case_id})
@@ -236,8 +290,8 @@ def insert_clinical_case(tx, data):
     if record is None:
         raise Exception(f"Failed to create ClinicalCase {data.get('case_id')}")
     case_id = record[0]
-    
-    # 3. 关联 TREATED_WITH
+
+    # 3. 关联 TREATED_WITH（噬菌体）
     treatment_str = data.get('phage_treatment')
     if treatment_str and pd.notna(treatment_str) and str(treatment_str).strip() != '':
         phage_names = list(set([x.strip() for x in str(treatment_str).split(',') if x.strip()]))
@@ -253,24 +307,26 @@ def insert_clinical_case(tx, data):
             """
             tx.run(query2, case_id=case_id, phage_names=phage_names)
 
-    # 4. 建立 HAS_ISOLATE
+    # 4. 建立 HAS_ISOLATE（必须提供 host_strain）
     host_strain_label = data.get('host_strain')
     if not host_strain_label or pd.isna(host_strain_label) or str(host_strain_label).strip() == '':
         raise ValueError(f"病例 {case_id} 缺少 host_strain（真实菌株编号），无法建立 HAS_ISOLATE 关系，请补充数据后重试。")
-    
+
     host_strain_id = _get_or_create_host_strain(tx, host_strain_label)
+    # HostStrain -[:IS_STRAIN_OF]-> Pathogen
     tx.run("""
         MATCH (h:HostStrain {host_strain_id: $host_strain_id})
         MATCH (p:Pathogen {pathogen_id: $pathogen_id})
         MERGE (h)-[:IS_STRAIN_OF]->(p)
     """, host_strain_id=host_strain_id, pathogen_id=data["pathogen_id"])
+    # ClinicalCase -[:HAS_ISOLATE]-> HostStrain
     tx.run("""
         MATCH (c:ClinicalCase {case_id: $case_id})
         MATCH (h:HostStrain {host_strain_id: $host_strain_id})
         MERGE (c)-[:HAS_ISOLATE]->(h)
     """, case_id=case_id, host_strain_id=host_strain_id)
 
-    # 5. 关联 Patient
+    # 5. 关联 Patient（可选）
     patient_id = data.get('patient_id')
     if patient_id and pd.notna(patient_id) and str(patient_id).strip():
         patient_check = tx.run("MATCH (p:Patient {patient_id: $pid}) RETURN p", pid=patient_id).single()
@@ -287,30 +343,39 @@ def insert_clinical_case(tx, data):
 
     return case_id
 
+
 def load_cases_from_csv(csv_path):
+    """
+    从 CSV 批量导入病例。
+
+    要求 CSV 含 host_strain 列。
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return
     df = pd.read_csv(csv_path)
     print(f"📂 读取到 {len(df)} 条病例记录")
-    
+
     if 'host_strain' not in df.columns:
         print("❌ CSV 文件中缺少 'host_strain' 列，该列是建立 HAS_ISOLATE 关系所必需的，请添加该列并填入真实菌株编号。")
         return 0
-    
+
     with get_driver() as driver:
         success_count = 0
         skip_count = 0
         with driver.session() as session:
             for index, row in df.iterrows():
+                # 校验必填字段
                 missing = validate_case_row(row)
                 if missing:
                     print(f"⚠️ 第 {index+2} 行 (Case: {row.get('case_id', '未知')}) 缺失必填字段: {missing}，已跳过")
                     skip_count += 1
                     continue
-                
+
                 row_dict = row.to_dict()
                 row_dict["resistance_genes"] = str(row_dict.get("resistance_genes", ""))
+
+                # 可选字段：NaN → None
                 optional_fields = [
                     'phage_treatment', 'microbiological_outcome', 'curated_by', 'curation_date',
                     'patient_age_group', 'comorbidities', 'prior_antibiotics',
@@ -319,11 +384,13 @@ def load_cases_from_csv(csv_path):
                 for field in optional_fields:
                     if pd.isna(row_dict.get(field)):
                         row_dict[field] = None
+
+                # 逗号分隔 → 列表
                 if row_dict.get('comorbidities') and isinstance(row_dict['comorbidities'], str):
                     row_dict['comorbidities'] = [x.strip() for x in row_dict['comorbidities'].split(',') if x.strip()]
                 if row_dict.get('prior_antibiotics') and isinstance(row_dict['prior_antibiotics'], str):
                     row_dict['prior_antibiotics'] = [x.strip() for x in row_dict['prior_antibiotics'].split(',') if x.strip()]
-                
+
                 try:
                     session.execute_write(insert_clinical_case, row_dict)
                     success_count += 1
@@ -336,8 +403,16 @@ def load_cases_from_csv(csv_path):
     print(f"\n🎯 导入完成！成功 {success_count} 例，跳过 {skip_count} 例。")
     return success_count
 
+
 # ================== 噬菌体互作数据导入 ==================
 def load_phages_from_csv(csv_path):
+    """
+    从 CSV 导入噬菌体互作数据（按行创建 LysisAssay）。
+
+    必填列：phage_id, phage_name, pathogen_id
+    可选列：family, receptor_target, evidence_ref（逗号分隔）, host_strain, notes,
+            infection_result, infection_probability, evidence_level
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return
@@ -350,6 +425,7 @@ def load_phages_from_csv(csv_path):
         with driver.session() as session:
             for index, row in df.iterrows():
                 try:
+                    # 1. 创建/更新噬菌体
                     session.run("""
                         MERGE (p:Phage {phage_id: $phage_id})
                         SET p.name = $phage_name,
@@ -361,18 +437,21 @@ def load_phages_from_csv(csv_path):
                     family=row.get('family') if pd.notna(row.get('family')) else None,
                     receptor_target=row.get('receptor_target') if pd.notna(row.get('receptor_target')) else None)
 
+                    # 2. 解析 evidence_ref 列表
                     evidence_ref_str = row.get('evidence_ref', '')
                     if pd.isna(evidence_ref_str) or str(evidence_ref_str).strip() == '':
                         evidence_ref_list = []
                     else:
                         evidence_ref_list = [x.strip() for x in str(evidence_ref_str).split(',') if x.strip()]
 
+                    # 3. 解析 host_strain（优先列，其次从 notes 中解析）
                     host_strain_label = None
                     if 'host_strain' in df.columns and pd.notna(row.get('host_strain')) and str(row.get('host_strain')).strip():
                         host_strain_label = str(row['host_strain']).strip()
                     if not host_strain_label and row.get('notes') and pd.notna(row.get('notes')):
                         host_strain_label = _parse_host_strain_from_notes(row['notes'])
 
+                    # 4. 计算 assay_id 并检查幂等
                     assay_id = f"ASSAY-{row['phage_id']}_{row['pathogen_id']}_{host_strain_label or 'UNKNOWN'}"
                     check = session.run("MATCH (a:LysisAssay {assay_id: $assay_id}) RETURN a", assay_id=assay_id).single()
                     if check:
@@ -380,7 +459,7 @@ def load_phages_from_csv(csv_path):
                         success_count += 1
                         continue
 
-                    # 创建 LysisAssay（包含 PRD 要求的全部字段）
+                    # 5. 创建 LysisAssay（包含 PRD 要求的全部字段）
                     session.run("""
                         MATCH (ph:Phage {phage_id: $phage_id})
                         CREATE (a:LysisAssay {
@@ -411,6 +490,7 @@ def load_phages_from_csv(csv_path):
                     evidence_level=row['evidence_level'] if pd.notna(row.get('evidence_level')) else None,
                     evidence_ref=evidence_ref_list)
 
+                    # 6. 关联 HostStrain（如果解析到）
                     if host_strain_label:
                         host_strain_id = _get_or_create_host_strain(session, host_strain_label)
                         session.run("""
@@ -424,7 +504,7 @@ def load_phages_from_csv(csv_path):
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=row['pathogen_id'])
 
-                    # 关联 SourceArtifact（传递扩展字段）
+                    # 7. 关联 SourceArtifact（每个 evidence_ref 一个）
                     for ref in evidence_ref_list:
                         if ref and str(ref).strip():
                             source_type = "literature" if ref.startswith("PMID") else "clinical_case"
@@ -455,7 +535,14 @@ def load_phages_from_csv(csv_path):
 
         print(f"\n🎯 噬菌体互作导入完成！成功 {success_count} 条记录。")
 
+
 def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> dict:
+    """
+    从裂解谱宽表 CSV 导入：每列一个宿主菌株，每行一个噬菌体，值为 1/0。
+
+    自动为每个阳性（值=1）单元格创建 LysisAssay，
+    并建立 USED_IN、TESTED_AGAINST、IS_STRAIN_OF、DERIVED_FROM 关系。
+    """
     if not os.path.exists(csv_path):
         alt_path = os.path.join("data", os.path.basename(csv_path))
         if os.path.exists(alt_path):
@@ -470,6 +557,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
     phage_col = df.columns[0]
     host_cols = df.columns[1:-1]
 
+    # 确保 Pathogen 存在
     with get_driver() as driver:
         with driver.session() as session:
             session.run("""
@@ -493,17 +581,21 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                 phage_id = f"PHAGE-{phage_name}"
                 phages_set.add(phage_id)
 
+                # 创建/更新噬菌体
                 session.run("""
                     MERGE (ph:Phage {phage_id: $phage_id})
                     SET ph.name = $phage_name
                 """, phage_id=phage_id, phage_name=phage_name)
 
+                # 遍历所有宿主
                 for host in host_cols:
                     if row[host] == 1:
                         total_positive += 1
                         host_strain_label = host.strip()
                         host_strain_id = _get_or_create_host_strain(session, host_strain_label)
                         assay_id = f"ASSAY-{phage_id}_{pathogen_id}_{host_strain_label.replace('-', '_')}"
+
+                        # 幂等
                         existing = session.run("MATCH (a:LysisAssay {assay_id: $assay_id}) RETURN a", assay_id=assay_id).single()
                         if existing:
                             continue
@@ -540,6 +632,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                         evidence_ref=evidence_ref,
                         host_strain_id=host_strain_id)
 
+                        # HostStrain -[:IS_STRAIN_OF]-> Pathogen
                         session.run("""
                             MATCH (h:HostStrain {host_strain_id: $host_strain_id})
                             MATCH (p:Pathogen {pathogen_id: $pathogen_id})
@@ -574,6 +667,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
     print(f"   - 阳性互作记录: {total_positive} 条")
     print(f"   - 成功插入: {success_count} 条")
 
+    # 统计全库 LysisAssay 数
     with get_driver() as driver:
         with driver.session() as session:
             result = session.run("MATCH (a:LysisAssay) RETURN count(a) AS total")
@@ -585,11 +679,21 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
         "total_in_db": total
     }
 
+
 def load_phages_from_lysis_csv_simple(csv_path: str = "../data/肺克数据脱敏.csv") -> dict:
+    """便捷入口：使用默认 pathogen_id=PATH-003。"""
     return load_phages_from_lysis_csv(csv_path, pathogen_id="PATH-003")
+
 
 # ================== 市场情报子网导入 ==================
 def load_intelligence_events_from_csv(csv_path: str) -> int:
+    """
+    从 CSV 导入情报事件（不通过 capture_intelligence_event，直接 MERGE）。
+
+    必填列：event_id, event_type, title, factual_summary
+    可选列：event_date, published_at, confidence, materiality, review_status,
+            organization_id, program_id
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
@@ -639,6 +743,7 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
                             MERGE (e)-[:INVOLVES]->(o)
                         """, event_id=row['event_id'], org_id=org_id)
 
+                    # 可选：关联项目
                     prog_id = row.get('program_id')
                     if prog_id and pd.notna(prog_id):
                         session.run("""
@@ -653,7 +758,15 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
     print(f"✅ 成功导入 {count} 个情报事件")
     return count
 
+
 def load_development_programs_from_csv(csv_path: str) -> int:
+    """
+    从 CSV 导入研发项目（MERGE by program_id）。
+
+    必填列：program_id, canonical_name
+    可选列：aliases（逗号分隔）, program_type, development_stage, program_status,
+            modality, start_date, review_status, organization_id
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
@@ -664,6 +777,7 @@ def load_development_programs_from_csv(csv_path: str) -> int:
         with driver.session() as session:
             for _, row in df.iterrows():
                 try:
+                    # 解析 aliases
                     aliases = row.get('aliases', '')
                     if pd.notna(aliases) and aliases:
                         aliases = [x.strip() for x in str(aliases).split(',') if x.strip()]
@@ -691,6 +805,7 @@ def load_development_programs_from_csv(csv_path: str) -> int:
                     start_date=row.get('start_date') if pd.notna(row.get('start_date')) else None,
                     review_status=row.get('review_status', 'pending')
                     )
+                    # 可选：关联组织
                     org_id = row.get('organization_id')
                     if org_id and pd.notna(org_id):
                         session.run("""
@@ -704,16 +819,25 @@ def load_development_programs_from_csv(csv_path: str) -> int:
     print(f"✅ 成功导入 {count} 个研发项目")
     return count
 
+
 # ================== 清空数据库 ==================
 def clear_database():
+    """清空数据库（危险操作）。"""
     print("⚠️  正在清空数据库...")
     with get_driver() as driver:
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
     print("✅ 数据库已清空")
 
+
 # ================== 黄金配型 ==================
 def import_golden_rules() -> str:
+    """
+    导入三条黄金配型规则（硬编码），每条规则关联：
+        - Pathogen（按 species）
+        - Phage（按 name）
+    并写入 required_attributes / applicability / exclusion_conditions 等字段。
+    """
     from src.scientific.import_service import get_driver
     validated_rules = [
         {
@@ -800,7 +924,7 @@ def import_golden_rules() -> str:
 
 def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
     """
-    从 CSV 批量导入组织（带 driver 参数版本，与 Notebook 调用一致）
+    从 CSV 批量导入组织（带 driver 参数版本，与 Notebook 调用一致）。
 
     CSV 必填列：canonical_name
     可选列：
@@ -819,6 +943,7 @@ def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
     count = 0
     for idx, row in df.iterrows():
         try:
+            # 解析 aliases
             aliases = row.get('aliases', '')
             if pd.notna(aliases) and str(aliases).strip():
                 aliases_list = [x.strip() for x in str(aliases).split(',') if x.strip()]
@@ -895,16 +1020,18 @@ def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
 
 def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
     """
-    从 CSV 批量导入研发项目
-    CSV 列：canonical_name, organization_name, program_type, development_stage, modality, target_pathogen_species(逗号分隔)
+    从 CSV 批量导入研发项目。
+
+    CSV 列：canonical_name, organization_name, program_type, development_stage, modality,
+            target_pathogen_species(逗号分隔)
     """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
-    
+
     df = pd.read_csv(csv_path)
     print(f"📂 读取到 {len(df)} 条项目记录")
-    
+
     count = 0
     for idx, row in df.iterrows():
         try:
@@ -920,12 +1047,12 @@ def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
                     print(f"   ❌ 组织 '{org_name}' 不存在，请先导入")
                     continue
                 org_id = result['id']
-            
+
             # 解析病原体物种列表
             pathogen_species = []
             if 'target_pathogen_species' in df.columns and pd.notna(row.get('target_pathogen_species')):
                 pathogen_species = [x.strip() for x in str(row['target_pathogen_species']).split(',') if x.strip()]
-            
+
             prog_id = create_development_program(
                 driver,
                 organization_id=org_id,
@@ -939,11 +1066,19 @@ def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
             count += 1
         except Exception as e:
             print(f"   ❌ 导入失败 (第 {idx+2} 行): {e}")
-    
+
     print(f"✅ 成功导入 {count} 个项目")
     return count
 
+
 def load_events_from_csv(driver: Driver, csv_path: str) -> int:
+    """
+    从 CSV 批量导入情报事件（调用 capture_intelligence_event，支持去重）。
+
+    CSV 列：organization_name, event_type, title, factual_summary,
+            event_date, published_at, program_name(可选),
+            source_url, source_type(可选)
+    """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
@@ -964,6 +1099,7 @@ def load_events_from_csv(driver: Driver, csv_path: str) -> int:
                     print(f"   ❌ 组织 '{org_name}' 不存在，跳过")
                     continue
                 org_id = org_result['id']
+
             # 查找项目（可选）
             program_id = None
             if pd.notna(row.get('program_name')) and str(row.get('program_name')).strip():
@@ -977,7 +1113,8 @@ def load_events_from_csv(driver: Driver, csv_path: str) -> int:
                         program_id = prog_result['id']
                     else:
                         print(f"   ⚠️ 项目 '{prog_name}' 未找到，事件将不关联项目")
-            # 检查是否有来源列
+
+            # 处理来源列
             source_ids = []
             if 'source_url' in df.columns and 'source_type' in df.columns:
                 if pd.notna(row.get('source_url')) and pd.notna(row.get('source_type')):
@@ -993,7 +1130,8 @@ def load_events_from_csv(driver: Driver, csv_path: str) -> int:
                             credibility_tier="secondary"
                         )
                     source_ids.append(src_id)
-            # 调用 capture_intelligence_event
+
+            # 调用 capture_intelligence_event（带 dedup）
             event_id = capture_intelligence_event(
                 driver,
                 event_type=row['event_type'],

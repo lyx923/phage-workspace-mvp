@@ -28,6 +28,7 @@ CACHE_TTL_SECONDS = 90 * 24 * 60 * 60
 
 
 def _make_key(title: str, publish_time: str = "", creator: str = "") -> str:
+    """根据 title | publish_time | creator 生成 Redis key。"""
     raw = "|".join([
         (title or "").strip(),
         (publish_time or "").strip(),
@@ -38,6 +39,7 @@ def _make_key(title: str, publish_time: str = "", creator: str = "") -> str:
 
 
 def _decode(data):
+    """把 Redis 返回的 bytes 解码为 str。"""
     if data is None:
         return None
     if isinstance(data, bytes):
@@ -110,6 +112,9 @@ def mark_persisted_by_url(url: str, title_hint: str = "") -> int:
     """
     按 source_url 模糊匹配所有缓存条目并标记为已入库。
     用于 `_apply_reviewed` 之后一次性同步。
+
+    Returns:
+        int: 被标记的条目数
     """
     if not url:
         return 0

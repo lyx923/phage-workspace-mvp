@@ -1,4 +1,16 @@
 # src/shared/audit_service.py
+"""
+审计日志服务（PRD 6.1.1）。
+
+职责：
+    - write_audit_event：写入不可变审计日志（只 CREATE，永不 UPDATE/DELETE）
+    - get_audit_trail：查询某对象的完整审计历史
+
+约定：
+    - AuditEvent 节点只有 CREATE 操作
+    - action_type 受 VALID_ACTION_TYPES 受控
+    - delta 自动序列化为 JSON 字符串
+"""
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
@@ -37,7 +49,20 @@ def write_audit_event(
       - action_type 必须是受控词表中的值
       - delta 自动转为 JSON 字符串存储
 
-    返回 audit_id（格式：AUDIT:XXXXXXXX）
+    Args:
+        action_type: 受控动作类型
+        object_type: 被操作对象类型
+        object_id: 被操作对象 ID
+        actor_id: 操作者
+        delta: 变更内容（dict，会被序列化）
+        reason: 变更原因
+        session_id: 会话 ID（可选）
+
+    Returns:
+        str: audit_id（格式：AUDIT:XXXXXXXX）
+
+    Raises:
+        ValueError: action_type 非法
     """
     if action_type not in VALID_ACTION_TYPES:
         raise ValueError(
@@ -81,6 +106,12 @@ def write_audit_event(
 def get_audit_trail(driver: Driver, object_id: str) -> List[Dict]:
     """
     查询指定对象的完整审计历史，按时间升序返回。
+
+    Args:
+        object_id: 被操作对象 ID
+
+    Returns:
+        List[Dict]: 每条含 audit_id / action_type / actor_id / delta / reason / timestamp
     """
     with driver.session() as session:
         result = session.run(

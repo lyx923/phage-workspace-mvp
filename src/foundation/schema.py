@@ -1,6 +1,21 @@
 # src/foundation/schema.py
+"""
+Neo4j 数据库 schema 定义（约束 + 索引 + 受控词表 + 本体模块 + CI 信号链路契约）
+
+本模块职责：
+    - 声明 CI 域的信号链路契约（CI_SIGNAL_CHAIN）
+    - 创建全部唯一约束与索引（create_schema）
+    - 声明本体模块版本（create_ontology_modules）
+    - 创建受控词表（create_controlled_vocabularies）
+    - 幂等初始化（initialize_neo4j_schema）
+
+设计要点：
+    - 所有约束 / 索引使用 IF NOT EXISTS，可重复执行
+    - Neo4j 不支持对关系类型建唯一约束，只支持关系属性索引（4.3+）
+    - 受控词表与 PRD 中 VOC-XXX 一一对应
+"""
 from config import get_driver
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, Driver
 import hashlib
 import json
 
@@ -125,7 +140,18 @@ def declare_ci_signal_chain(driver):
 
 
 def create_schema(driver):
-    """创建所有约束和索引（幂等，支持重复执行）"""
+    """
+    创建所有约束和索引（幂等，支持重复执行）。
+
+    分区：
+        1. 科学子网：Pathogen / ClinicalCase / Phage / HostStrain / LysisAssay / SourceArtifact
+        2. 市场情报子网：Organization / DevelopmentProgram / IntelligenceEvent
+        3. 审计与审核：AuditEvent / Review
+        4. 证据包与词表：ScientificEvidencePackage / ControlledVocabulary / ControlledTerm
+        5. CI 域对象：ClinicalIndication / PatentFamily / CompetitorAssessment / 构建体 / 评估 / 决策
+        6. P1 质量能力：Organization.legal_name / website_domain / credibility_score 等
+        7. PRD 14.3 时间语义：valid_from / valid_to 索引
+    """
     with driver.session() as session:
 
         # 1. Pathogen 唯一约束
@@ -305,7 +331,7 @@ def create_schema(driver):
 
 
 def create_ontology_modules(driver):
-    """创建 OntologyModule 节点，记录模块版本（含 schema_hash）"""
+    """创建 OntologyModule 节点，记录模块版本（含 schema_hash）。"""
     modules = [
         {"id": "FOUNDATION-CORE", "name": "foundation-core", "domain": "foundation", "version": "1.0.0"},
         {"id": "FOUNDATION-PROVENANCE", "name": "foundation-provenance", "domain": "foundation", "version": "1.0.0"},
@@ -338,13 +364,24 @@ def create_ontology_modules(driver):
 
 
 def create_controlled_vocabularies(driver):
-    """创建受控词表（ControlledVocabulary + ControlledTerm）"""
+    """
+    创建受控词表（ControlledVocabulary + ControlledTerm）。
+
+    词表清单（与 PRD VOC-XXX 一致）：
+        VOC-REVIEW-DECISION / VOC-REVIEW-TYPE / VOC-ASSAY-QC / VOC-PACKAGE-STATUS
+        VOC-KNOWLEDGE-REUSE / VOC-SOURCE-TYPE / VOC-SOURCE-ACCESS
+        VOC-ENGINEERING-STRATEGY / VOC-EVENT-TYPE / VOC-PROGRAM-STAGE
+        VOC-PROGRAM-TYPE / VOC-MODALITY / VOC-ORGANIZATION-TYPE
+        VOC-CLAIM-TYPE / VOC-RESULT-TYPE / VOC-ASSESSMENT-TYPE
+        VOC-PATENT-LEGAL-STATUS / VOC-TRIAL-PHASE / VOC-TRIAL-STATUS
+        VOC-IQ-TYPE / VOC-WATCH-TARGET
+        ★ P1 质量能力：VOC-ORG-RELATION / VOC-CONFLICT-TYPE / VOC-CREDIBILITY-TIER
+        ★ PRD 14.3：VOC-TIME-SEMANTICS
+    """
     vocabularies = [
+        # ------- 基础审核词表 -------
         {
-            "id": "VOC-REVIEW-DECISION",
-            "name": "review_decision",
-            "domain": "foundation",
-            "version": "1.0.0",
+            "id": "VOC-REVIEW-DECISION", "name": "review_decision", "domain": "foundation", "version": "1.0.0",
             "terms": [
                 {"code": "approved", "display": "已批准", "description": "审核通过"},
                 {"code": "rejected", "display": "已拒绝", "description": "审核拒绝"},
@@ -354,10 +391,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-REVIEW-TYPE",
-            "name": "review_type",
-            "domain": "foundation",
-            "version": "1.0.0",
+            "id": "VOC-REVIEW-TYPE", "name": "review_type", "domain": "foundation", "version": "1.0.0",
             "terms": [
                 {"code": "assay_qc", "display": "实验QC审核", "description": "LysisAssay 质量审核"},
                 {"code": "evidence_upgrade", "display": "证据升级审核", "description": "证据等级升级提案审核"},
@@ -369,10 +403,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-ASSAY-QC",
-            "name": "assay_qc_status",
-            "domain": "scientific",
-            "version": "1.0.0",
+            "id": "VOC-ASSAY-QC", "name": "assay_qc_status", "domain": "scientific", "version": "1.0.0",
             "terms": [
                 {"code": "pending", "display": "待审核", "description": "QC 待审核，不得自动升级"},
                 {"code": "passed", "display": "已通过", "description": "QC 已通过，可参与升级"},
@@ -380,10 +411,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-PACKAGE-STATUS",
-            "name": "scientific_package_status",
-            "domain": "scientific",
-            "version": "1.0.0",
+            "id": "VOC-PACKAGE-STATUS", "name": "scientific_package_status", "domain": "scientific", "version": "1.0.0",
             "terms": [
                 {"code": "draft", "display": "草稿", "description": "初始生成状态"},
                 {"code": "pending_review", "display": "待审核", "description": "已提交审核"},
@@ -393,10 +421,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-KNOWLEDGE-REUSE",
-            "name": "knowledge_reuse_status",
-            "domain": "scientific",
-            "version": "1.0.0",
+            "id": "VOC-KNOWLEDGE-REUSE", "name": "knowledge_reuse_status", "domain": "scientific", "version": "1.0.0",
             "terms": [
                 {"code": "detected", "display": "已检测", "description": "系统自动检测到复用"},
                 {"code": "pending_review", "display": "待审核", "description": "等待人工确认"},
@@ -405,10 +430,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-SOURCE-TYPE",
-            "name": "source_type",
-            "domain": "foundation",
-            "version": "1.0.0",
+            "id": "VOC-SOURCE-TYPE", "name": "source_type", "domain": "foundation", "version": "1.0.0",
             "terms": [
                 {"code": "literature", "display": "文献", "description": "PubMed/期刊文献"},
                 {"code": "clinical_case", "display": "临床病例", "description": "临床病例报告"},
@@ -418,22 +440,16 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-SOURCE-ACCESS",
-            "name": "source_access_level",
-            "domain": "foundation",
-            "version": "1.0.0",
+            "id": "VOC-SOURCE-ACCESS", "name": "source_access_level", "domain": "foundation", "version": "1.0.0",
             "terms": [
                 {"code": "public", "display": "公开", "description": "可对外公开"},
                 {"code": "internal", "display": "内部", "description": "仅内部使用"},
                 {"code": "restricted", "display": "受限", "description": "需特殊授权"}
             ]
         },
-        # -------- 新增 CI 受控词表 --------
+        # ------- CI 域词表 -------
         {
-            "id": "VOC-ENGINEERING-STRATEGY",
-            "name": "engineering_strategy",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-ENGINEERING-STRATEGY", "name": "engineering_strategy", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "host_range_expansion", "display": "宿主范围扩展", "description": "扩展宿主范围"},
                 {"code": "tail_fiber_engineering", "display": "尾纤维工程", "description": "改造尾纤维或受体结合蛋白"},
@@ -454,10 +470,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-EVENT-TYPE",
-            "name": "intelligence_event_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-EVENT-TYPE", "name": "intelligence_event_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "pipeline_update", "display": "管线更新", "description": "研发管线状态变更"},
                 {"code": "clinical_trial_update", "display": "临床试验更新", "description": "临床试验进展或结果"},
@@ -474,10 +487,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-PROGRAM-STAGE",
-            "name": "development_stage",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-PROGRAM-STAGE", "name": "development_stage", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "discovery", "display": "发现阶段", "description": "早期研究"},
                 {"code": "preclinical", "display": "临床前", "description": "临床前研究"},
@@ -490,10 +500,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-PROGRAM-TYPE",
-            "name": "program_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-PROGRAM-TYPE", "name": "program_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "therapeutic", "display": "治疗性", "description": "治疗产品"},
                 {"code": "diagnostic", "display": "诊断性", "description": "诊断产品"},
@@ -502,10 +509,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-MODALITY",
-            "name": "modality",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-MODALITY", "name": "modality", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "natural_phage", "display": "天然噬菌体", "description": "天然分离噬菌体"},
                 {"code": "engineered_phage", "display": "工程化噬菌体", "description": "经改造的噬菌体"},
@@ -513,10 +517,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-ORGANIZATION-TYPE",
-            "name": "organization_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-ORGANIZATION-TYPE", "name": "organization_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "biotech", "display": "生物技术公司", "description": "专注生物技术"},
                 {"code": "pharma", "display": "制药公司", "description": "大型制药企业"},
@@ -528,10 +529,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-CLAIM-TYPE",
-            "name": "technical_claim_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-CLAIM-TYPE", "name": "technical_claim_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "efficacy", "display": "有效性", "description": "治疗效果主张"},
                 {"code": "host_range", "display": "宿主范围", "description": "宿主范围扩展主张"},
@@ -541,10 +539,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-RESULT-TYPE",
-            "name": "technical_result_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-RESULT-TYPE", "name": "technical_result_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "host_range", "display": "宿主范围", "description": "宿主范围实验结果"},
                 {"code": "lysis", "display": "裂解活性", "description": "裂解实验结果"},
@@ -555,22 +550,16 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-ASSESSMENT-TYPE",
-            "name": "competitor_assessment_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-ASSESSMENT-TYPE", "name": "competitor_assessment_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "threat", "display": "威胁", "description": "竞争威胁评估"},
                 {"code": "opportunity", "display": "机会", "description": "市场机会评估"},
                 {"code": "capability", "display": "能力", "description": "竞争对手能力评估"},
                 {"code": "uncertainty", "display": "不确定性", "description": "不确定性评估"}
             ]
-        },        
+        },
         {
-            "id": "VOC-PATENT-LEGAL-STATUS",
-            "name": "patent_legal_status",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-PATENT-LEGAL-STATUS", "name": "patent_legal_status", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "pending",   "display": "审查中",   "description": "申请已提交，尚未授权"},
                 {"code": "granted",   "display": "已授权",   "description": "已获授权"},
@@ -580,10 +569,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-TRIAL-PHASE",
-            "name": "clinical_trial_phase",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-TRIAL-PHASE", "name": "clinical_trial_phase", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "preclinical", "display": "临床前",  "description": "尚未进入临床"},
                 {"code": "phase_1",     "display": "I期",     "description": "安全性/剂量探索"},
@@ -596,10 +582,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-TRIAL-STATUS",
-            "name": "clinical_trial_status",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-TRIAL-STATUS", "name": "clinical_trial_status", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "not_yet_recruiting", "display": "尚未招募", "description": "已登记未启动"},
                 {"code": "recruiting",         "display": "招募中",   "description": "正在入组"},
@@ -612,10 +595,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-IQ-TYPE",
-            "name": "intelligence_question_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-IQ-TYPE", "name": "intelligence_question_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "market",     "display": "市场",     "description": "竞争格局/份额类问题"},
                 {"code": "technology", "display": "技术",     "description": "技术路线/成熟度类问题"},
@@ -625,10 +605,7 @@ def create_controlled_vocabularies(driver):
             ]
         },
         {
-            "id": "VOC-WATCH-TARGET",
-            "name": "watchlist_target_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-WATCH-TARGET", "name": "watchlist_target_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "organization",        "display": "组织",     "description": "竞争对手组织"},
                 {"code": "development_program", "display": "研发项目", "description": "某竞争对手的管线"},
@@ -642,10 +619,7 @@ def create_controlled_vocabularies(driver):
         # ★ P1 质量能力：新增词表
         # ========================================================
         {
-            "id": "VOC-ORG-RELATION",
-            "name": "organization_relation_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-ORG-RELATION", "name": "organization_relation_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "parent_of",      "display": "母公司",   "description": "A 是 B 的母公司"},
                 {"code": "subsidiary_of",  "display": "子公司",   "description": "A 是 B 的子公司"},
@@ -655,10 +629,7 @@ def create_controlled_vocabularies(driver):
             ],
         },
         {
-            "id": "VOC-CONFLICT-TYPE",
-            "name": "conflict_type",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-CONFLICT-TYPE", "name": "conflict_type", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "claim_status_conflict",   "display": "主张状态冲突", "description": "同一 construct 下同类 claim 一个 supported 一个 contradicted"},
                 {"code": "result_direction_conflict","display": "结果方向冲突", "description": "同一 construct 下同类 result 方向相反"},
@@ -666,10 +637,7 @@ def create_controlled_vocabularies(driver):
             ],
         },
         {
-            "id": "VOC-CREDIBILITY-TIER",
-            "name": "credibility_tier",
-            "domain": "ci",
-            "version": "1.0.0",
+            "id": "VOC-CREDIBILITY-TIER", "name": "credibility_tier", "domain": "ci", "version": "1.0.0",
             "terms": [
                 {"code": "primary",    "display": "一手来源", "description": "监管公告 / 官方披露 / 同行评议论文"},
                 {"code": "secondary",  "display": "二手来源", "description": "新闻稿 / 会议摘要 / 专利文本"},
@@ -681,10 +649,7 @@ def create_controlled_vocabularies(driver):
         # ★ PRD 14.3 时间语义
         # ========================================================
         {
-            "id": "VOC-TIME-SEMANTICS",
-            "name": "time_semantics",
-            "domain": "foundation",
-            "version": "1.0.0",
+            "id": "VOC-TIME-SEMANTICS", "name": "time_semantics", "domain": "foundation", "version": "1.0.0",
             "terms": [
                 {"code": "valid_from",   "display": "生效时间", "description": "对象开始有效的时间"},
                 {"code": "valid_to",     "display": "失效时间", "description": "对象失效时间，null 表示当前仍有效"},
@@ -695,6 +660,7 @@ def create_controlled_vocabularies(driver):
 
     with driver.session() as session:
         for vocab in vocabularies:
+            # 创建词表节点
             session.run("""
                 MERGE (v:ControlledVocabulary {vocabulary_id: $id})
                 SET v.vocabulary_name = $name,
@@ -705,6 +671,7 @@ def create_controlled_vocabularies(driver):
                     v.created_at = datetime()
             """, id=vocab["id"], name=vocab["name"], domain=vocab["domain"], version=vocab["version"])
 
+            # 创建术语节点并关联
             for term in vocab["terms"]:
                 term_id = f"TERM-{term['code'].upper()[:8]}"
                 session.run("""
@@ -720,3 +687,61 @@ def create_controlled_vocabularies(driver):
                     display=term["display"], description=term["description"])
 
     print("✅ ControlledVocabulary 受控词表已创建（含 CI 词表 + P1 质量能力词表 + 时间语义词表）")
+
+
+# ========================================================
+# ★ 从 src/shared/init_schema.py 合并而来
+# ========================================================
+
+def initialize_neo4j_schema(driver: Driver) -> None:
+    """
+    幂等地创建 Neo4j 数据库约束和索引。
+    可多次调用，不会重复创建已存在的约束和索引。
+    须在每个 Notebook 的 Cell 1 中调用一次。
+    """
+    CONSTRAINTS = [
+        # Foundation 层
+        ("SourceArtifact", "source_id"),
+        ("SourceArtifact", "url"),
+        ("Pathogen", "pathogen_id"),
+        ("Organization", "organization_id"),
+        ("Review", "review_id"),
+        ("AuditEvent", "audit_id"),
+        ("OntologyModule", "module_id"),
+        # CI Domain 层
+        ("DevelopmentProgram", "program_id"),
+        ("IntelligenceEvent", "event_id"),
+        ("EngineeringStrategy", "strategy_id"),
+        ("EngineeredPhageConstruct", "construct_id"),
+        ("TechnicalClaim", "claim_id"),
+        ("TechnicalResult", "result_id"),
+        ("TechnologyAssessment", "technology_assessment_id"),
+        ("CompetitorAssessment", "assessment_id"),
+        ("IntelligenceProduct", "brief_id"),
+        ("DecisionRecord", "decision_id"),
+        ("IntelligenceUseEvent", "use_event_id"),
+    ]
+
+    INDEXES = [
+        ("AuditEvent", "object_id"),
+        ("AuditEvent", "actor_id"),
+        ("AuditEvent", "timestamp"),
+        ("IntelligenceEvent", "event_type"),
+        ("IntelligenceEvent", "event_date"),
+        ("Pathogen", "species"),
+        ("Organization", "canonical_name"),
+        ("Review", "target_object_type"),
+        ("Review", "target_object_id"),
+    ]
+
+    with driver.session() as session:
+        for label, prop in CONSTRAINTS:
+            session.run(
+                f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.{prop} IS UNIQUE"
+            )
+        for label, prop in INDEXES:
+            session.run(
+                f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.{prop})"
+            )
+
+    print(f"✅ Neo4j Schema 初始化完成（{len(CONSTRAINTS)} 条约束, {len(INDEXES)} 个索引, 幂等）")

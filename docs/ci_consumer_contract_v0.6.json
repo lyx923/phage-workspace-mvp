@@ -408,7 +408,7 @@
 
   "access_method": {
     "type": "python_service",
-    "module": "src.ci.intelligence_product_service",
+    "module": "src.ci.competitor_brief",
     "allowed_functions": [
       "get_approved_briefs()",
       "get_brief_by_id(brief_id)",

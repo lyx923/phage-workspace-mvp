@@ -36,9 +36,11 @@ if _ROOT not in sys.path:
 
 from config import get_driver
 from src.shared.review import create_review
-from src.shared.source_artifact_service import create_source_artifact
-from src.shared.pathogen_service import get_or_create_pathogen
-from src.shared.time_service import backfill_valid_from, time_coverage_report
+from src.shared.evidence_source import (
+    create_source_artifact,
+    get_or_create_pathogen,
+)
+from src.shared.utils import backfill_valid_from, time_coverage_report
 from src.shared.ontology_module_service import (
     register_ontology_module, get_module_registry,
 )
@@ -53,15 +55,16 @@ from src.engineering_intelligence.technology_assessment import (
     create_technology_assessment,
     backfill_claim_evaluated_by,
 )
-from src.engineering_intelligence.claim_extractor import (
-    create_technical_claim, create_technical_result,
+from src.engineering_intelligence.claim_extractor import create_technical_claim
+from src.engineering_intelligence.result_extractor import (
+    create_technical_result,
     backfill_result_to_claim,
 )
 from src.engineering_intelligence.technology_brief import generate_technology_brief
 
 from src.ci.competitor_brief import generate_competitor_brief
-from src.ci.patent_service import create_patent_family
-from src.ci.clinical_trial_service import create_clinical_trial
+from src.ci.competitor_profile import create_patent_family
+from src.ci.program_service import create_clinical_trial
 from src.ci.program_service import backfill_program_uses_strategy
 from src.decision_support.decision_record import create_decision_record
 

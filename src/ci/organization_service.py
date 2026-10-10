@@ -1,4 +1,19 @@
 # src/ci/organization_service.py 竞争对手档案
+"""
+Organization（组织 / 竞争对手）服务。
+
+职责：
+    - 创建组织节点（带去重）
+    - 按名称模糊查询
+    - 计算情报事件的影响级别
+    - 检测组织的重大变化
+    - 获取近期有变化的组织列表
+
+影响级别规则（PRD P1-1）：
+    1. 基础映射：EVENT_BASE_IMPACT
+    2. partnership 含噬菌体关键词 → high
+    3. funding 按金额升级（>=3000万 → high，>=1亿 → critical）
+"""
 import uuid
 from typing import Dict, List, Optional
 from neo4j import Driver
@@ -39,7 +54,7 @@ FUNDING_CRITICAL_THRESHOLD = 100_000_000     # ≥1 亿 → critical
 def generate_org_id() -> str:
     """
     生成组织 ID。
-    
+
     Returns:
         str: 格式为 CI:ORG:XXXXXXXX 的组织唯一标识符
     """
@@ -58,9 +73,9 @@ def create_organization(
 ) -> str:
     """
     创建组织（竞争对手）节点（PRD 12.1）。
-    
+
     创建前按名称和别名查重，防止重复注册。
-    
+
     Args:
         driver: Neo4j 数据库驱动
         canonical_name: 规范名称
@@ -70,10 +85,10 @@ def create_organization(
         website: 官方网站 URL
         description: 组织描述
         actor_id: 操作者标识（默认 system）
-    
+
     Returns:
         str: 创建的组织 ID（CI:ORG:XXXXXXXX）
-    
+
     Raises:
         ValueError: 当组织名称已存在时抛出
     """
@@ -129,11 +144,11 @@ def create_organization(
 def get_organization_by_name(driver: Driver, name: str):
     """
     根据规范名称或别名模糊查询组织。
-    
+
     Args:
         driver: Neo4j 数据库驱动
         name: 组织名称（支持部分匹配）
-    
+
     Returns:
         list: 匹配的组织节点列表
     """
@@ -149,15 +164,15 @@ def get_organization_by_name(driver: Driver, name: str):
 def _calculate_event_impact(event: dict) -> str:
     """
     计算单个情报事件的影响级别（PRD P1-1）。
-    
+
     规则：
         1. 基础映射：根据 event_type 从 EVENT_BASE_IMPACT 获取
         2. partnership 含噬菌体关键词 → 升级为 high
         3. funding 按金额升级（≥3000万 → high，≥1亿 → critical）
-    
+
     Args:
         event: 事件字典，至少包含 event_type 和 title
-    
+
     Returns:
         str: 影响级别（critical / high / medium / low）
     """
@@ -185,10 +200,10 @@ def _calculate_event_impact(event: dict) -> str:
 def _is_high_impact(event: dict) -> bool:
     """
     判断事件是否为高影响（critical 或 high）。
-    
+
     Args:
         event: 事件字典
-    
+
     Returns:
         bool: 若影响级别为 critical 或 high 返回 True
     """
@@ -203,15 +218,15 @@ def detect_material_changes(
 ) -> Dict:
     """
     检测组织在指定时间范围内的重大变化（PRD 13.3）。
-    
+
     返回的 new_events 条目中增加 impact_level 和 impact_basis 字段。
-    
+
     Args:
         driver: Neo4j 数据库驱动
         organization_id: 组织 ID
         since_date: 起始日期（YYYY-MM-DD），优先使用
         days_back: 若未指定 since_date，则回溯天数（默认 90 天）
-    
+
     Returns:
         Dict: 包含以下字段的变化摘要：
             - organization_name: 组织名称
@@ -332,12 +347,12 @@ def get_organizations_with_recent_changes(
 ) -> List[Dict]:
     """
     获取所有在指定天数内有变化的组织。
-    
+
     Args:
         driver: Neo4j 数据库驱动
         days_back: 回溯天数（默认 30 天）
         min_changes: 最少变化事件数（默认 1）
-    
+
     Returns:
         List[Dict]: 组织列表，包含 id, name, event_count
     """

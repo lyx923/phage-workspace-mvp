@@ -15,25 +15,24 @@ from src.shared.audit_service import write_audit_event
 from src.ci.organization_service import create_organization
 from src.ci.program_service import create_development_program
 from src.ci.event_service import capture_intelligence_event
-from src.shared.source_artifact_service import create_source_artifact
+from src.shared.evidence_source import create_source_artifact
 from src.ci.competitor_profile import build_competitor_profile, list_organizations
 from src.ci.competitor_brief import generate_competitor_brief
 from src.shared.review import create_review
 from src.decision_support.decision_record import create_decision_record
-from src.ci.use_event_service import record_intelligence_use
+from src.ci.event_service import record_intelligence_use
 from src.engineering_intelligence.strategy_classifier import create_engineering_strategy
 from src.engineering_intelligence.construct_service import create_engineered_construct, link_program_to_construct
-from src.engineering_intelligence.claim_extractor import (
-    create_technical_claim, create_technical_result)
+from src.engineering_intelligence.claim_extractor import create_technical_claim
+from src.engineering_intelligence.result_extractor import create_technical_result
 from src.engineering_intelligence.technology_assessment import (
     create_technology_assessment)
-from src.ci.competitor_assessment import create_competitor_assessment
+from src.ci.competitor_profile import create_competitor_assessment
 from src.shared.monitor_cache import cache_status, mark_persisted_by_url
 from src.engineering_intelligence.technology_brief import generate_technology_brief
 from src.engineering_intelligence.strategy_classifier import get_all_strategies
 
-# ★ 新增：CI 信号链路
-from src.ci.ci_monitor import (
+from src.ci.event_service import (
     CIMonitorService,
     decide_signal_review,
     promote_signal_to_event,

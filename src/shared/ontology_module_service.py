@@ -1,4 +1,16 @@
 # src/shared/ontology_module_service.py
+"""
+本体模块（OntologyModule）注册与查询服务。
+
+职责：
+    - register_ontology_module：注册或更新本体模块（幂等）
+    - get_module_registry：返回所有已注册模块及其依赖
+
+设计：
+    - module_name 是 MERGE key，同名模块第二次调用为 UPDATE
+    - is_new 判断不再依赖 created_at == updated_at，改为先查一次
+    - 依赖关系通过 DEPENDS_ON 关系表达
+"""
 import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
@@ -6,7 +18,7 @@ from src.shared.audit_service import write_audit_event
 
 
 def _generate_module_id() -> str:
-    """生成 OntologyModule ID（格式：ONT:XXXXXXXX）"""
+    """生成 OntologyModule ID（格式：ONT:XXXXXXXX）。"""
     return f"ONT:{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -27,6 +39,20 @@ def register_ontology_module(
 
     v0.6 修复：is_new 判断不再依赖 created_at == updated_at，
     改为 MERGE 前先查一次，稳定可靠。
+
+    Args:
+        module_name: 模块名（MERGE key）
+        version: 版本号
+        owner_team: 负责团队
+        description: 描述
+        object_types: 涉及的对象类型列表
+        depends_on: 依赖的模块名列表（建立 DEPENDS_ON 关系）
+        changelog: 变更日志
+        status: 状态（experimental / active / deprecated）
+        actor_id: 操作者
+
+    Returns:
+        str: module_id
     """
     object_types = object_types or []
     depends_on = depends_on or []
@@ -42,6 +68,7 @@ def register_ontology_module(
         ).single()
         is_new = existing is None
 
+        # MERGE 节点（ON CREATE / ON MATCH 区分字段更新）
         result = session.run(
             """
             MERGE (m:OntologyModule {module_name: $module_name})
@@ -89,7 +116,7 @@ def register_ontology_module(
                 dep_name=dep_name,
             )
 
-        # 写审计日志
+        # 写审计日志（区分 CREATE / UPDATE）
         action_type = "CREATE" if is_new else "UPDATE"
         write_audit_event(
             driver,

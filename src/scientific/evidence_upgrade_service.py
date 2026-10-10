@@ -1,4 +1,21 @@
 # src/scientific/evidence_upgrade_service.py
+"""
+证据升级服务（PRD 7.2 相关）
+
+职责：
+    - 创建证据升级提案（EvidenceUpgradeProposal）
+    - 审核证据升级提案（approved / rejected / needs_revision）
+    - 审核证据包（ScientificEvidencePackage）
+    - 审核 LysisAssay QC（assay_qc）
+    - 策展病例结局并自动创建升级提案（不自动升级）
+
+核心原则：
+    - 升级必须经过人工审核；本服务只生成提案，不自动执行
+    - 所有 Review 决策都写审计日志
+    - ID 格式：
+        EvidenceUpgradeProposal → SCI:PROPOSAL:<LOCAL_ID>
+        Review                  → FOUNDATION:REVIEW:<TYPE_PREFIX>-<LOCAL_ID>
+"""
 import uuid
 import json
 from typing import Dict, List, Optional
@@ -6,6 +23,7 @@ from neo4j import Driver
 from src.shared.audit_service import write_audit_event
 
 # 证据等级升级映射
+# 给定目标等级，返回来源等级集合（用于筛选可升级的 LysisAssay）
 LEVEL_UPGRADE_MAP = {
     'L3': ['L1', 'L2'],
     'L4': ['L3'],
@@ -22,7 +40,8 @@ def _generate_proposal_id() -> str:
 def _generate_review_id(review_type: str) -> str:
     """
     生成符合 PRD 7.2 的 Review ID：FOUNDATION:REVIEW:<REVIEW_TYPE>-<LOCAL_ID>
-    REVIEW_TYPE 取前8个字符，如 evidence_upgrade 取 EVIDENCE。
+
+    REVIEW_TYPE 取前 8 个字符，如 evidence_upgrade 取 EVIDENCE。
     """
     type_prefix = review_type[:8].upper()
     local_id = uuid.uuid4().hex[:8].upper()
@@ -38,9 +57,29 @@ def create_evidence_upgrade_proposal(
     proposed_by: str = "system",
     policy_version: str = "v1.0"
 ) -> str:
-    """创建证据升级提案，状态为 pending_review。"""
+    """
+    创建证据升级提案，状态为 pending_review。
+
+    - 同一 assay_id 若已有 pending_review / needs_revision 提案，抛异常
+    - 自动记录当前 LysisAssay 的 evidence_level 作为 current_level
+
+    Args:
+        assay_id: LysisAssay ID
+        source_case_id: 触发升级的病例 ID
+        proposed_level: 提议升级到的目标等级（如 L3）
+        reason: 升级理由
+        proposed_by: 提案人
+        policy_version: 策略版本
+
+    Returns:
+        str: proposal_id
+
+    Raises:
+        ValueError: 已有待审核提案
+    """
     proposal_id = _generate_proposal_id()
     with driver.session() as session:
+        # 幂等检查：同一 assay 不允许同时存在多条待审提案
         existing = session.run("""
             MATCH (p:EvidenceUpgradeProposal {assay_id: $assay_id})
             WHERE p.status IN ['pending_review', 'needs_revision']
@@ -48,11 +87,15 @@ def create_evidence_upgrade_proposal(
         """, assay_id=assay_id).single()
         if existing:
             raise ValueError(f"该 LysisAssay ({assay_id}) 已有待审核或需修改的升级提案")
+
+        # 记录当前等级，便于后续审计对比
         current = session.run("""
             MATCH (a:LysisAssay {assay_id: $assay_id})
             RETURN a.evidence_level AS current_level
         """, assay_id=assay_id).single()
         current_level = current['current_level'] if current else None
+
+        # 创建提案
         session.run("""
             CREATE (p:EvidenceUpgradeProposal {
                 proposal_id: $proposal_id,
@@ -77,15 +120,25 @@ def review_evidence_upgrade_proposal(
     driver: Driver,
     proposal_id: str,
     reviewer_id: str,
-    decision: str,  # 'approved' or 'rejected' or 'needs_revision'
+    decision: str,
     comment: str = None
 ) -> str:
     """
-    审核证据升级提案：
-    - approved: 执行升级并记录审计，提案状态变为 executed
-    - rejected: 提案状态变为 rejected
-    - needs_revision: 提案状态变为 needs_revision
-    返回 review_id。
+    审核证据升级提案。
+
+    决策分支：
+        - approved:        执行升级（更新 LysisAssay.evidence_level），提案状态 → executed
+        - rejected:        提案状态 → rejected
+        - needs_revision:  提案状态 → needs_revision
+
+    Args:
+        proposal_id: 提案 ID
+        reviewer_id: 审核人
+        decision: approved / rejected / needs_revision
+        comment: 审核意见
+
+    Returns:
+        str: review_id
     """
     with driver.session() as session:
         # 1. 获取提案信息
@@ -138,7 +191,7 @@ def review_evidence_upgrade_proposal(
 
         # 4. 根据决策执行不同操作
         if decision == 'approved':
-            # 更新 LysisAssay 等级
+            # 4a. 更新 LysisAssay 等级与证据引用
             session.run("""
                 MATCH (a:LysisAssay {assay_id: $assay_id})
                 SET a.evidence_level = $proposed_level,
@@ -149,13 +202,13 @@ def review_evidence_upgrade_proposal(
                     a.last_upgraded_at = datetime()
             """, assay_id=assay_id, proposed_level=proposed_level, case_id=source_case_id)
 
-            # 提案状态改为 executed
+            # 4b. 提案状态改为 executed
             session.run("""
                 MATCH (p:EvidenceUpgradeProposal {proposal_id: $proposal_id})
                 SET p.status = 'executed'
             """, proposal_id=proposal_id)
 
-            # 审计日志
+            # 4c. 审计：等级变化
             write_audit_event(
                 driver,
                 action_type="DATA_CORRECTION",
@@ -199,16 +252,23 @@ def review_scientific_evidence_package(
     comment: str = None
 ) -> str:
     """
-    审核 ScientificEvidencePackage（scientific_package_review 类型）
+    审核 ScientificEvidencePackage（scientific_package_review 类型）。
+
+    决策：
+        - approved → status = approved
+        - rejected → status = rejected
+        - needs_revision → 不改 status
     """
     with driver.session() as session:
+        # 校验存在
         pkg = session.run("""
             MATCH (p:ScientificEvidencePackage {package_id: $package_id})
             RETURN p
         """, package_id=package_id).single()
         if not pkg:
             raise ValueError(f"证据包 {package_id} 不存在")
-        
+
+        # 创建 Review
         review_id = _generate_review_id("package_review")
         session.run("""
             MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
@@ -228,8 +288,8 @@ def review_scientific_evidence_package(
             CREATE (r)-[:REVIEWS]->(pkg)
         """, review_id=review_id, package_id=package_id,
         reviewer_id=reviewer_id, decision=decision, comment=comment)
-        
-        # 更新包状态
+
+        # 更新包状态（needs_revision 时保持不变）
         new_status = 'approved' if decision == 'approved' else 'rejected'
         if decision == 'needs_revision':
             pass
@@ -240,8 +300,7 @@ def review_scientific_evidence_package(
                     pkg.review_status = $new_status,
                     pkg.updated_at = datetime()
             """, package_id=package_id, new_status=new_status)
-        
-        # 审计日志
+
         write_audit_event(
             driver,
             action_type="STATUS_CHANGE",
@@ -262,7 +321,11 @@ def review_assay_qc(
     comment: str = None
 ) -> str:
     """
-    审核 LysisAssay QC（assay_qc 类型）
+    审核 LysisAssay QC（assay_qc 类型）。
+
+    决策：
+        - passed → qc_status = passed
+        - 其他   → qc_status = failed
     """
     with driver.session() as session:
         assay = session.run("""
@@ -271,7 +334,7 @@ def review_assay_qc(
         """, assay_id=assay_id).single()
         if not assay:
             raise ValueError(f"LysisAssay {assay_id} 不存在")
-        
+
         review_id = _generate_review_id("assay_qc")
         session.run("""
             MATCH (a:LysisAssay {assay_id: $assay_id})
@@ -291,14 +354,14 @@ def review_assay_qc(
             CREATE (r)-[:REVIEWS]->(a)
         """, review_id=review_id, assay_id=assay_id,
         reviewer_id=reviewer_id, decision=decision, comment=comment)
-        
+
         new_qc_status = 'passed' if decision == 'passed' else 'failed'
         session.run("""
             MATCH (a:LysisAssay {assay_id: $assay_id})
             SET a.qc_status = $new_qc_status,
                 a.updated_at = datetime()
         """, assay_id=assay_id, new_qc_status=new_qc_status)
-        
+
         write_audit_event(
             driver,
             action_type="STATUS_CHANGE",
@@ -321,9 +384,12 @@ def curate_case_outcome(
 ) -> str:
     """
     更新 ClinicalCase 的治疗和结局字段。
+
     不再自动升级，而是为符合条件的 LysisAssay 创建升级提案（仅限该病例实际使用的噬菌体）。
-    返回提案创建摘要。
+
+    返回提案创建摘要（人类可读字符串）。
     """
+    # 结局必填字段校验
     if not outcome.get('clinical_outcome') or not outcome.get('microbiological_outcome'):
         return "⚠️ 病例结局字段缺失，无法创建升级提案。请补充 clinical_outcome 和 microbiological_outcome。"
 
@@ -331,7 +397,7 @@ def curate_case_outcome(
     source_levels = LEVEL_UPGRADE_MAP.get(target_level, ['L1', 'L2'])
     source_levels_str = ', '.join([f"'{l}'" for l in source_levels])
 
-    # 更新 ClinicalCase
+    # 更新 ClinicalCase 的结局字段
     update_case_query = """
     MATCH (c:ClinicalCase {case_id: $case_id})
     SET c.phage_treatment = $phage_treatment,
@@ -349,7 +415,7 @@ def curate_case_outcome(
                     microbiological_outcome=outcome.get('microbiological_outcome', ''))
         summary.append(f"✅ 病例 {case_id} 已更新结局")
 
-    # 查找符合条件的 LysisAssay
+    # 筛选符合条件的 LysisAssay（仅限该病例实际用过的噬菌体）
     if treatment.get('phage_names'):
         phage_names = treatment['phage_names']
         find_query = f"""
@@ -405,9 +471,12 @@ def curate_case_by_id(
     reviewer_id: str = "domain_expert_01"
 ) -> str:
     """
-    自动根据病例 ID 策展：更新病例结局，并自动为该病例关联的 LysisAssay 创建升级提案（如果满足条件）。
-    返回创建提案的结果摘要。
-    注意：不再自动升级，需人工审核提案后方可执行升级。
+    根据病例 ID 自动策展：更新病例结局，并自动为该病例关联的 LysisAssay 创建升级提案（如满足条件）。
+
+    注意：不自动升级，需人工审核提案后方可执行升级。
+
+    Returns:
+        str: 结果摘要
     """
     # 1. 查询该病例使用的噬菌体 ID 和名称
     with driver.session() as session:
@@ -418,10 +487,10 @@ def curate_case_by_id(
         record = result.single()
         if not record or not record['phage_ids']:
             return f"⚠️ 病例 {case_id} 没有关联的噬菌体，请先通过 TREATED_WITH 关联。"
-        
+
         phage_ids = record['phage_ids']
         phage_names = record['phage_names']
-    
+
     # 2. 查询该病例当前的 phage_treatment（用于 cocktail_name）
     with driver.session() as session:
         result = session.run("""
@@ -430,8 +499,8 @@ def curate_case_by_id(
         """, case_id=case_id)
         record = result.single()
         treatment_name = record['treatment'] if record and record['treatment'] else f"{case_id} 治疗方案"
-    
-    # 3. 调用修改后的 curate_case_outcome（传入 phage_names）
+
+    # 3. 调用 curate_case_outcome（传入 phage_names）
     return curate_case_outcome(
         driver,
         case_id=case_id,
@@ -457,13 +526,13 @@ def batch_curate_cases(
 ) -> List[str]:
     """
     批量策展多个病例。
-    
+
     Args:
         driver: Neo4j 驱动
         cases: 病例列表，每个元素包含 case_id, clinical_outcome, microbiological_outcome
         target_level: 目标证据等级，默认 L3
-        reviewer_id: 审核专家ID，默认为 domain_expert_01
-    
+        reviewer_id: 审核专家 ID，默认为 domain_expert_01
+
     Returns:
         List[str]: 每个病例的策展摘要
     """

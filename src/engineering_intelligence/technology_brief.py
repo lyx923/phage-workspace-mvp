@@ -11,6 +11,11 @@
 v0.6 修复：
 - _fetch_technology_assessments 纳入 subject_type='claim' 的技术评估
 - _fetch_patent_families 同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径
+
+本模块包含：
+    - generate_technology_brief：主入口
+    - 三个 P1 质量能力块：_build_source_credibility_block / _build_conflict_warnings / _build_related_patent_mappings
+    - 一组 _fetch_* 与 _aggregate_* / _build_* 辅助函数
 """
 from __future__ import annotations
 
@@ -20,14 +25,16 @@ from typing import Dict, List, Optional
 
 from neo4j import Driver
 
-from src.ci.intelligence_product_service import create_intelligence_product
+from src.ci.competitor_brief import create_intelligence_product
 
 
+# 证据成熟度顺序（用于 _max_maturity）
 MATURITY_ORDER = {"conceptual": 0, "in_vitro": 1, "in_vivo": 2, "clinical": 3}
 RISK_LEVELS = {"high", "medium", "low", "unknown"}
 
 
 def _max_maturity(levels):
+    """返回列表中最高的证据成熟度（按 MATURITY_ORDER）。"""
     if not levels:
         return "conceptual"
     return max(levels, key=lambda x: MATURITY_ORDER.get(x, 0))
@@ -43,11 +50,34 @@ def generate_technology_brief(
     persist: bool = True,
     actor_id: str = "system",
 ) -> Dict:
+    """
+    生成工程化噬菌体技术简报的主入口。
+
+    流程：
+        1. 拉取策略 / 构建体 / 病原
+        2. 拉取已批准的 Claim / Result / Assessment / Citations / PatentFamilies
+        3. 聚合证据成熟度、安全性、可制造性、内部能力缺口
+        4. 生成建议下一步与执行摘要
+        5. 生成 strategy_comparison / white_space / 三个 P1 质量块
+        6. 可选持久化为 IntelligenceProduct
+
+    Args:
+        driver: Neo4j 驱动
+        strategy_id / construct_id / pathogen_id: 至少提供一个筛选条件
+        as_of_date: 信息截止日期（默认今天）
+        technology_question: 本次简报关注的技术问题
+        persist: 是否持久化
+        actor_id: 操作者
+
+    Returns:
+        Dict: 完整技术简报数据（若 persist=True 会带 brief_id）
+    """
     if not (strategy_id or construct_id or pathogen_id):
         raise ValueError("至少需要提供 strategy_id / construct_id / pathogen_id 之一")
     if as_of_date is None:
         as_of_date = datetime.now().strftime("%Y-%m-%d")
 
+    # 拉取核心对象
     strategies = _fetch_strategies(driver, strategy_id, construct_id, pathogen_id)
     constructs = _fetch_constructs(driver, strategy_id, construct_id, pathogen_id)
     pathogens = _fetch_target_pathogens(driver, strategy_id, construct_id, pathogen_id)
@@ -59,6 +89,7 @@ def generate_technology_brief(
     citations = _fetch_citations(driver, construct_ids)
     patent_families = _fetch_patent_families(driver, strategy_id, construct_id, pathogen_id)
 
+    # 聚合
     evidence_maturity = _aggregate_evidence_maturity(assessments, constructs)
     safety_uncertainties = _aggregate_risk_field(assessments, "safety_uncertainty", "安全性")
     manufacturing_uncertainties = _aggregate_risk_field(assessments, "manufacturability_risk", "可制造性")
@@ -77,16 +108,18 @@ def generate_technology_brief(
     conflict_warnings = _build_conflict_warnings(driver, construct_ids)
     related_patent_mappings = _build_related_patent_mappings(driver, patent_families)
 
+    # 基于策略对比块，追加建议
     if strategy_comparison.get("focus_strategy_ids"):
         recommended_next_steps.append(
             f"本简报涉及 {len(strategy_comparison['focus_strategy_ids'])} 个策略，已附同类策略横向对比矩阵")
 
+    # 基于白空间，追加建议
     ws_summary = white_space_analysis.get("summary", {})
     if isinstance(ws_summary, dict) and ws_summary.get("empty_count", 0) > 0:
         recommended_next_steps.append(
             f"范围内识别到 {ws_summary['empty_count']} 个 empty white-space 组合，建议评估进入策略")
 
-    # ★ 新增：质量能力相关建议
+    # ★ 基于质量能力，追加建议
     if source_credibility.get("by_tier", {}).get("tertiary", 0) > 0:
         recommended_next_steps.append(
             f"引用来源中有 {source_credibility['by_tier']['tertiary']} 条三手来源，建议人工核验")
@@ -97,6 +130,7 @@ def generate_technology_brief(
         recommended_next_steps.append(
             f"该策略关联 {related_patent_mappings['total_mappings']} 条专利-论文映射，建议 IP 部门评估")
 
+    # 组装结果
     brief_data = {
         "brief_type": "engineered_phage_technology",
         "as_of_date": as_of_date,
@@ -122,6 +156,7 @@ def generate_technology_brief(
         "review_status": "pending",
     }
 
+    # 持久化
     if persist:
         title = _build_brief_title(strategies, constructs, pathogens)
         brief_id = create_intelligence_product(
@@ -139,6 +174,7 @@ def generate_technology_brief(
             construct_ids=construct_ids,
             pathogen_ids=[p["pathogen_id"] for p in pathogens],
         )
+        # 把质量能力字段回写到 IntelligenceProduct
         try:
             with driver.session() as s:
                 s.run("""
@@ -166,7 +202,9 @@ def generate_technology_brief(
 # ==================== ★ P1 质量能力：三个新函数 ====================
 
 def _build_source_credibility_block(citations: List[Dict]) -> Dict:
-    """基于 citations 统计来源可信度分布"""
+    """
+    基于 citations 统计来源可信度分布（primary / secondary / tertiary / unknown）。
+    """
     tiers = {"primary": 0, "secondary": 0, "tertiary": 0, "unknown": 0}
     for c in citations:
         t = (c.get("credibility_tier") or "unknown").lower()
@@ -179,12 +217,14 @@ def _build_source_credibility_block(citations: List[Dict]) -> Dict:
 
 
 def _build_conflict_warnings(driver: Driver, construct_ids: List[str]) -> Dict:
-    """扫描构建体下的所有冲突"""
+    """
+    扫描所有构建体下的技术冲突（claim_status / result_direction）。
+    """
     if not construct_ids:
         return {"total_conflicts": 0, "claim_status_conflicts": [],
                 "result_direction_conflicts": [], "note": "无构建体"}
     try:
-        from src.engineering_intelligence.claim_conflict_service import detect_conflicts
+        from src.engineering_intelligence.technology_assessment import detect_conflicts
         all_conflicts = {"claim_status_conflicts": [], "result_direction_conflicts": [],
                          "cross_construct_conflicts": [], "total_conflicts": 0}
         for cid in construct_ids:
@@ -204,7 +244,9 @@ def _build_conflict_warnings(driver: Driver, construct_ids: List[str]) -> Dict:
 
 
 def _build_related_patent_mappings(driver: Driver, patent_families: List[Dict]) -> Dict:
-    """列出专利族与技术主张的映射关系"""
+    """
+    列出这些专利族与技术主张的映射关系（只取前 10 条）。
+    """
     if not patent_families:
         return {"total_mappings": 0, "mappings": [], "note": "无关联专利族"}
     try:
@@ -234,11 +276,14 @@ def _build_related_patent_mappings(driver: Driver, patent_families: List[Dict]) 
 # ==================== 原有辅助函数 ====================
 
 def _build_strategy_comparison_block(driver, strategies):
+    """
+    生成策略横向对比块：先取 focus 策略，再与图谱中全部策略一起对比。
+    """
     focus_ids = [s["strategy_id"] for s in strategies if s.get("strategy_id")]
     if not focus_ids:
         return {"strategies": [], "comparison_matrix": {}, "focus_strategy_ids": []}
     try:
-        from src.ci.landscape_service import compare_engineering_strategies
+        from src.ci.competitor_profile import compare_engineering_strategies
         with driver.session() as s:
             all_ids = [r["sid"] for r in s.run("""
                 MATCH (es:EngineeringStrategy)
@@ -256,10 +301,13 @@ def _build_strategy_comparison_block(driver, strategies):
 
 
 def _build_white_space_block(driver, strategies, pathogens):
+    """
+    生成白空间块：基于当前策略 × 病原范围。
+    """
     pathogen_scope = [p["species"] for p in pathogens if p.get("species")]
     tech_scope = [s["strategy_type"] for s in strategies if s.get("strategy_type")]
     try:
-        from src.ci.landscape_service import identify_landscape_white_space
+        from src.ci.competitor_profile import identify_landscape_white_space
         ws = identify_landscape_white_space(
             driver, pathogen_scope=pathogen_scope or None,
             technology_scope=tech_scope or None)
@@ -273,6 +321,9 @@ def _build_white_space_block(driver, strategies, pathogens):
 
 
 def _fetch_strategies(driver, strategy_id, construct_id, pathogen_id):
+    """
+    按策略 ID / 构建体 / 病原 筛选 EngineeringStrategy，附带构建体数量。
+    """
     filters, params = [], {}
     if strategy_id:
         filters.append("es.strategy_id = $sid"); params["sid"] = strategy_id
@@ -296,6 +347,9 @@ def _fetch_strategies(driver, strategy_id, construct_id, pathogen_id):
 
 
 def _fetch_constructs(driver, strategy_id, construct_id, pathogen_id):
+    """
+    按策略 / 构建体 / 病原 筛选 EngineeredPhageConstruct，附带策略类型 / 目标病原 / 关联项目 / 亲本噬菌体。
+    """
     filters, params = [], {}
     if construct_id:
         filters.append("ec.construct_id = $cid"); params["cid"] = construct_id
@@ -328,6 +382,9 @@ def _fetch_constructs(driver, strategy_id, construct_id, pathogen_id):
 
 
 def _fetch_target_pathogens(driver, strategy_id, construct_id, pathogen_id):
+    """
+    按策略 / 构建体 / 病原 筛选 Pathogen，附带构建体数量。
+    """
     filters, params = [], {}
     if pathogen_id:
         filters.append("p.pathogen_id = $pid"); params["pid"] = pathogen_id
@@ -350,6 +407,9 @@ def _fetch_target_pathogens(driver, strategy_id, construct_id, pathogen_id):
 
 
 def _fetch_technical_claims(driver, construct_ids):
+    """
+    拉取构建体下 review_status='approved' 的 TechnicalClaim，附带来源 ID。
+    """
     if not construct_ids:
         return []
     with driver.session() as s:
@@ -370,6 +430,9 @@ def _fetch_technical_claims(driver, construct_ids):
 
 
 def _fetch_technical_results(driver, construct_ids):
+    """
+    拉取构建体下 review_status='approved' 的 TechnicalResult，附带来源 ID。
+    """
     if not construct_ids:
         return []
     with driver.session() as s:
@@ -395,6 +458,11 @@ def _fetch_technical_results(driver, construct_ids):
 def _fetch_technology_assessments(driver, strategy_id, construct_id):
     """
     v0.6 修复：纳入 subject_type='claim' 的技术评估。
+
+    根据 strategy_id / construct_id 筛选相关技术评估：
+        - subject 是 strategy 本身
+        - subject 是 construct（strategies 下的 / 指定 construct）
+        - subject 是 claim（claim 关联到该 strategy 下的某个 construct）
     """
     conditions, params = [], {}
     if strategy_id:
@@ -445,6 +513,9 @@ def _fetch_technology_assessments(driver, strategy_id, construct_id):
 
 
 def _fetch_citations(driver, construct_ids):
+    """
+    拉取构建体下所有关联来源（来自 Claim 的 SUPPORTED_BY 和 Result 的 REPORTED_IN）。
+    """
     if not construct_ids:
         return []
     with driver.session() as s:
@@ -466,6 +537,8 @@ def _fetch_citations(driver, construct_ids):
 def _fetch_patent_families(driver, strategy_id, construct_id, pathogen_id):
     """
     v0.6 修复：同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
+
+    从构建体 → 项目 → COVERED_BY → 专利族。
     """
     filters, params = [], {}
     if construct_id:
@@ -501,6 +574,13 @@ def _fetch_patent_families(driver, strategy_id, construct_id, pathogen_id):
 
 
 def _aggregate_evidence_maturity(assessments, constructs):
+    """
+    聚合证据成熟度：
+        - 每个构建体的成熟度（取该构建体评估中的最高值）
+        - 每个策略的成熟度（取该策略评估值）
+        - 分布统计
+        - 全局最高成熟度
+    """
     by_construct, by_strategy = [], []
     distribution = {"conceptual": 0, "in_vitro": 0, "in_vivo": 0, "clinical": 0}
     cid_m, sid_m = {}, {}
@@ -524,6 +604,9 @@ def _aggregate_evidence_maturity(assessments, constructs):
 
 
 def _aggregate_risk_field(assessments, field, label):
+    """
+    聚合某风险字段（如 safety_uncertainty / manufacturability_risk）的非 unknown 值。
+    """
     items = []
     for a in assessments:
         v = a.get(field)
@@ -535,6 +618,7 @@ def _aggregate_risk_field(assessments, field, label):
 
 
 def _aggregate_capability_gaps(assessments):
+    """聚合内部能力缺口（high / medium）。"""
     gaps = []
     for a in assessments:
         v = a.get("internal_capability_gap")
@@ -546,6 +630,17 @@ def _aggregate_capability_gaps(assessments):
 
 
 def _build_recommended_next_steps(constructs, claims, results, assessments, evidence_maturity):
+    """
+    生成建议下一步（基于规则，不调用 LLM）。
+
+    规则：
+        - 无评估 → 建议补充
+        - 有主张无结果 → 建议补数据
+        - 成熟度均停留在体外 → 提示转化不确定
+        - 有 high 内部能力缺口 → 建议评估合作/引进/自建
+        - 有 high 安全/可制造性 → 建议做专项评估
+        - 否则 → 建议持续观察
+    """
     steps = []
     if not assessments:
         steps.append("尚未生成技术评估，建议由领域专家补充评估后再做决策。")
@@ -565,6 +660,7 @@ def _build_recommended_next_steps(constructs, claims, results, assessments, evid
 
 
 def _build_executive_summary(strategies, constructs, pathogens, claims, results, assessments):
+    """生成执行摘要（一段话，描述策略 / 构建体 / 病原 / 主张 / 结果 / 评估数量）。"""
     s_types = ", ".join(sorted({s.get("strategy_type", "") for s in strategies if s.get("strategy_type")})) or "未指定策略"
     species = ", ".join(sorted({p.get("species", "") for p in pathogens if p.get("species")})) or "未指定病原"
     return (f"本简报围绕 {s_types} 策略，覆盖 {len(constructs)} 个公开构建体、"
@@ -574,6 +670,7 @@ def _build_executive_summary(strategies, constructs, pathogens, claims, results,
 
 
 def _collect_data_gaps(constructs, claims, results, patent_families=None):
+    """收集数据缺口提示。"""
     gaps = []
     if not constructs:
         gaps.append("尚无公开工程构建体入库")
@@ -592,6 +689,7 @@ def _collect_data_gaps(constructs, claims, results, patent_families=None):
 
 
 def _build_brief_title(strategies, constructs, pathogens):
+    """根据主体选择简报标题。"""
     if len(strategies) == 1 and strategies[0].get("strategy_type"):
         subject = strategies[0]["strategy_type"]
     elif len(constructs) == 1 and constructs[0].get("public_name"):
@@ -604,6 +702,10 @@ def _build_brief_title(strategies, constructs, pathogens):
 
 
 def _link_brief_to_subjects(driver, brief_id, strategy_ids, construct_ids, pathogen_ids):
+    """
+    为 IntelligenceProduct 建立 COVERS 关系：
+        (简报)-[:COVERS]->(策略 / 构建体 / 病原)
+    """
     with driver.session() as session:
         if strategy_ids:
             session.run("""

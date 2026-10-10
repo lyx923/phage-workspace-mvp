@@ -1,4 +1,16 @@
 # src/scientific/retriever_service.py
+"""
+科学域检索服务。
+
+职责：
+    - find_matching_phages / find_similar_cases：核心检索（噬菌体匹配 + 相似病例）
+    - analyze_cross_case_reuse：分析病例 A 的经验是否被病例 B 复用
+    - analyze_and_persist_reuse：分析并持久化 KnowledgeReuseEvent
+    - confirm_knowledge_reuse：人工确认 / 拒绝知识复用
+    - *_simple 系列：无需显式传 driver 的便捷入口
+
+证据等级排序约定：L5 > L4 > L3 > L2 > L1，同级按 result_value 倒序。
+"""
 from typing import List, Dict, Optional
 from neo4j import Driver
 from src.scientific.import_service import get_driver
@@ -14,7 +26,16 @@ def find_matching_phages(
 ) -> List[Dict]:
     """
     查询匹配该病原菌的所有噬菌体互作关系（基于 LysisAssay）。
-    按证据等级排序：L5 > L4 > L3 > L2 > L1，同级别按 result_value DESC。
+
+    排序：L5 > L4 > L3 > L2 > L1，同级别按 result_value 倒序。
+
+    Args:
+        species: 病原物种
+        resistance: 耐药机制（可选，模糊匹配）
+        limit: 返回上限
+
+    Returns:
+        List[Dict]: 每条含 phage_id / name / family / assay_id / evidence_level 等
     """
     query = """
     MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)
@@ -54,7 +75,19 @@ def find_similar_cases(
     infection_type: Optional[str] = None,
     limit: int = 5
 ) -> List[Dict]:
-    """查询相同病原菌 + 相同/相似感染类型的历史病例"""
+    """
+    查询相同病原菌 + 相同/相似感染类型的历史病例。
+
+    感染类型匹配为双向 CONTAINS（A contains B 或 B contains A）。
+
+    Args:
+        species: 病原物种
+        infection_type: 感染类型（可选）
+        limit: 返回上限
+
+    Returns:
+        List[Dict]: 病例列表，含 TREATED_WITH 的噬菌体名
+    """
     query = """
     MATCH (c:ClinicalCase)-[:INVOLVES_PATHOGEN]->(p:Pathogen)
     WHERE p.species = $species
@@ -85,8 +118,19 @@ def find_similar_cases(
 
 
 def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> Dict:
-    """分析病例 B 是否复用了病例 A 的噬菌体经验，适配 LysisAssay"""
+    """
+    分析病例 B 是否复用了病例 A 的噬菌体经验。
+
+    三种复用类型：
+        direct_reuse    —— B 直接使用 A 用过的噬菌体
+        evidence_upgrade —— A 的经验被编码为 L3/L4/L5 证据，出现在 B 的检索结果中
+        no_reuse        —— 无显著关联
+
+    Returns:
+        Dict: 含 reuse_type / reused_phages / reuse_count / is_reuse_valid / explanation
+    """
     with driver.session() as session:
+        # 查询病例 A
         result_a = session.run("""
             MATCH (c:ClinicalCase {case_id: $case_id})-[:INVOLVES_PATHOGEN]->(p:Pathogen)
             OPTIONAL MATCH (c)-[:TREATED_WITH]->(ph:Phage)
@@ -99,6 +143,7 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
         """, case_id=case_a_id)
         case_a = result_a.single()
 
+        # 查询病例 B
         result_b = session.run("""
             MATCH (c:ClinicalCase {case_id: $case_id})-[:INVOLVES_PATHOGEN]->(p:Pathogen)
             OPTIONAL MATCH (c)-[:TREATED_WITH]->(ph:Phage)
@@ -117,6 +162,7 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
     phages_used_in_a = [p for p in case_a.get('phages_used', []) if p]
     phages_used_in_b = [p for p in case_b.get('phages_used', []) if p]
 
+    # B 无治疗记录 → 无法判断复用
     if not phages_used_in_b:
         return {
             "case_a": {
@@ -151,6 +197,7 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
     direct_reuse = False
     evidence_upgrade = False
 
+    # 检查 A 用过的噬菌体是否出现在 B 的匹配结果中
     for phage_name in phages_used_in_a:
         for mp in matching_phages:
             if mp.get('name') == phage_name:
@@ -163,6 +210,7 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
                 if evidence_level in ['L3', 'L4', 'L5']:
                     evidence_upgrade = True
 
+    # 判定复用类型
     if any(p in phages_used_in_b for p in phages_used_in_a):
         direct_reuse = True
         reuse_type = "direct_reuse"
@@ -202,16 +250,19 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
 
 # ==================== 便捷函数 ====================
 def find_matching_phages_simple(species: str, resistance: Optional[str] = None, limit: int = 20) -> List[Dict]:
+    """无需显式传 driver 的 find_matching_phages 便捷入口。"""
     with get_driver() as driver:
         return find_matching_phages(driver, species, resistance, limit)
 
 
 def find_similar_cases_simple(species: str, infection_type: Optional[str] = None, limit: int = 10) -> List[Dict]:
+    """无需显式传 driver 的 find_similar_cases 便捷入口。"""
     with get_driver() as driver:
         return find_similar_cases(driver, species, infection_type, limit)
 
 
 def analyze_cross_case_reuse_simple(case_a_id: str, case_b_id: str) -> Dict:
+    """无需显式传 driver 的 analyze_cross_case_reuse 便捷入口。"""
     with get_driver() as driver:
         return analyze_cross_case_reuse(driver, case_a_id, case_b_id)
 
@@ -225,11 +276,17 @@ def analyze_and_persist_reuse(
 ) -> Dict:
     """
     一站式函数：分析跨病例复用并持久化为 KnowledgeReuseEvent。
-    返回包含分析结果和持久化状态的字典。
+
+    - 若复用无效或类型为 no_reuse，不创建事件
+    - 若病例 A 无噬菌体记录，不创建事件
+    - 否则创建事件并建立 SOURCE_CASE / TARGETS_PACKAGE / REUSES 关系
+
+    Returns:
+        Dict: {analysis, persistence}
     """
     # 1. 分析复用
     result = analyze_cross_case_reuse(driver, case_a_id, case_b_id)
-    
+
     if "error" in result:
         return {
             "analysis": result,
@@ -239,7 +296,8 @@ def analyze_and_persist_reuse(
                 "reuse_id": None
             }
         }
-    
+
+    # 复用无效 → 不持久化
     if not result.get('is_reuse_valid') or result.get('reuse_type') == 'no_reuse':
         return {
             "analysis": result,
@@ -249,7 +307,7 @@ def analyze_and_persist_reuse(
                 "reuse_id": None
             }
         }
-    
+
     phage_names = result['case_a'].get('phages_used', [])
     if not phage_names:
         return {
@@ -260,12 +318,13 @@ def analyze_and_persist_reuse(
                 "reuse_id": None
             }
         }
-    
+
     # 3. 持久化
     with driver.session() as session:
         reuse_id = f"REUSE-{uuid.uuid4().hex[:8].upper()}"
         detection_method = "cross_case_phage_overlap"
-        
+
+        # 创建复用事件
         session.run("""
             CREATE (kre:KnowledgeReuseEvent {
                 reuse_event_id: $reuse_id,
@@ -286,19 +345,22 @@ def analyze_and_persist_reuse(
         reuse_type=result['reuse_type'],
         detection_method=detection_method,
         reason=result['explanation'])
-        
+
+        # SOURCE_CASE 关系
         session.run("""
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
             MATCH (c:ClinicalCase {case_id: $source_id})
             CREATE (kre)-[:SOURCE_CASE]->(c)
         """, reuse_id=reuse_id, source_id=case_a_id)
-        
+
+        # TARGETS_PACKAGE 关系
         session.run("""
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
             MATCH (pkg:ScientificEvidencePackage {package_id: $target_package_id})
             CREATE (kre)-[:TARGETS_PACKAGE]->(pkg)
         """, reuse_id=reuse_id, target_package_id=target_package_id)
-        
+
+        # REUSES 关系（关联到对应的 LysisAssay）
         if phage_names:
             session.run("""
                 MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_id})
@@ -306,7 +368,7 @@ def analyze_and_persist_reuse(
                 MATCH (ph:Phage {name: pname})-[:USED_IN]->(a:LysisAssay)
                 CREATE (kre)-[:REUSES]->(a)
             """, reuse_id=reuse_id, phage_names=phage_names)
-        
+
         return {
             "analysis": result,
             "persistence": {
@@ -324,8 +386,20 @@ def confirm_knowledge_reuse(
     decision: str,
     comment: str = None
 ) -> str:
-    """人工确认或拒绝知识复用事件，并创建 Review 记录"""
+    """
+    人工确认或拒绝知识复用事件，并创建 Review 记录。
+
+    Args:
+        reuse_event_id: 复用事件 ID
+        reviewer_id: 审核人
+        decision: confirmed / rejected
+        comment: 审核意见
+
+    Returns:
+        str: review_id
+    """
     with driver.session() as session:
+        # 只允许 detected 状态的事件被审核
         event = session.run("""
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
             WHERE kre.status = 'detected'
@@ -334,6 +408,7 @@ def confirm_knowledge_reuse(
         if not event:
             raise ValueError(f"未找到状态为 detected 的复用事件 {reuse_event_id}")
 
+        # 创建 Review
         review_id = f"REV-{uuid.uuid4().hex[:8].upper()}"
         session.run("""
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
@@ -354,6 +429,7 @@ def confirm_knowledge_reuse(
         """, review_id=review_id, reuse_event_id=reuse_event_id,
         reviewer_id=reviewer_id, decision=decision, comment=comment)
 
+        # 更新复用事件状态
         new_status = 'confirmed' if decision == 'confirmed' else 'rejected'
         session.run("""
             MATCH (kre:KnowledgeReuseEvent {reuse_event_id: $reuse_event_id})
