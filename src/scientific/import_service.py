@@ -4,6 +4,7 @@ from config import config, get_driver
 import os
 import json
 import hashlib
+import uuid
 from typing import List, Dict, Optional
 from datetime import date
 from neo4j import Driver
@@ -26,18 +27,11 @@ def _get_or_create_host_strain(tx, strain_label: str) -> str:
     """, strain_label=strain_label)
     return result.single()["id"]
 
-def _get_or_create_evidence_source(tx, source_ref: str, source_type: str = "unknown") -> str:
-    # 保留旧函数以防兼容，但新导入不再使用
-    ev_id = f"EVID-{source_ref.replace(':', '_').replace('/', '_')}"
-    result = tx.run("""
-        MERGE (e:EvidenceSource {evidence_id: $evidence_id})
-        ON CREATE SET e.title = $title,
-                      e.evidence_type = $source_type,
-                      e.review_status = 'pending',
-                      e.created_at = datetime()
-        RETURN e.evidence_id AS id
-    """, evidence_id=ev_id, title=source_ref, source_type=source_type)
-    return result.single()["id"]
+def _fallback_url(title: str, published_date: Optional[str]) -> str:
+    """url 为空时，用 title+published_date 生成一个稳定的伪 url 作为 MERGE key。
+    与 src.shared.source_artifact_service._fallback_url 保持一致。"""
+    raw = f"{(title or '').strip()}|{(published_date or '').strip()}"
+    return f"urn:source:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 def _get_or_create_source_artifact(
     tx, 
@@ -53,26 +47,33 @@ def _get_or_create_source_artifact(
     credibility_tier: str = "secondary"
 ) -> str:
     """
-    获取或创建 SourceArtifact 节点，确保所有属性（url, published_date, credibility_tier）都存在。
+    获取或创建 SourceArtifact 节点。
+
+    v0.6 统一：
+      - ID 格式统一为 SRC:XXXXXXXX（8 位大写 hex）
+      - MERGE key 用 url（与 shared.source_artifact_service.create_source_artifact 对齐）
+      - 无 url 时降级为 urn:source:xxx（稳定、可重复）
+      - source_id 只在 ON CREATE 时写入
     """
-    # 生成稳定的 source_id（使用 SHA256 哈希确保唯一性）
-    hash_input = f"{source_ref}:{source_type}:{source_domain}"
-    hash_id = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
-    source_id = f"SRC:{hash_id}"
-    
+    # 统一 ID 格式：SRC:XXXXXXXX
+    source_id = f"SRC:{uuid.uuid4().hex[:8].upper()}"
+
     if not title:
         title = source_ref
-    
+
     # 如果提供了 URI 或路径且未提供 document_hash，自动计算
     if uri_or_path and not document_hash:
         document_hash = hashlib.sha256(uri_or_path.encode()).hexdigest()[:16]
-    
-    # 将 uri_or_path 作为 url 的备选值，若都无则设为空字符串
-    url_value = uri_or_path if uri_or_path else source_id
-    
+
+    # v0.6：MERGE key 统一用 url
+    merge_url = (uri_or_path or "").strip()
+    if not merge_url:
+        merge_url = _fallback_url(title, published_date)
+
     result = tx.run("""
-        MERGE (s:SourceArtifact {source_id: $source_id})
+        MERGE (s:SourceArtifact {url: $merge_url})
         ON CREATE SET 
+            s.source_id = $source_id,
             s.source_domain = $source_domain,
             s.source_type = $source_type,
             s.title = $title,
@@ -81,7 +82,6 @@ def _get_or_create_source_artifact(
             s.uri_or_path = $uri_or_path,
             s.publisher_or_owner = $publisher_or_owner,
             s.published_date = COALESCE($published_date, 'unknown'),
-            s.url = COALESCE($url, ''),
             s.credibility_tier = COALESCE($credibility_tier, 'secondary'),
             s.document_hash = $document_hash,
             s.retrieved_at = datetime(),
@@ -93,7 +93,6 @@ def _get_or_create_source_artifact(
             s.uri_or_path = COALESCE($uri_or_path, s.uri_or_path),
             s.publisher_or_owner = COALESCE($publisher_or_owner, s.publisher_or_owner),
             s.published_date = COALESCE($published_date, s.published_date, 'unknown'),
-            s.url = COALESCE($url, s.url, ''),
             s.credibility_tier = COALESCE($credibility_tier, s.credibility_tier, 'secondary'),
             s.document_hash = COALESCE($document_hash, s.document_hash)
         RETURN s.source_id AS id
@@ -106,7 +105,7 @@ def _get_or_create_source_artifact(
     uri_or_path=uri_or_path,
     publisher_or_owner=publisher_or_owner,
     published_date=published_date,
-    url=url_value,
+    merge_url=merge_url,
     document_hash=document_hash,
     credibility_tier=credibility_tier)
     
@@ -429,7 +428,6 @@ def load_phages_from_csv(csv_path):
                     for ref in evidence_ref_list:
                         if ref and str(ref).strip():
                             source_type = "literature" if ref.startswith("PMID") else "clinical_case"
-                            # 这里尽量提供 uri_or_path（可能无），published_date 使用 "unknown"
                             source_id = _get_or_create_source_artifact(
                                 session,
                                 source_ref=ref,
@@ -548,7 +546,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                             MERGE (h)-[:IS_STRAIN_OF]->(p)
                         """, host_strain_id=host_strain_id, pathogen_id=pathogen_id)
 
-                        # 关联 SourceArtifact（传递扩展字段，提供 uri_or_path 为 csv_path，published_date 设为当前日期或固定值）
+                        # 关联 SourceArtifact
                         source_id = _get_or_create_source_artifact(
                             session,
                             source_ref="合作方裂解谱数据",
@@ -558,7 +556,7 @@ def load_phages_from_lysis_csv(csv_path: str, pathogen_id: str = "PATH-003") -> 
                             access_level="internal",
                             uri_or_path=csv_path,
                             publisher_or_owner=None,
-                            published_date=date.today().isoformat(),  # 使用当前日期
+                            published_date=date.today().isoformat(),
                             credibility_tier="secondary"
                         )
                         session.run("""
@@ -591,54 +589,6 @@ def load_phages_from_lysis_csv_simple(csv_path: str = "../data/肺克数据脱�
     return load_phages_from_lysis_csv(csv_path, pathogen_id="PATH-003")
 
 # ================== 市场情报子网导入 ==================
-def load_organizations_from_csv(csv_path: str) -> int:
-    # 此版本不带 driver 参数，保留兼容，但实际调用使用带 driver 的版本
-    if not os.path.exists(csv_path):
-        print(f"❌ 文件不存在: {csv_path}")
-        return 0
-    df = pd.read_csv(csv_path)
-    print(f"📂 读取到 {len(df)} 条组织记录")
-    count = 0
-    with get_driver() as driver:
-        with driver.session() as session:
-            for _, row in df.iterrows():
-                try:
-                    aliases = row.get('aliases', '')
-                    if pd.notna(aliases) and aliases:
-                        aliases = [x.strip() for x in str(aliases).split(',') if x.strip()]
-                    else:
-                        aliases = []
-                    session.run("""
-                        MERGE (o:Organization {organization_id: $organization_id})
-                        SET o.canonical_name = $canonical_name,
-                            o.aliases = $aliases,
-                            o.organization_type = $organization_type,
-                            o.headquarters_country = $headquarters_country,
-                            o.website = $website,
-                            o.company_status = $company_status,
-                            o.public_or_private = $public_or_private,
-                            o.description = $description,
-                            o.review_status = $review_status,
-                            o.last_verified_at = datetime(),
-                            o.created_at = coalesce(o.created_at, datetime())
-                    """,
-                    organization_id=row['organization_id'],
-                    canonical_name=row['canonical_name'],
-                    aliases=aliases,
-                    organization_type=row.get('organization_type', 'biotech'),
-                    headquarters_country=row.get('headquarters_country'),
-                    website=row.get('website'),
-                    company_status=row.get('company_status', 'active'),
-                    public_or_private=row.get('public_or_private', 'unknown'),
-                    description=row.get('description'),
-                    review_status=row.get('review_status', 'pending')
-                    )
-                    count += 1
-                except Exception as e:
-                    print(f"   ❌ 导入组织失败: {e}")
-    print(f"✅ 成功导入 {count} 个组织")
-    return count
-
 def load_intelligence_events_from_csv(csv_path: str) -> int:
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
@@ -650,6 +600,9 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
         with driver.session() as session:
             for _, row in df.iterrows():
                 try:
+                    org_id = row.get('organization_id') if pd.notna(row.get('organization_id')) else None
+
+                    # v0.6：创建事件时显式写入 organization_id 属性
                     session.run("""
                         MERGE (e:IntelligenceEvent {event_id: $event_id})
                         SET e.event_type = $event_type,
@@ -660,8 +613,10 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
                             e.confidence = $confidence,
                             e.materiality = $materiality,
                             e.review_status = $review_status,
+                            e.organization_id = $organization_id,
                             e.discovered_at = coalesce(e.discovered_at, datetime()),
-                            e.created_at = coalesce(e.created_at, datetime())
+                            e.created_at = coalesce(e.created_at, datetime()),
+                            e.updated_at = datetime()
                     """,
                     event_id=row['event_id'],
                     event_type=row['event_type'],
@@ -671,15 +626,17 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
                     factual_summary=row['factual_summary'],
                     confidence=row.get('confidence', 'medium'),
                     materiality=row.get('materiality', 'medium'),
-                    review_status=row.get('review_status', 'pending')
+                    review_status=row.get('review_status', 'pending'),
+                    organization_id=org_id,
                     )
 
-                    org_id = row.get('organization_id')
-                    if org_id and pd.notna(org_id):
+                    # v0.6：统一关系名 CONCERNS → INVOLVES，幂等
+                    if org_id:
                         session.run("""
                             MATCH (e:IntelligenceEvent {event_id: $event_id})
                             MATCH (o:Organization {organization_id: $org_id})
-                            CREATE (e)-[:CONCERNS]->(o)
+                            SET e.organization_id = $org_id
+                            MERGE (e)-[:INVOLVES]->(o)
                         """, event_id=row['event_id'], org_id=org_id)
 
                     prog_id = row.get('program_id')
@@ -687,7 +644,7 @@ def load_intelligence_events_from_csv(csv_path: str) -> int:
                         session.run("""
                             MATCH (e:IntelligenceEvent {event_id: $event_id})
                             MATCH (d:DevelopmentProgram {program_id: $prog_id})
-                            CREATE (e)-[:AFFECTS]->(d)
+                            MERGE (e)-[:AFFECTS]->(d)
                         """, event_id=row['event_id'], prog_id=prog_id)
 
                     count += 1
@@ -755,7 +712,7 @@ def clear_database():
             session.run("MATCH (n) DETACH DELETE n")
     print("✅ 数据库已清空")
 
-# ================== 黄金配型（修改：ScientificKnowledgeRule，补全字段） ==================
+# ================== 黄金配型 ==================
 def import_golden_rules() -> str:
     from src.scientific.import_service import get_driver
     validated_rules = [
@@ -844,15 +801,21 @@ def import_golden_rules() -> str:
 def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
     """
     从 CSV 批量导入组织（带 driver 参数版本，与 Notebook 调用一致）
-    CSV 列：canonical_name, organization_type, aliases, headquarters_country, website, description
+
+    CSV 必填列：canonical_name
+    可选列：
+        organization_type, aliases, headquarters_country, website, description
+        source_id        —— 直接指定已有 SourceArtifact 的 source_id
+        source_url       —— 若无 source_id，则用 URL 动态创建 SourceArtifact
+        source_type, source_title, published_date, credibility_tier
     """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
         return 0
-    
+
     df = pd.read_csv(csv_path)
     print(f"📂 读取到 {len(df)} 条组织记录")
-    
+
     count = 0
     for idx, row in df.iterrows():
         try:
@@ -861,13 +824,46 @@ def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
                 aliases_list = [x.strip() for x in str(aliases).split(',') if x.strip()]
             else:
                 aliases_list = []
-            
+
             # 查重：如果已存在则跳过
             existing = get_organization_by_name(driver, row['canonical_name'])
             if existing:
                 print(f"   ⏭️ 组织 '{row['canonical_name']}' 已存在，跳过")
                 continue
-            
+
+            # ---------- 处理来源 ----------
+            source_id = None
+
+            # 优先使用 CSV 里直接给的 source_id
+            if 'source_id' in df.columns and pd.notna(row.get('source_id')) and str(row.get('source_id')).strip():
+                sid = str(row['source_id']).strip()
+                with driver.session() as session:
+                    chk = session.run(
+                        "MATCH (s:SourceArtifact {source_id: $sid}) RETURN s LIMIT 1",
+                        sid=sid,
+                    ).single()
+                    if chk:
+                        source_id = sid
+                    else:
+                        print(f"   ⚠️ SourceArtifact {sid} 不存在，将不建立 SUPPORTED_BY 关系")
+
+            # 否则如果给了 source_url，就动态创建 SourceArtifact
+            elif 'source_url' in df.columns and pd.notna(row.get('source_url')) and str(row.get('source_url')).strip():
+                source_url = str(row['source_url']).strip()
+                with driver.session() as session:
+                    source_id = _get_or_create_source_artifact(
+                        session,
+                        source_ref=source_url,
+                        source_type=row.get('source_type', 'unknown'),
+                        source_domain="ci",
+                        title=row.get('source_title', row['canonical_name']),
+                        uri_or_path=source_url,
+                        published_date=row.get('published_date') or 'unknown',
+                        credibility_tier=row.get('credibility_tier', 'secondary'),
+                    )
+                print(f"   📎 为组织 '{row['canonical_name']}' 创建来源: {source_id}")
+
+            # ---------- 创建 Organization ----------
             org_id = create_organization(
                 driver,
                 canonical_name=row['canonical_name'],
@@ -878,18 +874,29 @@ def load_organizations_from_csv(driver: Driver, csv_path: str) -> int:
                 description=row.get('description'),
                 actor_id="csv_importer"
             )
+
+            # ---------- 建立 SUPPORTED_BY 关系 ----------
+            if source_id:
+                with driver.session() as session:
+                    session.run("""
+                        MATCH (o:Organization {organization_id: $oid})
+                        MATCH (s:SourceArtifact {source_id: $sid})
+                        MERGE (o)-[:SUPPORTED_BY]->(s)
+                    """, oid=org_id, sid=source_id)
+                print(f"   🔗 已建立 {org_id} -[:SUPPORTED_BY]-> {source_id}")
+
             count += 1
         except Exception as e:
             print(f"   ❌ 导入失败 (第 {idx+2} 行): {e}")
-    
+
     print(f"✅ 成功导入 {count} 个组织")
     return count
+
 
 def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
     """
     从 CSV 批量导入研发项目
     CSV 列：canonical_name, organization_name, program_type, development_stage, modality, target_pathogen_species(逗号分隔)
-    若没有 target_pathogen_species 列，则忽略。
     """
     if not os.path.exists(csv_path):
         print(f"❌ 文件不存在: {csv_path}")
@@ -914,7 +921,7 @@ def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
                     continue
                 org_id = result['id']
             
-            # 解析病原体物种列表（新参数 target_pathogen_species）
+            # 解析病原体物种列表
             pathogen_species = []
             if 'target_pathogen_species' in df.columns and pd.notna(row.get('target_pathogen_species')):
                 pathogen_species = [x.strip() for x in str(row['target_pathogen_species']).split(',') if x.strip()]
@@ -926,7 +933,7 @@ def load_programs_from_csv(driver: Driver, csv_path: str) -> int:
                 program_type=row.get('program_type', 'therapeutic'),
                 development_stage=row.get('development_stage', 'discovery'),
                 modality=row.get('modality'),
-                target_pathogen_species=pathogen_species,  # 改为 species 列表
+                target_pathogen_species=pathogen_species,
                 actor_id="csv_importer"
             )
             count += 1
@@ -974,7 +981,6 @@ def load_events_from_csv(driver: Driver, csv_path: str) -> int:
             source_ids = []
             if 'source_url' in df.columns and 'source_type' in df.columns:
                 if pd.notna(row.get('source_url')) and pd.notna(row.get('source_type')):
-                    # 创建 SourceArtifact
                     with driver.session() as session:
                         src_id = _get_or_create_source_artifact(
                             session,

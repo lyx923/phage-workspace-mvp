@@ -6,12 +6,7 @@ from src.shared.audit_service import write_audit_event
 
 
 def generate_decision_id() -> str:
-    """
-    生成决策记录 ID。
-    
-    Returns:
-        str: 格式为 CI:DEC:XXXXXXXX 的决策唯一标识符
-    """
+    """生成决策记录 ID（格式：CI:DEC:XXXXXXXX）"""
     return f"CI:DEC:{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -26,41 +21,26 @@ def create_decision_record(
     affected_program_id: Optional[str] = None,
     actor_id: str = "system",
 ) -> str:
-    """
-    记录内部决策（PRD 10.3）。
-    
-    将情报评估与组织行动连接起来，支持决策追溯。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        brief_id: 关联的情报简报 ID（必填）
-        decision_type: 决策类型（monitor / evaluate / partner / deprioritize / IP_review 等）
-        decision_summary: 决策摘要
-        rationale: 决策理由
-        decision_owner: 决策负责人
-        review_date: 建议复核日期（YYYY-MM-DD，可选）
-        affected_program_id: 受影响的内部项目 ID（可选）
-        actor_id: 操作者标识（默认 system）
-    
-    Returns:
-        str: 创建的决策 ID（CI:DEC:XXXXXXXX）
-    
-    Raises:
-        ValueError: 当简报不存在时抛出
-    """
+    """记录内部决策（PRD 10.3）。支持 DecisionBrief 和 IntelligenceProduct 两种简报。"""
     decision_id = generate_decision_id()
 
     with driver.session() as session:
-        # 1. 检查简报是否存在
+        # 1. 检查简报是否存在（双标签）
         brief_check = session.run(
             """
-            MATCH (b:IntelligenceProduct {brief_id: $bid})
-            RETURN b
+            MATCH (b)
+            WHERE (b:DecisionBrief AND b.brief_id = $bid)
+               OR (b:IntelligenceProduct AND b.brief_id = $bid)
+            RETURN b, labels(b) AS labels
+            LIMIT 1
             """,
             bid=brief_id,
         ).single()
         if not brief_check:
-            raise ValueError(f"简报 {brief_id} 不存在，无法创建决策记录。")
+            raise ValueError(
+                f"简报 {brief_id} 不存在（既不是 DecisionBrief 也不是 IntelligenceProduct）"
+            )
+        _brief_label = brief_check["labels"][0]
 
         # 2. 创建决策节点
         session.run(
@@ -86,18 +66,18 @@ def create_decision_record(
             review_date=review_date,
         )
 
-        # 3. 建立 BASED_ON 关系（指向简报）
+        # 3. BASED_ON 关系
         session.run(
-            """
-            MATCH (dr:DecisionRecord {decision_id: $did})
-            MATCH (b:IntelligenceProduct {brief_id: $bid})
+            f"""
+            MATCH (dr:DecisionRecord {{decision_id: $did}})
+            MATCH (b:{_brief_label} {{brief_id: $bid}})
             CREATE (dr)-[:BASED_ON]->(b)
             """,
             did=decision_id,
             bid=brief_id,
         )
 
-        # 4. 如果提供了受影响的内部项目，建立关系
+        # 4. AFFECTS_INTERNAL_PROGRAM
         if affected_program_id:
             prog_check = session.run(
                 "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d",
@@ -114,7 +94,7 @@ def create_decision_record(
                     pid=affected_program_id,
                 )
 
-        # 5. 审计日志
+        # 5. 审计
         write_audit_event(
             driver,
             action_type="CREATE",
@@ -125,6 +105,7 @@ def create_decision_record(
                 "decision_type": decision_type,
                 "decision_owner": decision_owner,
                 "brief_id": brief_id,
+                "brief_label": _brief_label,
             },
             reason=rationale,
         )
@@ -138,21 +119,7 @@ def update_decision_outcome(
     outcome_status: str,
     actor_id: str = "system",
 ) -> bool:
-    """
-    更新决策的执行结果（用于决策追踪）。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        decision_id: 决策 ID
-        outcome_status: 结果状态（pending / successful / unsuccessful / mixed）
-        actor_id: 操作者标识（默认 system）
-    
-    Returns:
-        bool: 更新成功返回 True
-    
-    Raises:
-        ValueError: 当状态不合法或决策不存在时抛出
-    """
+    """更新决策的执行结果。"""
     valid_outcomes = ["pending", "successful", "unsuccessful", "mixed"]
     if outcome_status not in valid_outcomes:
         raise ValueError(f"结果状态必须是 {valid_outcomes} 之一")
@@ -184,26 +151,17 @@ def update_decision_outcome(
             delta={"outcome_status": outcome_status},
             reason=f"决策结果更新为 {outcome_status}",
         )
-
         return True
 
 
 def get_decision_record(driver: Driver, decision_id: str) -> Optional[Dict]:
-    """
-    根据 ID 获取决策记录（含关联的简报和项目信息）。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        decision_id: 决策 ID
-    
-    Returns:
-        Optional[Dict]: 决策数据字典，若不存在则返回 None
-    """
+    """按 ID 获取决策记录。"""
     with driver.session() as session:
         result = session.run(
             """
             MATCH (dr:DecisionRecord {decision_id: $did})
-            OPTIONAL MATCH (dr)-[:BASED_ON]->(b:IntelligenceProduct)
+            OPTIONAL MATCH (dr)-[:BASED_ON]->(b)
+            WHERE b:DecisionBrief OR b:IntelligenceProduct
             OPTIONAL MATCH (dr)-[:AFFECTS_INTERNAL_PROGRAM]->(d:DevelopmentProgram)
             RETURN dr,
                    b.brief_id AS brief_id,
@@ -213,10 +171,8 @@ def get_decision_record(driver: Driver, decision_id: str) -> Optional[Dict]:
             """,
             did=decision_id,
         ).single()
-
         if not result:
             return None
-
         data = dict(result["dr"])
         data["brief_id"] = result.get("brief_id")
         data["brief_title"] = result.get("brief_title")
@@ -227,19 +183,15 @@ def get_decision_record(driver: Driver, decision_id: str) -> Optional[Dict]:
 
 def get_decisions_by_brief(driver: Driver, brief_id: str) -> List[Dict]:
     """
-    获取基于某个简报的所有决策。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        brief_id: 简报 ID
-    
-    Returns:
-        List[Dict]: 决策列表，按决策时间倒序排列
+    v0.6 修复：获取基于某个简报的所有决策。
+    支持 DecisionBrief 和 IntelligenceProduct 双标签。
     """
     with driver.session() as session:
         result = session.run(
             """
-            MATCH (dr:DecisionRecord)-[:BASED_ON]->(b:IntelligenceProduct {brief_id: $bid})
+            MATCH (dr:DecisionRecord)-[:BASED_ON]->(b)
+            WHERE (b:DecisionBrief AND b.brief_id = $bid)
+               OR (b:IntelligenceProduct AND b.brief_id = $bid)
             RETURN dr
             ORDER BY dr.decided_at DESC
             """,

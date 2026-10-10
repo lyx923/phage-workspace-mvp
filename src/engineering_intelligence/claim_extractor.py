@@ -20,8 +20,8 @@ def create_technical_claim(
     claim_type: str,  # efficacy, host_range, safety, manufacturability, mechanism
     claim_text: str,
     exact_quote: Optional[str] = None,
-    claimant_type: str = "publication",  # publication, patent, company, investigator
-    evidence_context: Optional[str] = None,  # in_vitro, animal, clinical, computational
+    claimant_type: str = "publication",
+    evidence_context: Optional[str] = None,
     construct_id: Optional[str] = None,
     strategy_id: Optional[str] = None,
     source_id: Optional[str] = None,
@@ -33,7 +33,6 @@ def create_technical_claim(
     claim_id = generate_claim_id()
 
     with driver.session() as session:
-        # 查重
         existing = session.run("""
             MATCH (tc:TechnicalClaim {claim_text: $claim_text})
             RETURN tc.claim_id AS id
@@ -42,7 +41,6 @@ def create_technical_claim(
             print(f"ℹ️ 主张已存在，ID: {existing['id']}")
             return existing['id']
 
-        # 创建主张节点
         session.run("""
             CREATE (tc:TechnicalClaim {
                 claim_id: $claim_id,
@@ -62,31 +60,27 @@ def create_technical_claim(
            exact_quote=exact_quote, claimant_type=claimant_type,
            evidence_context=evidence_context)
 
-        # 关联构建体
         if construct_id:
             session.run("""
                 MATCH (tc:TechnicalClaim {claim_id: $claim_id})
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
-                CREATE (tc)-[:CLAIMS_ABOUT]->(ec)
+                MERGE (tc)-[:CLAIMS_ABOUT]->(ec)
             """, claim_id=claim_id, construct_id=construct_id)
 
-        # 关联策略
         if strategy_id:
             session.run("""
                 MATCH (tc:TechnicalClaim {claim_id: $claim_id})
                 MATCH (es:EngineeringStrategy {strategy_id: $strategy_id})
-                CREATE (tc)-[:CLAIMS_ABOUT]->(es)
+                MERGE (tc)-[:CLAIMS_ABOUT]->(es)
             """, claim_id=claim_id, strategy_id=strategy_id)
 
-        # 关联来源
         if source_id:
             session.run("""
                 MATCH (tc:TechnicalClaim {claim_id: $claim_id})
                 MATCH (s:SourceArtifact {source_id: $source_id})
-                CREATE (tc)-[:SUPPORTED_BY]->(s)
+                MERGE (tc)-[:SUPPORTED_BY]->(s)
             """, claim_id=claim_id, source_id=source_id)
 
-        # 审计日志（新版）
         write_audit_event(
             driver,
             action_type="CREATE",
@@ -102,11 +96,25 @@ def create_technical_claim(
 
 # ==================== TechnicalResult ====================
 
+def _direction_to_relation(outcome_direction: Optional[str]) -> Optional[str]:
+    """
+    v0.6 P1-8：把 outcome_direction 映射为 SUPPORTED_OR_CHALLENGES 的语义。
+    positive → 'SUPPORTED'
+    negative → 'CHALLENGES'
+    其它（mixed / neutral / None）→ None，不建关系
+    """
+    if outcome_direction == "positive":
+        return "SUPPORTED"
+    if outcome_direction == "negative":
+        return "CHALLENGES"
+    return None
+
+
 def create_technical_result(
     driver: Driver,
-    result_type: str,  # host_range, lysis, biofilm, safety, in_vivo, computational
-    study_context: str,  # in_vitro, animal, clinical, computational
-    outcome_direction: Optional[str] = None,  # positive, negative, mixed, neutral
+    result_type: str,
+    study_context: str,
+    outcome_direction: Optional[str] = None,
     metric_name: Optional[str] = None,
     metric_value: Optional[float] = None,
     metric_unit: Optional[str] = None,
@@ -116,15 +124,22 @@ def create_technical_result(
     reproducibility_status: str = "single_source",
     construct_id: Optional[str] = None,
     source_id: Optional[str] = None,
+    claim_id: Optional[str] = None,           # v0.6 P1-8：显式关联 claim
     actor_id: str = "system"
 ) -> str:
     """
-    PRD 9.5: 创建技术结果（TechnicalResult）
+    PRD 9.5: 创建技术结果（TechnicalResult）。
+
+    v0.6 P1-8 新增：
+      - claim_id 参数：直接建立 (tr)-[:SUPPORTED_OR_CHALLENGES]->(tc)
+      - outcome_direction 决定语义：
+          positive → relationship_verdict = 'SUPPORTED'
+          negative → relationship_verdict = 'CHALLENGES'
+          其它     → 不建关系
     """
     result_id = generate_result_id()
 
     with driver.session() as session:
-        # 创建结果节点
         session.run("""
             CREATE (tr:TechnicalResult {
                 result_id: $result_id,
@@ -149,40 +164,194 @@ def create_technical_result(
            sample_size=sample_size, limitation_summary=limitation_summary,
            reproducibility_status=reproducibility_status)
 
-        # 关联构建体
         if construct_id:
             session.run("""
                 MATCH (tr:TechnicalResult {result_id: $result_id})
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
-                CREATE (tr)-[:RESULT_FOR]->(ec)
+                MERGE (tr)-[:RESULT_FOR]->(ec)
             """, result_id=result_id, construct_id=construct_id)
 
-        # 关联来源
         if source_id:
             session.run("""
                 MATCH (tr:TechnicalResult {result_id: $result_id})
                 MATCH (s:SourceArtifact {source_id: $source_id})
-                CREATE (tr)-[:REPORTED_IN]->(s)
+                MERGE (tr)-[:REPORTED_IN]->(s)
             """, result_id=result_id, source_id=source_id)
 
-        # 审计日志（新版）
+        # v0.6 P1-8：SUPPORTED_OR_CHALLENGES 关系
+        linked_claim = False
+        verdict = None
+        if claim_id:
+            verdict = _direction_to_relation(outcome_direction)
+            if verdict:
+                tc_chk = session.run(
+                    "MATCH (tc:TechnicalClaim {claim_id: $cid}) RETURN tc LIMIT 1",
+                    cid=claim_id,
+                ).single()
+                if tc_chk:
+                    session.run("""
+                        MATCH (tr:TechnicalResult {result_id: $rid})
+                        MATCH (tc:TechnicalClaim {claim_id: $cid})
+                        MERGE (tr)-[r:SUPPORTED_OR_CHALLENGES]->(tc)
+                        SET r.verdict = $verdict,
+                            r.created_at = COALESCE(r.created_at, datetime())
+                    """, rid=result_id, cid=claim_id, verdict=verdict)
+                    linked_claim = True
+                else:
+                    print(f"⚠️ TechnicalClaim {claim_id} 不存在，跳过 SUPPORTED_OR_CHALLENGES")
+            else:
+                print(
+                    f"ℹ️ outcome_direction={outcome_direction!r} 无法判定 SUPPORTED/CHALLENGES，"
+                    f"跳过关系建立"
+                )
+
         write_audit_event(
             driver,
             action_type="CREATE",
             object_type="TechnicalResult",
             object_id=result_id,
             actor_id=actor_id,
-            delta={"result_type": result_type, "study_context": study_context},
+            delta={
+                "result_type": result_type,
+                "study_context": study_context,
+                "outcome_direction": outcome_direction,
+                "claim_id": claim_id,
+                "verdict": verdict,
+                "linked_claim": linked_claim,
+            },
             reason=f"创建技术结果: {result_type}"
         )
 
         return result_id
 
 
-# ==================== 查询和关联功能 ====================
+# ==================== v0.6 P1-8：独立挂载与回填 ====================
+
+def link_result_to_claim(
+    driver: Driver,
+    result_id: str,
+    claim_id: str,
+    actor_id: str = "system",
+) -> bool:
+    """
+    v0.6 P1-8：建立 (TechnicalResult)-[:SUPPORTED_OR_CHALLENGES]->(TechnicalClaim)。
+    关系方向由 result.outcome_direction 决定。
+    幂等：已存在的同向关系直接返回 True。
+    """
+    with driver.session() as s:
+        tr = s.run(
+            """
+            MATCH (tr:TechnicalResult {result_id: $rid})
+            RETURN tr.outcome_direction AS od LIMIT 1
+            """,
+            rid=result_id,
+        ).single()
+        if not tr:
+            raise ValueError(f"TechnicalResult {result_id} 不存在")
+        tc = s.run(
+            "MATCH (tc:TechnicalClaim {claim_id: $cid}) RETURN tc LIMIT 1",
+            cid=claim_id,
+        ).single()
+        if not tc:
+            raise ValueError(f"TechnicalClaim {claim_id} 不存在")
+
+        verdict = _direction_to_relation(tr["od"])
+        if not verdict:
+            raise ValueError(
+                f"result {result_id} 的 outcome_direction={tr['od']!r} "
+                f"无法判定 SUPPORTED/CHALLENGES"
+            )
+
+        s.run("""
+            MATCH (tr:TechnicalResult {result_id: $rid})
+            MATCH (tc:TechnicalClaim {claim_id: $cid})
+            MERGE (tr)-[r:SUPPORTED_OR_CHALLENGES]->(tc)
+            SET r.verdict = $verdict,
+                r.created_at = COALESCE(r.created_at, datetime())
+        """, rid=result_id, cid=claim_id, verdict=verdict)
+
+    write_audit_event(
+        driver,
+        action_type="LINK_CREATE",
+        object_type="TechnicalResult",
+        object_id=result_id,
+        actor_id=actor_id,
+        delta={
+            "relation": "SUPPORTED_OR_CHALLENGES",
+            "claim_id": claim_id,
+            "verdict": verdict,
+        },
+        reason=f"结果 {result_id} {verdict} 主张 {claim_id}",
+    )
+    return True
+
+
+def backfill_result_to_claim(
+    driver: Driver,
+    actor_id: str = "backfill",
+) -> dict:
+    """
+    v0.6 P1-8 backfill：
+    从语义推断 (TechnicalResult)-[:SUPPORTED_OR_CHALLENGES]->(TechnicalClaim)。
+
+    推导规则：
+      - result 和 claim 在同一个 construct 上（都通过 CLAIMS_ABOUT / RESULT_FOR 关联）
+      - result.result_type == claim.claim_type
+      - result.outcome_direction 可判定方向（positive / negative）
+      - 关系不存在时才建立
+
+    返回：{"created": N, "details": [...]}
+    """
+    created = 0
+    details = []
+
+    with driver.session() as s:
+        rows = list(s.run("""
+            MATCH (tr:TechnicalResult)-[:RESULT_FOR]->(ec:EngineeredPhageConstruct)
+                  <-[:CLAIMS_ABOUT]-(tc:TechnicalClaim)
+            WHERE tr.result_type = tc.claim_type
+              AND tr.outcome_direction IN ['positive', 'negative']
+              AND NOT (tr)-[:SUPPORTED_OR_CHALLENGES]->(tc)
+            RETURN tr.result_id AS rid,
+                   tr.outcome_direction AS od,
+                   tc.claim_id AS cid,
+                   ec.construct_id AS ecid
+        """))
+
+        for r in rows:
+            verdict = "SUPPORTED" if r["od"] == "positive" else "CHALLENGES"
+            s.run("""
+                MATCH (tr:TechnicalResult {result_id: $rid})
+                MATCH (tc:TechnicalClaim {claim_id: $cid})
+                MERGE (tr)-[rel:SUPPORTED_OR_CHALLENGES]->(tc)
+                SET rel.verdict = $verdict,
+                    rel.created_at = COALESCE(rel.created_at, datetime())
+            """, rid=r["rid"], cid=r["cid"], verdict=verdict)
+            created += 1
+            details.append({
+                "result_id": r["rid"],
+                "claim_id": r["cid"],
+                "construct_id": r["ecid"],
+                "verdict": verdict,
+            })
+
+    if created > 0:
+        write_audit_event(
+            driver,
+            action_type="LINK_CREATE",
+            object_type="TechnicalResult",
+            object_id="bulk_backfill",
+            actor_id=actor_id,
+            delta={"created_supported_or_challenges": created, "details": details},
+            reason=f"回填 SUPPORTED_OR_CHALLENGES 关系：{created} 条",
+        )
+
+    return {"created": created, "details": details}
+
+
+# ==================== 查询 ====================
 
 def get_claims_by_construct(driver: Driver, construct_id: str) -> List[Dict]:
-    """获取某个构建体的所有主张"""
     with driver.session() as session:
         result = session.run("""
             MATCH (tc:TechnicalClaim)-[:CLAIMS_ABOUT]->(ec:EngineeredPhageConstruct {construct_id: $construct_id})
@@ -201,7 +370,6 @@ def get_claims_by_construct(driver: Driver, construct_id: str) -> List[Dict]:
 
 
 def get_results_by_construct(driver: Driver, construct_id: str) -> List[Dict]:
-    """获取某个构建体的所有结果"""
     with driver.session() as session:
         result = session.run("""
             MATCH (tr:TechnicalResult)-[:RESULT_FOR]->(ec:EngineeredPhageConstruct {construct_id: $construct_id})
@@ -220,6 +388,23 @@ def get_results_by_construct(driver: Driver, construct_id: str) -> List[Dict]:
                    s.title AS source_title
             ORDER BY tr.created_at DESC
         """, construct_id=construct_id)
+        return [dict(record) for record in result]
+
+
+def get_verdicts_for_claim(driver: Driver, claim_id: str) -> List[Dict]:
+    """
+    v0.6 P1-8：查询某个 claim 的所有支持/挑战判定。
+    """
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (tr:TechnicalResult)-[r:SUPPORTED_OR_CHALLENGES]->(tc:TechnicalClaim {claim_id: $cid})
+            RETURN tr.result_id AS result_id,
+                   tr.result_type AS result_type,
+                   tr.outcome_direction AS outcome_direction,
+                   r.verdict AS verdict,
+                   r.created_at AS created_at
+            ORDER BY r.created_at DESC
+        """, cid=claim_id)
         return [dict(record) for record in result]
 
 
@@ -244,14 +429,12 @@ def detect_claim_evidence_gaps(driver: Driver, construct_id: str) -> Dict:
         if not record:
             return {"error": f"构建体 {construct_id} 不存在"}
 
-        # 分析缺口
         claims = [dict(c) for c in record['claims']]
         results = [dict(r) for r in record['results']]
 
         gaps = []
         for claim in claims:
             claim_type = claim.get('claim_type')
-            # 检查是否有对应类型的结果
             matching_results = [r for r in results if r.get('result_type') == claim_type]
             if not matching_results:
                 gaps.append({
@@ -262,7 +445,6 @@ def detect_claim_evidence_gaps(driver: Driver, construct_id: str) -> Dict:
                     "gap_severity": "high"
                 })
             else:
-                # 检查结果是否支持主张（简化：仅检查方向）
                 for result in matching_results:
                     if result.get('outcome_direction') not in ['positive', None]:
                         gaps.append({

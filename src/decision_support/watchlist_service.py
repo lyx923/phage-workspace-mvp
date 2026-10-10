@@ -1,15 +1,5 @@
 # src/decision_support/watchlist_service.py
-"""
-WatchlistItem 服务 —— 符合 PRD 5.4
-
-WatchlistItem 表示"重点关注对象"：
-- 竞争对手、管线、工程策略、病原菌、专利族、临床试验
-- 每一项带优先级、关注理由、复核日期
-
-关系：
-    (WatchlistItem)-[:WATCHES]->(目标对象)
-    (WatchlistItem)-[:DERIVED_FROM]->(IntelligenceProduct)   可选
-"""
+"""WatchlistItem 服务 —— 符合 PRD 5.4"""
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -49,13 +39,7 @@ def create_watchlist_item(
     """
     创建关注项。
 
-    参数：
-        target_type：organization / development_program / engineering_strategy /
-                     pathogen / patent_family / clinical_trial
-        target_id：目标对象 ID
-        reason：为什么关注
-        priority：high / medium / low
-        review_date：建议复核日期（YYYY-MM-DD）
+    v0.6 修复：derived_from_brief_id 支持 DecisionBrief 和 IntelligenceProduct 双标签。
     """
     if target_type not in TARGET_TYPES:
         raise ValueError(f"target_type 必须是 {TARGET_TYPES.keys()} 之一")
@@ -64,7 +48,6 @@ def create_watchlist_item(
     watchlist_item_id = generate_watchlist_item_id()
 
     with driver.session() as session:
-        # 校验目标对象存在
         check = session.run(
             f"MATCH (t:{label} {{`{id_prop}`: $tid}}) RETURN t LIMIT 1",
             tid=target_id,
@@ -96,7 +79,6 @@ def create_watchlist_item(
             review_date=review_date,
         )
 
-        # 建立 WATCHES 关系
         session.run(
             f"""
             MATCH (wi:WatchlistItem {{watchlist_item_id: $wid}})
@@ -107,12 +89,14 @@ def create_watchlist_item(
             tid=target_id,
         )
 
-        # 可选：关联到简报
+        # v0.6：DERIVED_FROM 支持双标签
         if derived_from_brief_id:
             session.run(
                 """
                 MATCH (wi:WatchlistItem {watchlist_item_id: $wid})
-                MATCH (b:IntelligenceProduct {brief_id: $bid})
+                MATCH (b)
+                WHERE (b:DecisionBrief AND b.brief_id = $bid)
+                   OR (b:IntelligenceProduct AND b.brief_id = $bid)
                 MERGE (wi)-[:DERIVED_FROM]->(b)
                 """,
                 wid=watchlist_item_id,
@@ -142,7 +126,8 @@ def get_watchlist_item(driver: Driver, watchlist_item_id: str) -> Optional[Dict]
             """
             MATCH (wi:WatchlistItem {watchlist_item_id: $wid})
             OPTIONAL MATCH (wi)-[:WATCHES]->(t)
-            OPTIONAL MATCH (wi)-[:DERIVED_FROM]->(b:IntelligenceProduct)
+            OPTIONAL MATCH (wi)-[:DERIVED_FROM]->(b)
+            WHERE b IS NULL OR b:DecisionBrief OR b:IntelligenceProduct
             RETURN wi,
                    labels(t)[0] AS target_label,
                    t AS target_node,

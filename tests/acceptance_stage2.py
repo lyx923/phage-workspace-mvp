@@ -289,7 +289,7 @@ def check_product(driver, report: Report):
     comp_count = _one(driver, """
         MATCH (o:Organization)
         WHERE EXISTS { MATCH (o)-[:DEVELOPS]->(:DevelopmentProgram) }
-           OR EXISTS { MATCH (o)<-[:CONCERNS]-(:IntelligenceEvent) }
+           OR EXISTS { MATCH (o)<-[:INVOLVES]-(:IntelligenceEvent) }
         RETURN count(DISTINCT o)
     """)
     report.add(
@@ -300,7 +300,7 @@ def check_product(driver, report: Report):
     # CI-P2: ≥1 个组织有项目 + 事件时间线
     timeline_org = _one(driver, """
         MATCH (o:Organization)-[:DEVELOPS]->(:DevelopmentProgram)
-        MATCH (o)<-[:CONCERNS]-(:IntelligenceEvent)
+        MATCH (o)<-[:INVOLVES]-(:IntelligenceEvent)
         RETURN count(DISTINCT o)
     """)
     report.add(

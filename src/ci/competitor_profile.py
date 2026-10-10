@@ -12,6 +12,9 @@ def build_competitor_profile(
     """
     PRD 13.1: build_competitor_profile
     生成竞争对手完整档案
+
+    v0.6 P0-2：事件查询增加 e.organization_id = $oid 过滤，
+    防止通过共享 Pathogen 节点产生跨组织语义污染。
     """
     if as_of_date is None:
         as_of_date = datetime.now().strftime("%Y-%m-%d")
@@ -58,9 +61,10 @@ def build_competitor_profile(
         """, oid=organization_id)
         program_list = [dict(record) for record in programs]
 
-        # 3. 获取情报事件（按时间倒序）
+        # 3. 获取情报事件（v0.6：按 organization_id 双重过滤）
         events = session.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
+            MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
+            WHERE e.organization_id = $oid
             OPTIONAL MATCH (e)-[:AFFECTS]->(d:DevelopmentProgram)
             RETURN e.event_id AS event_id,
                    e.event_type AS event_type,

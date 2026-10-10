@@ -104,11 +104,12 @@ def _build_landscape_matrix_block(driver, organization_id):
 # ==================== ★ P1 质量能力接入：三个新函数 ====================
 
 def _build_source_credibility_breakdown(driver, organization_id):
-    """按来源可信度分层统计该组织引用的所有 SourceArtifact"""
+    """按来源可信度分层统计该组织引用的所有 SourceArtifact。"""
     with driver.session() as s:
         rows = list(s.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(:IntelligenceEvent)
+            MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
                   -[:HAS_SOURCE]->(src:SourceArtifact)
+            WHERE e.organization_id = $oid
             RETURN DISTINCT src.source_id AS sid,
                    src.credibility_tier AS tier,
                    COALESCE(src.credibility_score, 0) AS score
@@ -146,14 +147,22 @@ def _build_entity_resolution_hints(driver, organization_id):
 
 
 def _build_conflict_summary(driver, organization_id):
-    """检测该组织关联的所有构建体是否有技术冲突"""
+    """
+    检测该组织关联的所有构建体是否有技术冲突。
+
+    v0.6 修复：同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
+    """
     try:
         from src.engineering_intelligence.claim_conflict_service import detect_conflicts
         with driver.session() as s:
             cids = [r["cid"] for r in s.run("""
-                MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->
-                      (:DevelopmentProgram)<-[:ASSOCIATED_WITH]-(ec:EngineeredPhageConstruct)
-                RETURN DISTINCT ec.construct_id AS cid
+                MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
+                OPTIONAL MATCH (ec1:EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(d)
+                OPTIONAL MATCH (d)-[:USES_CONSTRUCT]->(ec2:EngineeredPhageConstruct)
+                WITH collect(DISTINCT ec1) + collect(DISTINCT ec2) AS ecs
+                UNWIND ecs AS ec
+                WITH DISTINCT ec WHERE ec IS NOT NULL
+                RETURN ec.construct_id AS cid
             """, oid=organization_id)]
         conflicts = {"claim_status_conflicts": [], "result_direction_conflicts": [],
                      "cross_construct_conflicts": [], "total_conflicts": 0}
@@ -325,32 +334,107 @@ def generate_competitor_brief(
     return brief_data
 
 
+# ==================== citations：v0.6 统一版 ====================
+
 def _fetch_citations_for_organization(driver, organization_id):
+    """
+    从图谱中动态查询该组织相关的所有 SourceArtifact。
+
+    v0.6 P0-2 修复：
+      - 所有事件查询显式过滤 organization_id，避免通过共享 Pathogen 造成跨组织语义污染。
+
+    v0.6 补充修复：
+      - 分支 B 支持 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
+
+    来源路径（合并去重）：
+      A. Organization <-[:INVOLVES]- IntelligenceEvent -[:HAS_SOURCE]-> SourceArtifact
+         （且 e.organization_id = org.organization_id）
+      B. Organization -[:DEVELOPS]-> DevelopmentProgram
+         <-[:ASSOCIATED_WITH | USES_CONSTRUCT]- EngineeredPhageConstruct
+         <-[:CLAIMS_ABOUT]- TechnicalClaim -[:SUPPORTED_BY]-> SourceArtifact
+
+    返回结构：
+        [{
+            source_id, source_type, title, url,
+            published_date, credibility_tier,
+            referenced_by_event_ids: [...]
+        }, ...]
+    """
+    citations_map: Dict[str, Dict] = {}
+
     with driver.session() as session:
-        result = session.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
-            MATCH (e)-[:HAS_SOURCE]->(s:SourceArtifact)
-            RETURN DISTINCT s.source_id AS source_id, s.source_type AS source_type,
-                   s.title AS title, s.url AS url,
+        # 分支 A：事件来源（INVOLVES + organization_id 双重过滤）
+        result_a = session.run("""
+            MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
+                  -[:HAS_SOURCE]->(s:SourceArtifact)
+            WHERE e.organization_id = $oid
+            RETURN s.source_id AS source_id,
+                   s.source_type AS source_type,
+                   s.title AS title,
+                   s.url AS url,
                    s.published_date AS published_date,
                    s.credibility_tier AS credibility_tier,
                    collect(DISTINCT e.event_id) AS referenced_by_event_ids
-            UNION
-            MATCH (o:Organization {organization_id: $oid})<-[:DEVELOPS]-(:DevelopmentProgram)-[:TARGETS_PATHOGEN]->(:Pathogen)<-[:TARGETS]-(:EngineeredPhageConstruct)-[:CLAIMS_ABOUT]-(tc:TechnicalClaim)
-            MATCH (tc)-[:SUPPORTED_BY]->(s:SourceArtifact)
-            RETURN DISTINCT s.source_id AS source_id, s.source_type AS source_type,
-                   s.title AS title, s.url AS url,
-                   s.published_date AS published_date,
-                   s.credibility_tier AS credibility_tier,
-                   [] AS referenced_by_event_ids
         """, oid=organization_id)
-        return [{
-            "source_id": r["source_id"], "source_type": r["source_type"],
-            "title": r["title"], "url": r["url"],
-            "published_date": r["published_date"],
-            "credibility_tier": r["credibility_tier"],
-            "referenced_by_event_ids": r["referenced_by_event_ids"],
-        } for r in result]
+
+        for r in result_a:
+            sid = r["source_id"]
+            if not sid:
+                continue
+            if sid not in citations_map:
+                citations_map[sid] = {
+                    "source_id": sid,
+                    "source_type": r["source_type"],
+                    "title": r["title"],
+                    "url": r["url"],
+                    "published_date": r["published_date"],
+                    "credibility_tier": r["credibility_tier"],
+                    "referenced_by_event_ids": list(r["referenced_by_event_ids"] or []),
+                }
+            else:
+                citations_map[sid]["referenced_by_event_ids"].extend(
+                    r["referenced_by_event_ids"] or []
+                )
+
+        # 分支 B：技术主张来源（v0.6：支持 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径）
+        result_b = session.run("""
+            MATCH (o:Organization {organization_id: $oid})-[:DEVELOPS]->(d:DevelopmentProgram)
+            OPTIONAL MATCH (ec1:EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(d)
+            OPTIONAL MATCH (d)-[:USES_CONSTRUCT]->(ec2:EngineeredPhageConstruct)
+            WITH collect(DISTINCT ec1) + collect(DISTINCT ec2) AS ecs
+            UNWIND ecs AS ec
+            WITH DISTINCT ec WHERE ec IS NOT NULL
+            MATCH (tc:TechnicalClaim)-[:CLAIMS_ABOUT]->(ec)
+            MATCH (tc)-[:SUPPORTED_BY]->(s:SourceArtifact)
+            RETURN DISTINCT s.source_id AS source_id,
+                   s.source_type AS source_type,
+                   s.title AS title,
+                   s.url AS url,
+                   s.published_date AS published_date,
+                   s.credibility_tier AS credibility_tier
+        """, oid=organization_id)
+
+        for r in result_b:
+            sid = r["source_id"]
+            if not sid:
+                continue
+            if sid not in citations_map:
+                citations_map[sid] = {
+                    "source_id": sid,
+                    "source_type": r["source_type"],
+                    "title": r["title"],
+                    "url": r["url"],
+                    "published_date": r["published_date"],
+                    "credibility_tier": r["credibility_tier"],
+                    "referenced_by_event_ids": [],
+                }
+
+    # 去重后按发布日期倒序
+    return sorted(
+        citations_map.values(),
+        key=lambda x: (x.get("published_date") or ""),
+        reverse=True,
+    )
 
 
 def _build_patent_landscape(patent_list):

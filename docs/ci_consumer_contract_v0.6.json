@@ -1,0 +1,451 @@
+{
+  "contract_id": "CI-CONTRACT-0.6.0",
+  "contract_version": "0.6.0",
+  "provider_domain": "CI_Domain",
+  "consumer_domains": ["IPD", "RD", "BD", "Strategy", "Clinical", "IP", "Management"],
+  "created_date": "2026-10-09",
+  "status": "draft",
+  "description": "CI_Domain 向外部消费者（IPD/RD/BD/Strategy/Clinical/IP/Management）提供的情报产品数据契约。消费者只能读取本契约中列明的对象和字段，不得直接查询 CI_Domain 内部对象。",
+
+  "exposed_objects": [
+    {
+      "object_type": "IntelligenceProduct",
+      "neo4j_label": "IntelligenceProduct",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "brief_id",
+        "brief_type",
+        "title",
+        "executive_summary",
+        "competitive_assessment",
+        "data_gaps",
+        "recommended_next_steps",
+        "review_status",
+        "as_of_date",
+        "citations",
+        "organization_id"
+      ],
+      "excluded_fields": [
+        "internal_notes",
+        "draft_content",
+        "analyst_comments"
+      ],
+      "notes": "消费者只能访问 review_status='approved' 的简报"
+    },
+    {
+      "object_type": "DecisionBrief",
+      "neo4j_label": "DecisionBrief",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "brief_id",
+        "brief_type",
+        "title",
+        "executive_summary",
+        "key_facts",
+        "assessments",
+        "uncertainties",
+        "options",
+        "recommended_next_steps",
+        "generated_by",
+        "model_used",
+        "as_of_date",
+        "review_status"
+      ],
+      "excluded_fields": [
+        "internal_notes"
+      ],
+      "notes": "v0.6 新增：决策简报，供 IPD/Strategy 域形成 DecisionRecord 使用"
+    },
+    {
+      "object_type": "Organization",
+      "neo4j_label": "Organization",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "organization_id",
+        "canonical_name",
+        "organization_type",
+        "headquarters_country",
+        "website",
+        "description"
+      ],
+      "excluded_fields": [
+        "aliases",
+        "review_status",
+        "last_verified_at"
+      ]
+    },
+    {
+      "object_type": "DevelopmentProgram",
+      "neo4j_label": "DevelopmentProgram",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "program_id",
+        "canonical_name",
+        "development_stage",
+        "modality",
+        "program_type",
+        "target_pathogen_species"
+      ],
+      "excluded_fields": [
+        "aliases",
+        "review_status"
+      ]
+    },
+    {
+      "object_type": "Pathogen",
+      "neo4j_label": "Pathogen",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "pathogen_id",
+        "species",
+        "genus",
+        "gram_stain",
+        "eskape_category",
+        "aliases"
+      ],
+      "notes": "Pathogen 为 Foundation 共享对象，CI 与 Scientific Domain 均可读取"
+    },
+    {
+      "object_type": "CompetitorAssessment",
+      "neo4j_label": "CompetitorAssessment",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "assessment_id",
+        "assessment_type",
+        "subject_type",
+        "subject_id",
+        "impact_area",
+        "impact_level",
+        "assessment_summary",
+        "confidence",
+        "analyst_id",
+        "assessed_at"
+      ],
+      "excluded_fields": [
+        "assumptions",
+        "unknowns",
+        "review_comment"
+      ],
+      "notes": "仅 approved 状态的评估可对外，且必须标注为 Internal assessment"
+    },
+    {
+      "object_type": "TechnologyAssessment",
+      "neo4j_label": "TechnologyAssessment",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "technology_assessment_id",
+        "subject_type",
+        "subject_id",
+        "evidence_maturity",
+        "technical_relevance",
+        "translational_potential",
+        "manufacturability_risk",
+        "safety_uncertainty",
+        "ip_relevance",
+        "internal_capability_gap",
+        "assessment_summary"
+      ],
+      "excluded_fields": [
+        "internal_methodology_details"
+      ],
+      "notes": "仅 approved 状态的技术评估可对外"
+    },
+    {
+      "object_type": "EngineeringStrategy",
+      "neo4j_label": "EngineeringStrategy",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "strategy_id",
+        "strategy_type",
+        "description",
+        "evidence_maturity",
+        "review_status"
+      ],
+      "excluded_fields": [
+        "exact_quote",
+        "char_offset"
+      ]
+    },
+    {
+      "object_type": "EngineeredPhageConstruct",
+      "neo4j_label": "EngineeredPhageConstruct",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "construct_id",
+        "public_name",
+        "construct_code",
+        "construct_status",
+        "intended_effects",
+        "first_public_date",
+        "review_status"
+      ],
+      "excluded_fields": [
+        "biosafety_notes",
+        "exact_quote",
+        "char_offset"
+      ]
+    },
+    {
+      "object_type": "TechnicalClaim",
+      "neo4j_label": "TechnicalClaim",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "claim_id",
+        "claim_type",
+        "claim_text",
+        "claimant_type",
+        "evidence_context",
+        "claim_status",
+        "confidence"
+      ],
+      "excluded_fields": [
+        "exact_quote",
+        "char_offset",
+        "extracted_by"
+      ],
+      "notes": "仅 approved 的 claim 对外暴露"
+    },
+    {
+      "object_type": "TechnicalResult",
+      "neo4j_label": "TechnicalResult",
+      "access_mode": "read_only",
+      "filter_required": "review_status = 'approved'",
+      "exposed_fields": [
+        "result_id",
+        "result_type",
+        "study_context",
+        "outcome_direction",
+        "metric_name",
+        "metric_value",
+        "metric_unit",
+        "comparator",
+        "sample_size",
+        "limitation_summary",
+        "reproducibility_status"
+      ],
+      "excluded_fields": [
+        "exact_quote",
+        "char_offset",
+        "extracted_by"
+      ],
+      "notes": "仅 approved 的 result 对外暴露"
+    },
+    {
+      "object_type": "IntelligenceQuestion",
+      "neo4j_label": "IntelligenceQuestion",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "question_id",
+        "question_text",
+        "question_type",
+        "requester_id",
+        "priority",
+        "status",
+        "created_at"
+      ],
+      "excluded_fields": [],
+      "notes": "v0.6：决策链入口"
+    },
+    {
+      "object_type": "DecisionRecord",
+      "neo4j_label": "DecisionRecord",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "decision_id",
+        "decision_type",
+        "decision_summary",
+        "rationale",
+        "decision_owner",
+        "review_date",
+        "outcome_status",
+        "decided_at"
+      ],
+      "excluded_fields": [],
+      "notes": "供 IPD/Strategy 追溯决策依据"
+    },
+    {
+      "object_type": "IntelligenceUseEvent",
+      "neo4j_label": "IntelligenceUseEvent",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "use_event_id",
+        "product_id",
+        "consumer_type",
+        "consumer_id",
+        "use_purpose",
+        "context_note",
+        "referenced_decision_id",
+        "used_at"
+      ],
+      "excluded_fields": [
+        "actor_id"
+      ],
+      "notes": "用于 Learning Engine 归因追踪"
+    },
+    {
+      "object_type": "WatchlistItem",
+      "neo4j_label": "WatchlistItem",
+      "access_mode": "read_only",
+      "filter_required": null,
+      "exposed_fields": [
+        "watchlist_item_id",
+        "target_type",
+        "target_id",
+        "reason",
+        "priority",
+        "owner_id",
+        "review_date",
+        "status"
+      ],
+      "excluded_fields": []
+    }
+  ],
+
+  "not_exposed": [
+    {
+      "object_type": "IntelligenceSignal",
+      "reason": "CI 内部原始信号，未经审核，不对外暴露"
+    },
+    {
+      "object_type": "IntelligenceEvent",
+      "reason": "CI 内部原始情报，含分析过程，不对外暴露（对外通过 IntelligenceProduct 派生）"
+    },
+    {
+      "object_type": "SourceArtifact",
+      "reason": "原始来源数据需通过 IntelligenceProduct.citations 间接访问，不直接暴露"
+    },
+    {
+      "object_type": "AuditEvent",
+      "reason": "审计日志仅限 Foundation 层内部使用"
+    },
+    {
+      "object_type": "OntologyModule",
+      "reason": "本体模块注册表仅限平台管理层使用"
+    },
+    {
+      "object_type": "Review",
+      "reason": "审核流程内部数据，不对外暴露"
+    },
+    {
+      "object_type": "ClinicalTrial",
+      "reason": "临床试验原始记录，对外通过 IntelligenceProduct 派生"
+    },
+    {
+      "object_type": "PatentFamily",
+      "reason": "专利族原始记录，对外通过 IntelligenceProduct.patent_landscape 派生"
+    },
+    {
+      "object_type": "CompetitorAssessment 内部字段",
+      "reason": "assumptions / unknowns / review_comment 不对外，仅 assessment_summary 对外"
+    }
+  ],
+
+  "write_back_allowed": [
+    {
+      "object_type": "IntelligenceUseEvent",
+      "allowed_actions": ["CREATE"],
+      "required_fields": [
+        "product_id",
+        "consumer_type",
+        "consumer_id",
+        "use_purpose"
+      ],
+      "allowed_consumers": ["IPD", "RD", "BD", "Strategy", "Clinical", "IP", "Management"],
+      "notes": "消费者须在消费情报产品后记录 IntelligenceUseEvent，用于 Learning Engine 归因追踪"
+    },
+    {
+      "object_type": "DecisionRecord",
+      "allowed_actions": ["CREATE", "UPDATE"],
+      "required_fields": [
+        "brief_id",
+        "decision_type",
+        "decision_summary",
+        "rationale",
+        "decision_owner"
+      ],
+      "update_allowed_fields": ["outcome_status"],
+      "allowed_consumers": ["IPD", "Strategy", "Management"],
+      "notes": "IPD/Strategy 域可基于 DecisionBrief 或 IntelligenceProduct 创建决策记录"
+    },
+    {
+      "object_type": "DecisionBrief",
+      "allowed_actions": ["CREATE"],
+      "required_fields": [
+        "brief_type",
+        "title",
+        "executive_summary",
+        "generated_by"
+      ],
+      "allowed_consumers": ["IPD", "Strategy"],
+      "notes": "v0.6 新增：IPD/Strategy 可创建 DecisionBrief，须由 CI 域专家审核后生效"
+    },
+    {
+      "object_type": "WatchlistItem",
+      "allowed_actions": ["CREATE"],
+      "required_fields": [
+        "target_type",
+        "target_id",
+        "reason",
+        "priority"
+      ],
+      "allowed_consumers": ["IPD", "Strategy", "BD"],
+      "notes": "消费者可将情报产品中关注的对象加入 WatchlistItem"
+    }
+  ],
+
+  "access_method": {
+    "type": "python_service",
+    "module": "src.ci.intelligence_product_service",
+    "allowed_functions": [
+      "get_approved_briefs()",
+      "get_brief_by_id(brief_id)",
+      "get_competitor_programs(org_id)",
+      "record_intelligence_use()"
+    ],
+    "decision_layer_module": "src.decision_support.decision_brief",
+    "decision_layer_functions": [
+      "get_decision_brief(brief_id)",
+      "create_decision_brief(...)",
+      "create_decision_brief_from_competitor_brief(...)"
+    ],
+    "direct_neo4j_query": "禁止。消费者不得直接对 CI Domain 节点发起 Cypher 查询。",
+    "notes": "所有访问必须经过 service 层，service 层负责权限校验、字段过滤和 review_status 过滤"
+  },
+
+  "governance": {
+    "contract_owner": "phage_ci_team",
+    "review_cycle": "每季度或 CI Domain 发布新版本时",
+    "breaking_change_policy": "移除已暴露字段须提前 2 周通知消费者团队",
+    "consumer_registration_required": true,
+    "audit_required": true,
+    "contact": "phage_platform_team"
+  },
+
+  "version_history": [
+    {
+      "version": "0.5.0",
+      "date": "2026-09-04",
+      "changes": "初始版本，定义 CI 域对外暴露对象清单"
+    },
+    {
+      "version": "0.6.0",
+      "date": "2026-10-09",
+      "changes": "对齐 PRD 8.4.1 字段规范；同步 v0.6 新增对象（DecisionBrief、WatchlistItem）；明确 write_back_allowed 与 access_method；governance 段补全"
+    }
+  ],
+
+  "maintainer": "phage_platform_team"
+}

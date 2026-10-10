@@ -9,6 +9,13 @@ EVIDENCE_MATURITY_LEVELS = ["conceptual", "in_vitro", "in_vivo", "clinical"]
 RELEVANCE_LEVELS = ["high", "medium", "low", "unknown"]
 RISK_LEVELS = ["high", "medium", "low", "unknown"]
 
+# v0.6 P1-9：subject_type → (Label, id_prop)
+SUBJECT_MAP = {
+    "construct": ("EngineeredPhageConstruct", "construct_id"),
+    "strategy":  ("EngineeringStrategy",      "strategy_id"),
+    "claim":     ("TechnicalClaim",           "claim_id"),   # PRD 9.6
+}
+
 
 def generate_assessment_id() -> str:
     return f"ENG:ASSESS:{uuid.uuid4().hex[:8].upper()}"
@@ -16,7 +23,7 @@ def generate_assessment_id() -> str:
 
 def create_technology_assessment(
     driver: Driver,
-    subject_type: str,  # "construct" or "strategy"
+    subject_type: str,   # "construct" | "strategy" | "claim"
     subject_id: str,
     evidence_maturity: str = "conceptual",
     technical_relevance: str = "medium",
@@ -30,35 +37,35 @@ def create_technology_assessment(
 ) -> str:
     """
     PRD 9.6: 创建技术评估（TechnologyAssessment）
-    基于已审核证据进行结构化评估
+
+    v0.6 P1-9：
+      - subject_type 支持 "claim"（PRD 9.6）
+      - 建立 (ta)-[:ASSESSES]->(subject)
+      - 若 subject_type == "claim"，额外建立 (claim)-[:EVALUATED_BY]->(ta)（PRD 9.4）
     """
     # 校验输入值
     if evidence_maturity not in EVIDENCE_MATURITY_LEVELS:
         raise ValueError(f"证据成熟度必须是以下之一: {EVIDENCE_MATURITY_LEVELS}")
     if technical_relevance not in RELEVANCE_LEVELS:
         raise ValueError(f"技术相关性必须是以下之一: {RELEVANCE_LEVELS}")
+    if subject_type not in SUBJECT_MAP:
+        raise ValueError(
+            f"subject_type 必须是 {list(SUBJECT_MAP.keys())} 之一"
+        )
 
+    label, id_prop = SUBJECT_MAP[subject_type]
     assessment_id = generate_assessment_id()
 
     with driver.session() as session:
-        # 检查主题是否存在
-        if subject_type == "construct":
-            check = session.run(
-                "MATCH (ec:EngineeredPhageConstruct {construct_id: $sid}) RETURN ec",
-                sid=subject_id
-            ).single()
-        elif subject_type == "strategy":
-            check = session.run(
-                "MATCH (es:EngineeringStrategy {strategy_id: $sid}) RETURN es",
-                sid=subject_id
-            ).single()
-        else:
-            raise ValueError("subject_type 必须是 'construct' 或 'strategy'")
-
+        # 1. 检查 subject 是否存在
+        check = session.run(
+            f"MATCH (n:{label} {{`{id_prop}`: $sid}}) RETURN n LIMIT 1",
+            sid=subject_id,
+        ).single()
         if not check:
             raise ValueError(f"{subject_type} {subject_id} 不存在")
 
-        # 创建评估节点
+        # 2. 创建评估节点
         session.run("""
             CREATE (ta:TechnologyAssessment {
                 technology_assessment_id: $assessment_id,
@@ -86,21 +93,22 @@ def create_technology_assessment(
            internal_capability_gap=internal_capability_gap,
            assessment_summary=assessment_summary)
 
-        # 建立 ASSESSES 关系
-        if subject_type == "construct":
+        # 3. 建立 ASSESSES 关系
+        session.run(f"""
+            MATCH (ta:TechnologyAssessment {{technology_assessment_id: $assessment_id}})
+            MATCH (n:{label} {{`{id_prop}`: $subject_id}})
+            MERGE (ta)-[:ASSESSES]->(n)
+        """, assessment_id=assessment_id, subject_id=subject_id)
+
+        # 4. v0.6 P1-9：claim 额外建立反向关系 EVALUATED_BY（PRD 9.4）
+        if subject_type == "claim":
             session.run("""
                 MATCH (ta:TechnologyAssessment {technology_assessment_id: $assessment_id})
-                MATCH (ec:EngineeredPhageConstruct {construct_id: $subject_id})
-                CREATE (ta)-[:ASSESSES]->(ec)
-            """, assessment_id=assessment_id, subject_id=subject_id)
-        elif subject_type == "strategy":
-            session.run("""
-                MATCH (ta:TechnologyAssessment {technology_assessment_id: $assessment_id})
-                MATCH (es:EngineeringStrategy {strategy_id: $subject_id})
-                CREATE (ta)-[:ASSESSES]->(es)
+                MATCH (tc:TechnicalClaim {claim_id: $subject_id})
+                MERGE (tc)-[:EVALUATED_BY]->(ta)
             """, assessment_id=assessment_id, subject_id=subject_id)
 
-        # 审计日志（新版）
+        # 5. 审计日志
         write_audit_event(
             driver,
             action_type="CREATE",
@@ -111,7 +119,7 @@ def create_technology_assessment(
                 "subject_type": subject_type,
                 "subject_id": subject_id,
                 "evidence_maturity": evidence_maturity,
-                "technical_relevance": technical_relevance
+                "technical_relevance": technical_relevance,
             },
             reason=f"创建技术评估: {subject_type} {subject_id}"
         )
@@ -144,7 +152,7 @@ def get_assessment_for_subject(driver: Driver, subject_type: str, subject_id: st
 
 def get_assessments_by_strategy(driver: Driver, strategy_type: str) -> List[Dict]:
     """
-    获取某个策略类型下所有相关的技术评估
+    获取某个策略类型下所有相关的技术评估（construct / strategy）
     """
     with driver.session() as session:
         result = session.run("""
@@ -168,15 +176,86 @@ def get_assessments_by_strategy(driver: Driver, strategy_type: str) -> List[Dict
         return [dict(record) for record in result]
 
 
+# ============================================================
+# v0.6 P1-9：claim 相关查询与回填
+# ============================================================
+
+def get_assessments_for_claim(driver: Driver, claim_id: str) -> List[Dict]:
+    """
+    查询某个 claim 的所有技术评估（通过 EVALUATED_BY 或 ASSESSES 关系）。
+    """
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (ta:TechnologyAssessment {subject_type: 'claim', subject_id: $cid})
+            RETURN ta.technology_assessment_id AS assessment_id,
+                   ta.evidence_maturity AS evidence_maturity,
+                   ta.technical_relevance AS technical_relevance,
+                   ta.translational_potential AS translational_potential,
+                   ta.manufacturability_risk AS manufacturability_risk,
+                   ta.safety_uncertainty AS safety_uncertainty,
+                   ta.ip_relevance AS ip_relevance,
+                   ta.internal_capability_gap AS internal_capability_gap,
+                   ta.assessment_summary AS summary,
+                   ta.review_status AS review_status,
+                   ta.created_at AS created_at
+            ORDER BY ta.created_at DESC
+        """, cid=claim_id)
+        return [dict(record) for record in result]
+
+
+def backfill_claim_evaluated_by(
+    driver: Driver,
+    actor_id: str = "backfill",
+) -> Dict:
+    """
+    v0.6 P1-9 backfill：
+    为所有 (ta:TechnologyAssessment)-[:ASSESSES]->(tc:TechnicalClaim)
+    且 ta.subject_type='claim' 的组合，补齐反向关系 (tc)-[:EVALUATED_BY]->(ta)。
+
+    幂等。
+    """
+    created = 0
+    details = []
+
+    with driver.session() as session:
+        rows = list(session.run("""
+            MATCH (ta:TechnologyAssessment)-[:ASSESSES]->(tc:TechnicalClaim)
+            WHERE ta.subject_type = 'claim'
+              AND NOT (tc)-[:EVALUATED_BY]->(ta)
+            RETURN ta.technology_assessment_id AS taid, tc.claim_id AS cid
+        """))
+
+        for r in rows:
+            session.run("""
+                MATCH (ta:TechnologyAssessment {technology_assessment_id: $taid})
+                MATCH (tc:TechnicalClaim {claim_id: $cid})
+                MERGE (tc)-[:EVALUATED_BY]->(ta)
+            """, taid=r["taid"], cid=r["cid"])
+            created += 1
+            details.append({"assessment_id": r["taid"], "claim_id": r["cid"]})
+
+    if created > 0:
+        write_audit_event(
+            driver,
+            action_type="LINK_CREATE",
+            object_type="TechnicalClaim",
+            object_id="bulk_backfill",
+            actor_id=actor_id,
+            delta={"created_evaluated_by": created, "details": details},
+            reason=f"回填 EVALUATED_BY 关系：{created} 条",
+        )
+
+    return {"created": created, "details": details}
+
+
 def suggest_assessment_from_evidence(
     driver: Driver,
     construct_id: str
 ) -> Dict:
     """
-    根据现有主张和结果，自动建议评估值
+    根据现有主张和结果，自动建议评估值（仅针对 construct）
     """
     with driver.session() as session:
-        # 获取构建体的主张和结果
         result = session.run("""
             MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
             OPTIONAL MATCH (tc:TechnicalClaim)-[:CLAIMS_ABOUT]->(ec)
@@ -194,7 +273,6 @@ def suggest_assessment_from_evidence(
 
         data = dict(record)
 
-        # 根据证据自动推断成熟度
         study_contexts = data.get('study_contexts', [])
         if 'clinical' in study_contexts:
             evidence_maturity = 'clinical'
@@ -209,7 +287,6 @@ def suggest_assessment_from_evidence(
         else:
             evidence_maturity = 'conceptual'
 
-        # 根据结果方向推断技术相关性
         outcomes = data.get('outcomes', [])
         if 'positive' in outcomes:
             technical_relevance = 'high'

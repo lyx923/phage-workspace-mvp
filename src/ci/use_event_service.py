@@ -6,12 +6,7 @@ from src.shared.audit_service import write_audit_event
 
 
 def generate_use_event_id() -> str:
-    """
-    生成情报使用事件 ID。
-    
-    Returns:
-        str: 格式为 CI:USE:XXXXXXXX 的使用事件唯一标识符
-    """
+    """生成情报使用事件 ID（格式：CI:USE:XXXXXXXX）"""
     return f"CI:USE:{uuid.uuid4().hex[:8].upper()}"
 
 
@@ -27,35 +22,37 @@ def record_intelligence_use(
 ) -> str:
     """
     记录情报产品的消费事件（PRD 16.2）。
-    
-    追踪情报产品被哪些团队、出于什么目的使用，以及触发了哪些决策。
-    
+
+    v0.6 修复：product_id 支持 DecisionBrief 和 IntelligenceProduct 双标签。
+
     Args:
-        driver: Neo4j 数据库驱动
-        product_id: 情报产品 ID（IntelligenceProduct.brief_id）
-        consumer_type: 消费方类型（IPD / RD / BD / Clinical / Strategy / IP / Management）
-        consumer_id: 消费方具体标识（如团队名称）
-        use_purpose: 使用目的（roadmap_planning / go_no_go_decision 等）
-        context_note: 上下文说明（可选）
-        referenced_decision_id: 触发的决策 ID（可选）
-        actor_id: 操作者标识（默认 system）
-    
-    Returns:
-        str: 创建的使用事件 ID（CI:USE:XXXXXXXX）
-    
-    Raises:
-        ValueError: 当情报产品不存在时抛出
+        product_id: 情报产品 ID（IntelligenceProduct.brief_id 或 DecisionBrief.brief_id）
+        consumer_type: IPD / RD / BD / Clinical / Strategy / IP / Management
+        consumer_id: 消费方标识（团队名称）
+        use_purpose: roadmap_planning / go_no_go_decision 等
+        context_note: 上下文说明
+        referenced_decision_id: 触发的决策 ID
+        actor_id: 操作者
     """
     use_event_id = generate_use_event_id()
 
     with driver.session() as session:
-        # 1. 检查产品是否存在
+        # 1. 检查产品是否存在（双标签）
         product = session.run(
-            "MATCH (b:IntelligenceProduct {brief_id: $pid}) RETURN b",
+            """
+            MATCH (b)
+            WHERE (b:DecisionBrief AND b.brief_id = $pid)
+               OR (b:IntelligenceProduct AND b.brief_id = $pid)
+            RETURN b
+            LIMIT 1
+            """,
             pid=product_id,
         ).single()
         if not product:
-            raise ValueError(f"情报产品 {product_id} 不存在，无法记录使用事件。")
+            raise ValueError(
+                f"情报产品 {product_id} 不存在（既不是 DecisionBrief 也不是 IntelligenceProduct），"
+                f"无法记录使用事件。"
+            )
 
         # 2. 创建使用事件节点
         session.run(
@@ -80,11 +77,13 @@ def record_intelligence_use(
             actor_id=actor_id,
         )
 
-        # 3. 建立 CONSUMES 关系
+        # 3. 建立 CONSUMES 关系（双标签）
         session.run(
             """
             MATCH (u:IntelligenceUseEvent {use_event_id: $uid})
-            MATCH (b:IntelligenceProduct {brief_id: $pid})
+            MATCH (b)
+            WHERE (b:DecisionBrief AND b.brief_id = $pid)
+               OR (b:IntelligenceProduct AND b.brief_id = $pid)
             CREATE (u)-[:CONSUMES]->(b)
             """,
             uid=use_event_id,

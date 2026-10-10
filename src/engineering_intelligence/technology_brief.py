@@ -7,6 +7,10 @@
 - 只从图谱中已存在的对象组织内容，不调用 LLM 生成事实
 - 主张（Claim）与结果（Result）严格分离
 - 只纳入 review_status='approved' 的 Claim / Result
+
+v0.6 修复：
+- _fetch_technology_assessments 纳入 subject_type='claim' 的技术评估
+- _fetch_patent_families 同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径
 """
 from __future__ import annotations
 
@@ -227,7 +231,7 @@ def _build_related_patent_mappings(driver: Driver, patent_families: List[Dict]) 
         return {"total_mappings": 0, "mappings": [], "error": str(e)}
 
 
-# ==================== 原有辅助函数（保持不变） ====================
+# ==================== 原有辅助函数 ====================
 
 def _build_strategy_comparison_block(driver, strategies):
     focus_ids = [s["strategy_id"] for s in strategies if s.get("strategy_id")]
@@ -389,14 +393,37 @@ def _fetch_technical_results(driver, construct_ids):
 
 
 def _fetch_technology_assessments(driver, strategy_id, construct_id):
+    """
+    v0.6 修复：纳入 subject_type='claim' 的技术评估。
+    """
     conditions, params = [], {}
     if strategy_id:
         conditions.append("(ta.subject_type = 'strategy' AND ta.subject_id = $sid)")
-        conditions.append("(ta.subject_type = 'construct' AND EXISTS { MATCH (ec:EngineeredPhageConstruct {construct_id: ta.subject_id})-[:IMPLEMENTS]->(:EngineeringStrategy {strategy_id: $sid}) })")
+        conditions.append(
+            "(ta.subject_type = 'construct' AND EXISTS { "
+            "MATCH (ec:EngineeredPhageConstruct {construct_id: ta.subject_id})"
+            "-[:IMPLEMENTS]->(:EngineeringStrategy {strategy_id: $sid}) })"
+        )
+        # v0.6 新增：claim 评估（claim 关联到该 strategy 下的某个 construct）
+        conditions.append(
+            "(ta.subject_type = 'claim' AND EXISTS { "
+            "MATCH (tc:TechnicalClaim {claim_id: ta.subject_id})-[:CLAIMS_ABOUT]->"
+            "(:EngineeredPhageConstruct)-[:IMPLEMENTS]->(:EngineeringStrategy {strategy_id: $sid}) })"
+        )
         params["sid"] = strategy_id
     if construct_id:
         conditions.append("(ta.subject_type = 'construct' AND ta.subject_id = $cid)")
-        conditions.append("(ta.subject_type = 'strategy' AND EXISTS { MATCH (:EngineeredPhageConstruct {construct_id: $cid})-[:IMPLEMENTS]->(es:EngineeringStrategy {strategy_id: ta.subject_id}) })")
+        conditions.append(
+            "(ta.subject_type = 'strategy' AND EXISTS { "
+            "MATCH (:EngineeredPhageConstruct {construct_id: $cid})"
+            "-[:IMPLEMENTS]->(es:EngineeringStrategy {strategy_id: ta.subject_id}) })"
+        )
+        # v0.6 新增：claim 评估（claim 关联到该 construct）
+        conditions.append(
+            "(ta.subject_type = 'claim' AND EXISTS { "
+            "MATCH (tc:TechnicalClaim {claim_id: ta.subject_id})-[:CLAIMS_ABOUT]->"
+            "(:EngineeredPhageConstruct {construct_id: $cid}) })"
+        )
         params["cid"] = construct_id
     where = " OR ".join(conditions) if conditions else "true"
     with driver.session() as s:
@@ -437,6 +464,9 @@ def _fetch_citations(driver, construct_ids):
 
 
 def _fetch_patent_families(driver, strategy_id, construct_id, pathogen_id):
+    """
+    v0.6 修复：同时走 ASSOCIATED_WITH 和 USES_CONSTRUCT 两条路径。
+    """
     filters, params = [], {}
     if construct_id:
         filters.append("ec.construct_id = $cid"); params["cid"] = construct_id
@@ -452,7 +482,11 @@ def _fetch_patent_families(driver, strategy_id, construct_id, pathogen_id):
     with driver.session() as s:
         return [dict(r) for r in s.run(f"""
             MATCH (ec:EngineeredPhageConstruct) WHERE {where}
-            OPTIONAL MATCH (ec)-[:ASSOCIATED_WITH]->(dp:DevelopmentProgram)
+            OPTIONAL MATCH (ec)-[:ASSOCIATED_WITH]->(dp1:DevelopmentProgram)
+            OPTIONAL MATCH (dp2:DevelopmentProgram)-[:USES_CONSTRUCT]->(ec)
+            WITH ec, collect(DISTINCT dp1) + collect(DISTINCT dp2) AS dps
+            UNWIND dps AS dp
+            WITH DISTINCT dp WHERE dp IS NOT NULL
             OPTIONAL MATCH (dp)-[:COVERED_BY]->(pf:PatentFamily)
             WITH pf WHERE pf IS NOT NULL
             OPTIONAL MATCH (o:Organization)-[:OWNS_PATENT]->(pf)

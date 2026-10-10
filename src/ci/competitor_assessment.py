@@ -10,6 +10,70 @@ def generate_assessment_id() -> str:
     return f"CI:ASSESS:{uuid.uuid4().hex[:8].upper()}"
 
 
+# ==================== v0.6 P2-1：可读性修复 ====================
+
+_SUBJECT_NAME_MAP = {
+    # subject_type -> (Label, id_prop, name_prop)
+    "organization": ("Organization", "organization_id", "canonical_name"),
+    "program":      ("DevelopmentProgram", "program_id", "canonical_name"),
+    "event":        ("IntelligenceEvent", "event_id", "title"),
+}
+
+
+def _resolve_subject_name(driver: Driver, subject_type: str, subject_id: str) -> str:
+    """
+    把 subject_id 解析为人可读的名称。
+
+    - organization → canonical_name
+    - program      → canonical_name
+    - event        → title
+
+    查询失败或找不到时，降级返回原 subject_id，不抛异常。
+    """
+    if not subject_id:
+        return subject_id
+    cfg = _SUBJECT_NAME_MAP.get(subject_type)
+    if not cfg:
+        return subject_id
+    label, id_prop, name_prop = cfg
+    try:
+        with driver.session() as s:
+            r = s.run(
+                f"MATCH (n:{label} {{`{id_prop}`: $sid}}) "
+                f"RETURN n.{name_prop} AS name LIMIT 1",
+                sid=subject_id,
+            ).single()
+            if r and r.get("name"):
+                return r["name"]
+    except Exception:
+        pass
+    return subject_id
+
+
+def _humanize_summary(
+    driver: Driver,
+    subject_type: str,
+    subject_id: str,
+    summary: Optional[str],
+) -> Optional[str]:
+    """
+    把 assessment_summary 里出现的 subject_id 替换为可读名称。
+    同时把可能出现的裸 label id（如 CI:ORG:xxxx / CI:PROG:xxxx / CI:EVT:xxxx）
+    也按 subject 上下文替换。
+    """
+    if not summary:
+        return summary
+    try:
+        name = _resolve_subject_name(driver, subject_type, subject_id)
+        if name and name != subject_id:
+            summary = summary.replace(subject_id, name)
+    except Exception:
+        pass
+    return summary
+
+
+# ==================== 主入口 ====================
+
 def create_competitor_assessment(
     driver: Driver,
     assessment_type: str,
@@ -26,27 +90,38 @@ def create_competitor_assessment(
     valid_until: Optional[str] = None,
     actor_id: str = "system"
 ) -> str:
+    """
+    创建竞争评估（PRD 8.3）。
+
+    v0.6 P2-1：写入前，把 assessment_summary 中的 subject_id
+    替换为人可读的名称（organization/program 的 canonical_name，
+    event 的 title），避免对外展示裸 ID。
+    """
     assessment_id = generate_assessment_id()
     assumptions = assumptions or []
     unknowns = unknowns or []
 
-    subject_map = {
-        "organization": ("Organization", "organization_id"),
-        "program": ("DevelopmentProgram", "program_id"),
-        "event": ("IntelligenceEvent", "event_id"),
-    }
+    if subject_type not in _SUBJECT_NAME_MAP:
+        raise ValueError(
+            f"不支持的 subject_type: {subject_type}，"
+            f"可选: {list(_SUBJECT_NAME_MAP.keys())}"
+        )
 
-    if subject_type not in subject_map:
-        raise ValueError(f"不支持的 subject_type: {subject_type}，可选: organization, program, event")
+    label, id_prop, _ = _SUBJECT_NAME_MAP[subject_type]
 
-    label, id_prop = subject_map[subject_type]
+    # ★ v0.6 P2-1：解析可读名称，替换 summary 中的裸 ID
+    assessment_summary = _humanize_summary(
+        driver, subject_type, subject_id, assessment_summary
+    )
 
     with driver.session() as session:
+        # 1. 检查 subject 是否存在
         check_query = f"MATCH (n:{label} {{`{id_prop}`: $sid}}) RETURN n"
         target = session.run(check_query, sid=subject_id).single()
         if not target:
             raise ValueError(f"{subject_type} 对象 {subject_id} 不存在")
 
+        # 2. 创建评估节点
         session.run(
             f"""
             CREATE (ca:CompetitorAssessment {{
@@ -84,6 +159,7 @@ def create_competitor_assessment(
             valid_until=valid_until,
         )
 
+        # 3. 建立 ASSESSES 关系
         session.run(
             f"""
             MATCH (ca:CompetitorAssessment {{assessment_id: $assessment_id}})
@@ -94,6 +170,7 @@ def create_competitor_assessment(
             subject_id=subject_id,
         )
 
+        # 4. 审计日志
         write_audit_event(
             driver,
             action_type="CREATE",

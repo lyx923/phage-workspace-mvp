@@ -17,29 +17,16 @@ def register_ontology_module(
     owner_team: str,
     description: Optional[str] = None,
     object_types: Optional[List[str]] = None,
-    depends_on: Optional[List[str]] = None,  # 依赖的模块名称列表
+    depends_on: Optional[List[str]] = None,
     changelog: Optional[str] = None,
-    status: str = "experimental",  # active, experimental, deprecated
+    status: str = "experimental",
     actor_id: str = "system",
 ) -> str:
     """
     注册或更新 OntologyModule 节点（幂等）。
-    如果模块名称已存在，则更新其信息（版本、状态等），并记录审计事件。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        module_name: 模块名称（如 "Foundation", "CI_Domain"）
-        version: 版本号（如 "0.6.0"）
-        owner_team: 负责团队
-        description: 模块描述
-        object_types: 该模块包含的对象类型列表
-        depends_on: 依赖的模块名称列表（如 ["Foundation"]）
-        changelog: 更新日志
-        status: 状态（active / experimental / deprecated）
-        actor_id: 操作者标识
-    
-    Returns:
-        str: 模块 ID（ONT:XXXXXXXX）
+
+    v0.6 修复：is_new 判断不再依赖 created_at == updated_at，
+    改为 MERGE 前先查一次，稳定可靠。
     """
     object_types = object_types or []
     depends_on = depends_on or []
@@ -47,7 +34,14 @@ def register_ontology_module(
     module_id = _generate_module_id()
 
     with driver.session() as session:
-        # 使用 MERGE 确保幂等（按 module_name 查找）
+        # 先查是否存在
+        existing = session.run(
+            "MATCH (m:OntologyModule {module_name: $module_name}) "
+            "RETURN m.module_id AS module_id LIMIT 1",
+            module_name=module_name,
+        ).single()
+        is_new = existing is None
+
         result = session.run(
             """
             MERGE (m:OntologyModule {module_name: $module_name})
@@ -95,13 +89,7 @@ def register_ontology_module(
                 dep_name=dep_name,
             )
 
-        # 写审计日志（CREATE 或 UPDATE，这里统一用 CREATE_OR_UPDATE，但为了符合受控词表，我们使用 CREATE 或 UPDATE 区分）
-        # 检查是否为新创建还是更新
-        is_new = session.run(
-            "MATCH (m:OntologyModule {module_name: $module_name}) WHERE m.created_at = m.updated_at RETURN m",
-            module_name=module_name
-        ).single() is not None  # 如果创建时间等于更新时间，说明是新创建的
-
+        # 写审计日志
         action_type = "CREATE" if is_new else "UPDATE"
         write_audit_event(
             driver,
@@ -114,6 +102,7 @@ def register_ontology_module(
                 "version": version,
                 "status": status,
                 "depends_on": depends_on,
+                "is_new": is_new,
             },
             reason=f"{'注册' if is_new else '更新'} OntologyModule: {module_name} v{version}",
         )
@@ -122,12 +111,7 @@ def register_ontology_module(
 
 
 def get_module_registry(driver: Driver) -> List[Dict]:
-    """
-    返回当前所有已注册的 OntologyModule 及其依赖关系。
-    
-    Returns:
-        List[Dict]: 每个模块包含 module_name, version, status, owner_team, depends_on 等
-    """
+    """返回当前所有已注册的 OntologyModule 及其依赖关系。"""
     with driver.session() as session:
         result = session.run(
             """

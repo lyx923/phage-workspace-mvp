@@ -108,8 +108,15 @@ def create_review(
             except Exception as e:
                 print(f"⚠️ 更新目标对象 review_status 失败: {e}")
 
-        # 审核分为 approve 和 reject
-        action_type = "REVIEW_APPROVE" if decision == "approved" else "REVIEW_REJECT"
+        # v0.6 P2-4：区分 approved / rejected / needs_revision / 其他
+        if decision == "approved":
+            action_type = "REVIEW_APPROVE"
+        elif decision in ("rejected", "needs_revision"):
+            action_type = "REVIEW_REJECT"
+        else:
+            # confirmed / unverified 等非典型决策
+            action_type = "STATUS_CHANGE"
+
         write_audit_event(
             driver,
             action_type=action_type,

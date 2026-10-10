@@ -3,11 +3,43 @@ import uuid
 from typing import Optional, List, Dict
 from neo4j import Driver
 from src.shared.audit_service import write_audit_event
-from src.shared.pathogen_service import get_or_create_pathogen  # 新增导入
+from src.shared.pathogen_service import get_or_create_pathogen
 
 
 def generate_construct_id() -> str:
     return f"ENG:CONST:{uuid.uuid4().hex[:8].upper()}"
+
+
+def _resolve_developer_org_id(
+    session,
+    program_id: Optional[str],
+    organization_id: Optional[str],
+) -> Optional[str]:
+    """
+    v0.6 P1-7：确定 construct 的开发者组织。
+
+    优先级：
+      1. 显式传入的 organization_id
+      2. 从 program_id 推导：MATCH (o:Organization)-[:DEVELOPS]->(d:DevelopmentProgram {program_id})
+    """
+    if organization_id:
+        chk = session.run(
+            "MATCH (o:Organization {organization_id: $oid}) RETURN o LIMIT 1",
+            oid=organization_id,
+        ).single()
+        if chk:
+            return organization_id
+        # 传入的 organization_id 不存在，继续尝试从 program 推导
+
+    if program_id:
+        r = session.run("""
+            MATCH (o:Organization)-[:DEVELOPS]->(d:DevelopmentProgram {program_id: $pid})
+            RETURN o.organization_id AS oid LIMIT 1
+        """, pid=program_id).single()
+        if r:
+            return r["oid"]
+
+    return None
 
 
 def create_engineered_construct(
@@ -16,22 +48,24 @@ def create_engineered_construct(
     construct_code: Optional[str] = None,
     parent_phage_name: Optional[str] = None,
     intended_effects: Optional[List[str]] = None,
-    target_pathogen_ids: Optional[List[str]] = None,       # 保留兼容，推荐使用 target_pathogen_species
-    target_pathogen_species: Optional[List[str]] = None,   # 新增：物种名称列表
+    target_pathogen_ids: Optional[List[str]] = None,       # 保留兼容
+    target_pathogen_species: Optional[List[str]] = None,   # 推荐
     strategy_ids: Optional[List[str]] = None,
     construct_status: str = "proposed",
     first_public_date: Optional[str] = None,
-    target_pathogen_text: Optional[str] = None,            # 新增：原文中的目标病原菌描述
-    actor_id: str = "system"
+    target_pathogen_text: Optional[str] = None,
+    organization_id: Optional[str] = None,                 # v0.6 P1-7：显式开发者组织
+    program_id: Optional[str] = None,                      # v0.6 P1-7：用于自动推导 organization
+    actor_id: str = "system",
 ) -> str:
     """
-    创建工程化噬菌体构建体（PRD 9.1）
-    关联到亲本噬菌体（如果存在）、策略和靶向病原体
+    创建工程化噬菌体构建体（PRD 9.1）。
 
-    参数：
-        target_pathogen_ids: 已废弃，建议使用 target_pathogen_species
-        target_pathogen_species: 靶向病原体物种名称列表（如 ["Klebsiella pneumoniae"]）
-        target_pathogen_text: 原文中的目标病原菌描述（来自 DeepSeek 抽取，可为空）
+    v0.6 P1-7 新增：
+      - organization_id / program_id 参数
+      - 自动建立 (ec)-[:DEVELOPED_BY]->(o:Organization)
+      - 若未传 organization_id，但传了 program_id，会从 program 推导出组织
+      - 若两者都传了，会同时建立 ASSOCIATED_WITH（如果还没建）
     """
     construct_id = generate_construct_id()
     intended_effects = intended_effects or []
@@ -39,7 +73,7 @@ def create_engineered_construct(
     target_pathogen_species = target_pathogen_species or []
     strategy_ids = strategy_ids or []
 
-    # 如果提供了 species，将其转换为 pathogen_id 并合并到 target_pathogen_ids
+    # species → pathogen_id
     for species in target_pathogen_species:
         pathogen_id = get_or_create_pathogen(
             driver,
@@ -51,7 +85,7 @@ def create_engineered_construct(
             target_pathogen_ids.append(pathogen_id)
 
     with driver.session() as session:
-        # 创建构建体节点
+        # 1. 创建构建体节点
         session.run("""
             CREATE (ec:EngineeredPhageConstruct {
                 construct_id: $construct_id,
@@ -71,36 +105,68 @@ def create_engineered_construct(
            target_pathogen_text=target_pathogen_text or "",
            first_public_date=first_public_date)
 
-        # 关联亲本噬菌体
+        # 2. 关联亲本噬菌体
         if parent_phage_name:
             result = session.run("""
                 MATCH (ph:Phage)
                 WHERE ph.name = $parent_name OR ph.phage_id = $parent_name
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
-                CREATE (ec)-[:DERIVED_FROM]->(ph)
+                MERGE (ec)-[:DERIVED_FROM]->(ph)
                 RETURN ph.name AS name
                 LIMIT 1
             """, parent_name=parent_phage_name, construct_id=construct_id)
             if not result.single():
                 print(f"⚠️ 亲本噬菌体 '{parent_phage_name}' 未找到，跳过关联")
 
-        # 关联策略
+        # 3. 关联策略
         for strategy_id in strategy_ids:
             session.run("""
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
                 MATCH (es:EngineeringStrategy {strategy_id: $strategy_id})
-                CREATE (ec)-[:IMPLEMENTS]->(es)
+                MERGE (ec)-[:IMPLEMENTS]->(es)
             """, construct_id=construct_id, strategy_id=strategy_id)
 
-        # 关联靶向病原体
+        # 4. 关联靶向病原体
         for pathogen_id in target_pathogen_ids:
             session.run("""
                 MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
                 MATCH (p:Pathogen {pathogen_id: $pathogen_id})
-                CREATE (ec)-[:TARGETS]->(p)
+                MERGE (ec)-[:TARGETS]->(p)
             """, construct_id=construct_id, pathogen_id=pathogen_id)
 
-        # 审计日志（新版）
+        # 5. v0.6 P1-7：关联开发者组织（DEVELOPED_BY）
+        resolved_org_id = _resolve_developer_org_id(session, program_id, organization_id)
+        linked_org = False
+        if resolved_org_id:
+            session.run("""
+                MATCH (ec:EngineeredPhageConstruct {construct_id: $construct_id})
+                MATCH (o:Organization {organization_id: $oid})
+                MERGE (ec)-[:DEVELOPED_BY]->(o)
+            """, construct_id=construct_id, oid=resolved_org_id)
+            linked_org = True
+
+        # 6. v0.6 P1-7：如果传了 program_id 且关系还没建，顺带建立 ASSOCIATED_WITH
+        linked_program = False
+        if program_id:
+            chk = session.run("""
+                MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                      -[:ASSOCIATED_WITH]->(d:DevelopmentProgram {program_id: $pid})
+                RETURN 1 AS x LIMIT 1
+            """, cid=construct_id, pid=program_id).single()
+            if not chk:
+                chk2 = session.run(
+                    "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d LIMIT 1",
+                    pid=program_id,
+                ).single()
+                if chk2:
+                    session.run("""
+                        MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                        MATCH (d:DevelopmentProgram {program_id: $pid})
+                        MERGE (ec)-[:ASSOCIATED_WITH]->(d)
+                    """, cid=construct_id, pid=program_id)
+                    linked_program = True
+
+        # 7. 审计
         write_audit_event(
             driver,
             action_type="CREATE",
@@ -113,7 +179,10 @@ def create_engineered_construct(
                 "strategy_ids": strategy_ids,
                 "target_pathogen_ids": target_pathogen_ids,
                 "target_pathogen_species": target_pathogen_species,
-                "target_pathogen_text": target_pathogen_text,
+                "organization_id": resolved_org_id,
+                "program_id": program_id,
+                "linked_org": linked_org,
+                "linked_program": linked_program,
             },
             reason=f"创建工程化构建体: {public_name or construct_code or construct_id}"
         )
@@ -121,18 +190,127 @@ def create_engineered_construct(
         return construct_id
 
 
+# ============================================================
+# v0.6 P1-7：独立挂载与回填
+# ============================================================
+
+def link_construct_to_organization(
+    driver: Driver,
+    construct_id: str,
+    organization_id: str,
+    actor_id: str = "system",
+) -> bool:
+    """
+    v0.6 P1-7：建立 (EngineeredPhageConstruct)-[:DEVELOPED_BY]->(Organization)。
+    幂等。
+    """
+    with driver.session() as s:
+        ec = s.run(
+            "MATCH (ec:EngineeredPhageConstruct {construct_id: $cid}) RETURN ec LIMIT 1",
+            cid=construct_id,
+        ).single()
+        if not ec:
+            raise ValueError(f"EngineeredPhageConstruct {construct_id} 不存在")
+        org = s.run(
+            "MATCH (o:Organization {organization_id: $oid}) RETURN o LIMIT 1",
+            oid=organization_id,
+        ).single()
+        if not org:
+            raise ValueError(f"Organization {organization_id} 不存在")
+
+        existing = s.run("""
+            MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                  -[:DEVELOPED_BY]->(o:Organization {organization_id: $oid})
+            RETURN 1 AS x LIMIT 1
+        """, cid=construct_id, oid=organization_id).single()
+        if existing:
+            return True
+
+        s.run("""
+            MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+            MATCH (o:Organization {organization_id: $oid})
+            MERGE (ec)-[:DEVELOPED_BY]->(o)
+        """, cid=construct_id, oid=organization_id)
+
+    write_audit_event(
+        driver,
+        action_type="LINK_CREATE",
+        object_type="EngineeredPhageConstruct",
+        object_id=construct_id,
+        actor_id=actor_id,
+        delta={
+            "relation": "DEVELOPED_BY",
+            "organization_id": organization_id,
+        },
+        reason=f"构建体 {construct_id} 关联开发者 {organization_id}",
+    )
+    return True
+
+
+def backfill_construct_developed_by(
+    driver: Driver,
+    actor_id: str = "backfill",
+) -> dict:
+    """
+    v0.6 P1-7 backfill：
+    从已有的 (ec)-[:ASSOCIATED_WITH]->(d:DevelopmentProgram)<-[:DEVELOPS]-(o:Organization)
+    推导 (ec)-[:DEVELOPED_BY]->(o)，幂等。
+
+    返回：{"created": N, "details": [...]}
+    """
+    created = 0
+    details = []
+
+    with driver.session() as s:
+        rows = list(s.run("""
+            MATCH (ec:EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(d:DevelopmentProgram)
+                  <-[:DEVELOPS]-(o:Organization)
+            WHERE NOT (ec)-[:DEVELOPED_BY]->(o)
+            RETURN DISTINCT ec.construct_id AS cid, o.organization_id AS oid
+        """))
+
+        for r in rows:
+            cid = r["cid"]
+            oid = r["oid"]
+            s.run("""
+                MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                MATCH (o:Organization {organization_id: $oid})
+                MERGE (ec)-[:DEVELOPED_BY]->(o)
+            """, cid=cid, oid=oid)
+            created += 1
+            details.append({"construct_id": cid, "organization_id": oid})
+
+    if created > 0:
+        write_audit_event(
+            driver,
+            action_type="LINK_CREATE",
+            object_type="EngineeredPhageConstruct",
+            object_id="bulk_backfill",
+            actor_id=actor_id,
+            delta={"created_developed_by": created, "details": details},
+            reason=f"回填 DEVELOPED_BY 关系：{created} 条",
+        )
+
+    return {"created": created, "details": details}
+
+
+# ============================================================
+# 查询
+# ============================================================
+
 def get_constructs_by_strategy(driver: Driver, strategy_id: str) -> List[Dict]:
-    """获取使用某个策略的所有构建体"""
     with driver.session() as session:
         result = session.run("""
             MATCH (ec:EngineeredPhageConstruct)-[:IMPLEMENTS]->(es:EngineeringStrategy {strategy_id: $strategy_id})
             OPTIONAL MATCH (ec)-[:DERIVED_FROM]->(ph:Phage)
             OPTIONAL MATCH (ec)-[:TARGETS]->(p:Pathogen)
-            WITH ec, ph, COLLECT(DISTINCT p.species) AS target_species
+            OPTIONAL MATCH (ec)-[:DEVELOPED_BY]->(o:Organization)
+            WITH ec, ph, o, COLLECT(DISTINCT p.species) AS target_species
             RETURN ec.construct_id AS id,
                    ec.public_name AS name,
                    ec.construct_status AS status,
                    ph.name AS parent_phage,
+                   o.canonical_name AS developer,
                    target_species AS target_pathogens
             ORDER BY ec.created_at DESC
         """, strategy_id=strategy_id)
@@ -143,18 +321,12 @@ def link_program_to_construct(
     driver: Driver,
     program_id: str,
     construct_id: str,
-    relationship_type: str = "ASSOCIATED_WITH",  # 按 PRD 9.1 / 11.2 定义
+    relationship_type: str = "ASSOCIATED_WITH",
     actor_id: str = "system"
 ) -> bool:
     """
-    将研发项目（DevelopmentProgram）与工程化构建体（EngineeredPhageConstruct）关联
-
-    按 PRD 定义，关系方向为：
-        (EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(DevelopmentProgram)
-
-    relationship_type 参数保留为可配置项，便于未来切换，但默认使用 PRD 标准。
+    将研发项目与工程化构建体关联，方向：(ec)-[:ASSOCIATED_WITH]->(d)。
     """
-    # 只接受白名单内的关系类型，避免拼写错误悄悄写入
     allowed_types = {"ASSOCIATED_WITH", "USES_CONSTRUCT"}
     if relationship_type not in allowed_types:
         raise ValueError(
@@ -162,7 +334,6 @@ def link_program_to_construct(
         )
 
     with driver.session() as session:
-        # 检查项目是否存在
         prog_check = session.run(
             "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d",
             pid=program_id
@@ -170,7 +341,6 @@ def link_program_to_construct(
         if not prog_check:
             raise ValueError(f"项目 {program_id} 不存在")
 
-        # 检查构建体是否存在
         const_check = session.run(
             "MATCH (ec:EngineeredPhageConstruct {construct_id: $cid}) RETURN ec",
             cid=construct_id
@@ -178,7 +348,6 @@ def link_program_to_construct(
         if not const_check:
             raise ValueError(f"构建体 {construct_id} 不存在")
 
-        # 检查关系是否已存在（按方向 + 类型）
         existing = session.run("""
             MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
             MATCH (d:DevelopmentProgram {program_id: $pid})
@@ -187,10 +356,8 @@ def link_program_to_construct(
         """, pid=program_id, cid=construct_id).single()
 
         if existing and existing['exists']:
-            print(f"ℹ️ 关联已存在: {construct_id} → {program_id} (ASSOCIATED_WITH)")
             return True
 
-        # 创建关联（方向：construct → program）
         session.run("""
             MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
             MATCH (d:DevelopmentProgram {program_id: $pid})
@@ -198,7 +365,25 @@ def link_program_to_construct(
             SET ec.updated_at = datetime()
         """, pid=program_id, cid=construct_id)
 
-        # 审计日志
+        # v0.6 P1-7：顺带补 DEVELOPED_BY（如果还没建）
+        org_row = session.run("""
+            MATCH (o:Organization)-[:DEVELOPS]->(d:DevelopmentProgram {program_id: $pid})
+            RETURN o.organization_id AS oid LIMIT 1
+        """, pid=program_id).single()
+        if org_row:
+            oid = org_row["oid"]
+            already = session.run("""
+                MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                      -[:DEVELOPED_BY]->(o:Organization {organization_id: $oid})
+                RETURN 1 AS x LIMIT 1
+            """, cid=construct_id, oid=oid).single()
+            if not already:
+                session.run("""
+                    MATCH (ec:EngineeredPhageConstruct {construct_id: $cid})
+                    MATCH (o:Organization {organization_id: $oid})
+                    MERGE (ec)-[:DEVELOPED_BY]->(o)
+                """, cid=construct_id, oid=oid)
+
         write_audit_event(
             driver,
             action_type="LINK_CREATE",
@@ -207,23 +392,15 @@ def link_program_to_construct(
             actor_id=actor_id,
             delta={
                 "relation": "ASSOCIATED_WITH",
-                "program_id": program_id
+                "program_id": program_id,
             },
-            reason=f"构建体 {construct_id} 关联项目 {program_id} (ASSOCIATED_WITH)"
+            reason=f"构建体 {construct_id} 关联项目 {program_id}"
         )
 
-        print(f"✅ 关联创建成功: {construct_id} → {program_id} (ASSOCIATED_WITH)")
         return True
 
 
 def get_constructs_by_program(driver: Driver, program_id: str) -> List[Dict]:
-    """
-    获取某个研发项目关联的所有工程化构建体
-
-    兼容两种情况：
-      - 新数据: (ec)-[:ASSOCIATED_WITH]->(d)   [PRD 标准]
-      - 旧数据: (d)-[:USES_CONSTRUCT]->(ec)    [历史遗留]
-    """
     with driver.session() as session:
         result = session.run("""
             MATCH (d:DevelopmentProgram {program_id: $pid})
@@ -237,11 +414,13 @@ def get_constructs_by_program(driver: Driver, program_id: str) -> List[Dict]:
             OPTIONAL MATCH (ec)-[:IMPLEMENTS]->(es:EngineeringStrategy)
             OPTIONAL MATCH (ec)-[:DERIVED_FROM]->(ph:Phage)
             OPTIONAL MATCH (ec)-[:TARGETS]->(p:Pathogen)
+            OPTIONAL MATCH (ec)-[:DEVELOPED_BY]->(o:Organization)
             OPTIONAL MATCH (tc:TechnicalClaim)-[:CLAIMS_ABOUT]->(ec)
             OPTIONAL MATCH (tr:TechnicalResult)-[:RESULT_FOR]->(ec)
             WITH ec,
                  es.strategy_type AS strategy_type,
                  ph.name AS parent_phage,
+                 o.canonical_name AS developer,
                  COLLECT(DISTINCT p.species) AS target_pathogens,
                  COLLECT(DISTINCT tc.claim_type) AS claim_types,
                  COLLECT(DISTINCT tr.result_type) AS result_types
@@ -250,6 +429,7 @@ def get_constructs_by_program(driver: Driver, program_id: str) -> List[Dict]:
                    ec.construct_status AS status,
                    strategy_type,
                    parent_phage,
+                   developer,
                    target_pathogens,
                    claim_types,
                    result_types
@@ -259,13 +439,6 @@ def get_constructs_by_program(driver: Driver, program_id: str) -> List[Dict]:
 
 
 def get_programs_by_strategy(driver: Driver, strategy_id: str) -> List[Dict]:
-    """
-    获取使用某个工程策略的所有项目
-
-    兼容新旧两种关系方向：
-      - 新: (ec)-[:ASSOCIATED_WITH]->(d)
-      - 旧: (d)-[:USES_CONSTRUCT]->(ec)
-    """
     with driver.session() as session:
         result = session.run("""
             MATCH (ec:EngineeredPhageConstruct)-[:IMPLEMENTS]->(es:EngineeringStrategy {strategy_id: $sid})

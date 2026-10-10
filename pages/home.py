@@ -238,7 +238,7 @@ def load_dashboard_data():
             "decisions": one("MATCH (d:DecisionRecord) RETURN count(d)"),
             # ★ 修复：监控企业 = 有情报事件覆盖的企业（而非必须有 monitor 决策）
             "monitored_orgs": one("""
-                MATCH (e:IntelligenceEvent)-[:CONCERNS]->(o:Organization)
+                MATCH (e:IntelligenceEvent)-[:INVOLVES]->(o:Organization)
                 RETURN count(DISTINCT o)
             """),
             # 已进入决策监控名单的企业（子集）
@@ -256,7 +256,7 @@ def load_dashboard_data():
         # ★ 修复：监控企业列表 = 有情报事件关联的企业
         monitored = []
         for row in session.run("""
-            MATCH (e:IntelligenceEvent)-[:CONCERNS]->(org:Organization)
+            MATCH (e:IntelligenceEvent)-[:INVOLVES]->(org:Organization)
             WITH org, count(DISTINCT e) AS event_count
             RETURN org.canonical_name AS name,
                    org.organization_id AS id,

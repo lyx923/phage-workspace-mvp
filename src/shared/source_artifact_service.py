@@ -1,23 +1,16 @@
 # src/shared/source_artifact_service.py
 """
 SourceArtifact 服务（v0.6 统一来源层物理节点）
-
-- 唯一 Label: SourceArtifact
-- 唯一 ID 格式: SRC:XXXXXXXX（大写 8 位 hex）
-- 唯一 MERGE key: url（若 url 为空则用 title+published_date 兜底）
-- 不允许使用 EvidenceSource / SRC-xxxx 等旧格式
-
-引用关系（由其他服务建立）：
-  (IntelligenceEvent)-[:HAS_SOURCE]->(SourceArtifact)
-  (TechnicalClaim)-[:SUPPORTED_BY]->(SourceArtifact)
-  (TechnicalResult)-[:REPORTED_IN]->(SourceArtifact)
-  (CompetitorAssessment)-[:CITES]->(SourceArtifact)
 """
 import uuid
 import hashlib
 from typing import Optional, List
 from neo4j import Driver
 from src.shared.audit_service import write_audit_event
+
+
+# v0.6：credibility_tier 受控词表（与 VOC-CREDIBILITY-TIER 一致）
+VALID_CREDIBILITY_TIERS = {"primary", "secondary", "tertiary", "unknown"}
 
 
 def generate_source_id() -> str:
@@ -47,31 +40,22 @@ def create_source_artifact(
     """
     创建 SourceArtifact（幂等：按 url MERGE，重复调用返回已有 source_id）。
 
-    Args:
-        driver: Neo4j 驱动
-        source_type: 来源类型（受控词表）
-        title: 标题
-        url: 原始 URL 或 DOI（若为空，用 title+published_date 生成 urn）
-        published_date: 发布日期（YYYY-MM-DD 或 "unknown"）
-        authors: 作者列表
-        publisher: 出版机构
-        external_id: PMID / 专利号 / 监管文件编号
-        access_date: 抓取日期
-        credibility_tier: primary / secondary / tertiary
-        actor_id: 操作者
-
-    Returns:
-        str: source_id（SRC:XXXXXXXX）
+    v0.6 修复：credibility_tier 增加受控词表校验。
     """
+    # v0.6：credibility_tier 校验
+    if credibility_tier not in VALID_CREDIBILITY_TIERS:
+        raise ValueError(
+            f"credibility_tier 必须是 {sorted(VALID_CREDIBILITY_TIERS)} 之一，"
+            f"当前值: {credibility_tier!r}"
+        )
+
     authors = authors or []
 
-    # 规范化 url：空 url 用 urn 兜底，避免多个空 url 节点被 MERGE 成一个
     url_key = (url or "").strip()
     if not url_key:
         url_key = _fallback_url(title, published_date)
 
     with driver.session() as session:
-        # 幂等：先查
         existing = session.run(
             """
             MATCH (s:SourceArtifact {url: $url})
@@ -83,7 +67,6 @@ def create_source_artifact(
         if existing and existing.get("source_id"):
             return existing["source_id"]
 
-        # 新建
         source_id = generate_source_id()
         session.run(
             """
@@ -149,10 +132,7 @@ def get_source_artifact_by_url(driver: Driver, url: str) -> Optional[dict]:
 
 
 def list_source_artifacts_for_event(driver: Driver, event_id: str) -> List[dict]:
-    """
-    查询某个 IntelligenceEvent 关联的所有 SourceArtifact。
-    用于 CompetitorBrief.citations 的生成。
-    """
+    """查询某个 IntelligenceEvent 关联的所有 SourceArtifact。"""
     with driver.session() as session:
         result = session.run(
             """

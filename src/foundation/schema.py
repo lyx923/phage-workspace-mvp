@@ -12,6 +12,7 @@ import json
 # =====================================================
 
 CI_SIGNAL_CHAIN = [
+    # 1. 来源 → 信号
     {
         "from": "SourceArtifact",
         "rel": "GENERATED_SIGNAL",
@@ -20,6 +21,7 @@ CI_SIGNAL_CHAIN = [
         "props": ["source_id"],
         "desc": "来源生成信号（一篇文章可抽取多条信号）",
     },
+    # 2. 审核 → 信号
     {
         "from": "Review",
         "rel": "REVIEWS",
@@ -28,6 +30,7 @@ CI_SIGNAL_CHAIN = [
         "props": ["target_object_id"],
         "desc": "审核作用于信号；决策驱动信号状态",
     },
+    # 3. 信号 → 事件
     {
         "from": "IntelligenceSignal",
         "rel": "PROMOTED_TO",
@@ -36,14 +39,34 @@ CI_SIGNAL_CHAIN = [
         "props": ["event_id"],
         "desc": "审核通过后信号晋升为正式情报事件",
     },
+    # 4. 事件 → 组织（v0.6：统一关系名 CONCERNS → INVOLVES）
+    {
+        "from": "IntelligenceEvent",
+        "rel": "INVOLVES",
+        "to": "Organization",
+        "cardinality": "1..N",
+        "props": ["organization_id"],
+        "desc": "事件涉及的组织（v0.6 统一关系名，取代旧 CONCERNS）",
+    },
+    # 5. 事件 → 项目
     {
         "from": "IntelligenceEvent",
         "rel": "AFFECTS",
-        "to": ["Organization", "DevelopmentProgram"],
-        "cardinality": "1..N",
+        "to": "DevelopmentProgram",
+        "cardinality": "0..N",
         "props": ["target_type"],
-        "desc": "事件影响到的组织或研发项目",
+        "desc": "事件影响到的研发项目",
     },
+    # 6. 事件 → 来源（v0.6：SourceArtifact，支持多来源合并 MCI-12）
+    {
+        "from": "IntelligenceEvent",
+        "rel": "HAS_SOURCE",
+        "to": "SourceArtifact",
+        "cardinality": "1..N",
+        "props": ["source_id"],
+        "desc": "事件引用的 SourceArtifact（多来源合并通过多次 HAS_SOURCE 表示）",
+    },
+    # 7. 简报 → 组织
     {
         "from": "IntelligenceProduct",
         "rel": "COVERS",
@@ -51,6 +74,24 @@ CI_SIGNAL_CHAIN = [
         "cardinality": "1..N",
         "props": ["organization_id"],
         "desc": "竞争简报覆盖的组织",
+    },
+    # 8. DecisionBrief → IntelligenceQuestion（PRD 10.2）
+    {
+        "from": "DecisionBrief",
+        "rel": "ANSWERS",
+        "to": "IntelligenceQuestion",
+        "cardinality": "1..1",
+        "props": [],
+        "desc": "决策简报回答的情报问题",
+    },
+    # 9. DecisionRecord → DecisionBrief（PRD 11.3）
+    {
+        "from": "DecisionRecord",
+        "rel": "BASED_ON",
+        "to": ["DecisionBrief", "IntelligenceProduct"],
+        "cardinality": "1..1",
+        "props": [],
+        "desc": "决策基于的简报（v0.6 支持 DecisionBrief 和 IntelligenceProduct 两种）",
     },
 ]
 
@@ -69,7 +110,7 @@ def declare_ci_signal_chain(driver):
             MERGE (m:OntologyModule {module_id: 'CI-SIGNAL-CHAIN'})
             SET m.module_name = 'ci-signal-chain',
                 m.domain      = 'ci',
-                m.version     = '1.0.0',
+                m.version     = '0.6.0',
                 m.status      = 'active',
                 m.owner       = 'platform_team',
                 m.schema_hash = $hash,
@@ -109,8 +150,6 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.evidence_level);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (a:LysisAssay) ON (a.source_domain);")
 
-        # session.run("CREATE CONSTRAINT evidence_id_unique IF NOT EXISTS FOR (e:EvidenceSource) REQUIRE e.evidence_id IS UNIQUE;")
-
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SourceArtifact) REQUIRE s.source_id IS UNIQUE")
         session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_domain)")
         session.run("CREATE INDEX IF NOT EXISTS FOR (s:SourceArtifact) ON (s.source_type)")
@@ -129,7 +168,7 @@ def create_schema(driver):
         session.run("CREATE INDEX proposal_status_idx IF NOT EXISTS FOR (p:EvidenceUpgradeProposal) ON (p.status);")
 
         # -------- AuditEvent 约束与索引 --------
-        session.run("CREATE CONSTRAINT audit_event_id_unique IF NOT EXISTS FOR (ae:AuditEvent) REQUIRE ae.audit_event_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT audit_id_unique IF NOT EXISTS FOR (ae:AuditEvent) REQUIRE ae.audit_id IS UNIQUE;")
         session.run("CREATE INDEX audit_event_correlation_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.correlation_id);")
         session.run("CREATE INDEX audit_event_domain_idx IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.domain);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (ae:AuditEvent) ON (ae.reason);")

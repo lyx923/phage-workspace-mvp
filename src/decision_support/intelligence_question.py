@@ -1,15 +1,5 @@
 # src/decision_support/intelligence_question.py
-"""
-IntelligenceQuestion 服务 —— 符合 PRD 10.1
-
-情报问题（IntelligenceQuestion）是决策链的入口：
-它定义一个明确的情报需求，后续的 DecisionBrief 通过 ANSWERS 关系回答它。
-
-边界原则：
-- IntelligenceQuestion 只是“问题”，不含答案
-- 状态：open / answered / archived
-- 由 analyst 或管理层提出，不自动生成
-"""
+"""IntelligenceQuestion 服务 —— 符合 PRD 10.1"""
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -37,17 +27,7 @@ def create_intelligence_question(
     target_object_id: Optional[str] = None,
     actor_id: str = "system",
 ) -> str:
-    """
-    创建情报问题。
-
-    参数：
-        question_text：问题文本
-        question_type：market / technology / ip / clinical / bd
-        requester_id：提出人
-        priority：high / medium / low
-        target_object_type / target_object_id：可选，把问题绑定到具体对象
-            （例如：Organization / DevelopmentProgram / EngineeringStrategy / Pathogen）
-    """
+    """创建情报问题。"""
     if question_type not in QUESTION_TYPES:
         raise ValueError(f"question_type 必须是 {QUESTION_TYPES} 之一")
 
@@ -78,7 +58,6 @@ def create_intelligence_question(
             tid=target_object_id,
         )
 
-        # 可选：绑定到目标对象
         if target_object_type and target_object_id:
             label_map = {
                 "organization": ("Organization", "organization_id"),
@@ -123,7 +102,8 @@ def get_intelligence_question(driver: Driver, question_id: str) -> Optional[Dict
             """
             MATCH (iq:IntelligenceQuestion {question_id: $qid})
             OPTIONAL MATCH (iq)-[:ABOUT]->(t)
-            OPTIONAL MATCH (b:IntelligenceProduct)-[:ANSWERS]->(iq)
+            OPTIONAL MATCH (b)-[:ANSWERS]->(iq)
+            WHERE b:DecisionBrief OR b:IntelligenceProduct
             RETURN iq,
                    labels(t)[0] AS about_label,
                    t AS about_node,
@@ -146,6 +126,9 @@ def list_intelligence_questions(
     question_type: Optional[str] = None,
     limit: int = 50,
 ) -> List[Dict]:
+    """
+    v0.6 修复：brief_count 同时计入 DecisionBrief 和 IntelligenceProduct。
+    """
     filters = []
     params: Dict = {"limit": limit}
     if status:
@@ -161,7 +144,8 @@ def list_intelligence_questions(
             f"""
             MATCH (iq:IntelligenceQuestion)
             WHERE {where}
-            OPTIONAL MATCH (b:IntelligenceProduct)-[:ANSWERS]->(iq)
+            OPTIONAL MATCH (b)-[:ANSWERS]->(iq)
+            WHERE b:DecisionBrief OR b:IntelligenceProduct
             RETURN iq.question_id AS question_id,
                    iq.question_text AS question_text,
                    iq.question_type AS question_type,
@@ -217,7 +201,7 @@ def link_brief_to_question(
     question_id: str,
     actor_id: str = "system",
 ) -> bool:
-    """建立 (IntelligenceProduct)-[:ANSWERS]->(IntelligenceQuestion) 关系"""
+    """建立 (DecisionBrief|IntelligenceProduct)-[:ANSWERS]->(IntelligenceQuestion)。"""
     with driver.session() as session:
         check_q = session.run(
             "MATCH (iq:IntelligenceQuestion {question_id: $qid}) RETURN iq",
@@ -225,17 +209,27 @@ def link_brief_to_question(
         ).single()
         if not check_q:
             raise ValueError(f"问题 {question_id} 不存在")
+
         check_b = session.run(
-            "MATCH (b:IntelligenceProduct {brief_id: $bid}) RETURN b",
+            """
+            MATCH (b)
+            WHERE (b:DecisionBrief AND b.brief_id = $bid)
+               OR (b:IntelligenceProduct AND b.brief_id = $bid)
+            RETURN b, labels(b) AS labels
+            LIMIT 1
+            """,
             bid=brief_id,
         ).single()
         if not check_b:
-            raise ValueError(f"简报 {brief_id} 不存在")
+            raise ValueError(
+                f"简报 {brief_id} 不存在（既不是 DecisionBrief 也不是 IntelligenceProduct）"
+            )
+        _brief_label = check_b["labels"][0]
 
         session.run(
-            """
-            MATCH (b:IntelligenceProduct {brief_id: $bid})
-            MATCH (iq:IntelligenceQuestion {question_id: $qid})
+            f"""
+            MATCH (b:{_brief_label} {{brief_id: $bid}})
+            MATCH (iq:IntelligenceQuestion {{question_id: $qid}})
             MERGE (b)-[:ANSWERS]->(iq)
             SET iq.updated_at = datetime()
             """,
@@ -243,13 +237,13 @@ def link_brief_to_question(
             qid=question_id,
         )
 
-        write_audit_event(
-            driver,
-            action_type="LINK_CREATE",
-            object_type="IntelligenceQuestion",
-            object_id=question_id,
-            actor_id=actor_id,
-            delta={"brief_id": brief_id},
-            reason=f"简报 {brief_id} 回答情报问题 {question_id}",
-        )
-        return True
+    write_audit_event(
+        driver,
+        action_type="LINK_CREATE",
+        object_type="IntelligenceQuestion",
+        object_id=question_id,
+        actor_id=actor_id,
+        delta={"brief_id": brief_id, "brief_label": _brief_label},
+        reason=f"简报 {brief_id} 回答情报问题 {question_id}",
+    )
+    return True

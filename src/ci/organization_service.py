@@ -238,7 +238,7 @@ def detect_material_changes(
 
         # 2. 检测新事件（在 since_date 之后）
         new_events = session.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
+            MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
             WHERE e.event_date IS NOT NULL AND e.event_date >= $since_date
             RETURN e.event_id AS event_id,
                    e.event_type AS event_type,
@@ -283,7 +283,7 @@ def detect_material_changes(
 
         # 5. 检测状态变化的项目（通过事件推断）
         status_changes = session.run("""
-            MATCH (o:Organization {organization_id: $oid})<-[:CONCERNS]-(e:IntelligenceEvent)
+            MATCH (o:Organization {organization_id: $oid})<-[:INVOLVES]-(e:IntelligenceEvent)
             WHERE e.event_date >= $since_date
               AND (e.event_type = 'pipeline_update' 
                    OR e.event_type = 'program_discontinuation'
@@ -345,7 +345,7 @@ def get_organizations_with_recent_changes(
 
     with driver.session() as session:
         result = session.run("""
-            MATCH (o:Organization)<-[:CONCERNS]-(e:IntelligenceEvent)
+            MATCH (o:Organization)<-[:INVOLVES]-(e:IntelligenceEvent)
             WHERE e.event_date >= $since_date
             WITH o, COUNT(e) AS event_count
             WHERE event_count >= $min_changes

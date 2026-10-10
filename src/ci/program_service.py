@@ -9,7 +9,7 @@ from src.shared.pathogen_service import get_or_create_pathogen
 def generate_program_id() -> str:
     """
     生成研发项目 ID。
-    
+
     Returns:
         str: 格式为 CI:PROG:XXXXXXXX 的项目唯一标识符
     """
@@ -24,32 +24,33 @@ def create_development_program(
     development_stage: str = "discovery",
     modality: Optional[str] = None,
     target_pathogen_species: Optional[List[str]] = None,
+    strategy_ids: Optional[List[str]] = None,   # v0.6 P1-6：直接关联 USES_STRATEGY
     actor_id: str = "system",
 ) -> str:
     """
     创建研发项目（PRD 12.1）。
-    
+
     自动建立：
         - (Organization)-[:DEVELOPS]->(Program)
         - (Program)-[:TARGETS_PATHOGEN]->(Pathogen)  [按物种自动创建或复用 Pathogen 节点]
-    
+        - (Program)-[:USES_STRATEGY]->(EngineeringStrategy)  [v0.6 新增，PRD 11.1]
+
     Args:
         driver: Neo4j 数据库驱动
         organization_id: 所属组织 ID
         canonical_name: 项目规范名称
-        program_type: 项目类型（therapeutic / diagnostic / platform / research）
-        development_stage: 研发阶段（discovery / preclinical / phase_1 等）
-        modality: 模态（natural_phage / engineered_phage / cocktail）
-        target_pathogen_species: 靶向病原体物种列表（如 ["Klebsiella pneumoniae"]）
-        actor_id: 操作者标识（默认 system）
-    
+        program_type: 项目类型
+        development_stage: 研发阶段
+        modality: 模态
+        target_pathogen_species: 靶向病原体物种列表
+        strategy_ids: 关联的 EngineeringStrategy.strategy_id 列表（可选）
+        actor_id: 操作者标识
+
     Returns:
         str: 创建的项目 ID（CI:PROG:XXXXXXXX）
-    
-    Raises:
-        ValueError: 当组织不存在时抛出
     """
     target_pathogen_species = target_pathogen_species or []
+    strategy_ids = strategy_ids or []
     prog_id = generate_program_id()
 
     with driver.session() as session:
@@ -87,7 +88,7 @@ def create_development_program(
             oid=organization_id,
         )
 
-        # 3. 关联病原体（使用 species 自动获取或创建 Pathogen 节点）
+        # 3. 关联病原体
         for species in target_pathogen_species:
             pathogen_id = get_or_create_pathogen(
                 driver,
@@ -98,13 +99,32 @@ def create_development_program(
                 """
                 MATCH (d:DevelopmentProgram {program_id: $prog_id})
                 MATCH (p:Pathogen {pathogen_id: $pathogen_id})
-                CREATE (d)-[:TARGETS_PATHOGEN]->(p)
+                MERGE (d)-[:TARGETS_PATHOGEN]->(p)
                 """,
                 prog_id=prog_id,
                 pathogen_id=pathogen_id,
             )
 
-        # 4. 审计日志
+        # 4. 关联工程策略（v0.6 P1-6：直接建立 USES_STRATEGY）
+        for sid in strategy_ids:
+            es_chk = session.run(
+                "MATCH (es:EngineeringStrategy {strategy_id: $sid}) RETURN es LIMIT 1",
+                sid=sid,
+            ).single()
+            if not es_chk:
+                print(f"⚠️ EngineeringStrategy {sid} 不存在，跳过 USES_STRATEGY")
+                continue
+            session.run(
+                """
+                MATCH (d:DevelopmentProgram {program_id: $prog_id})
+                MATCH (es:EngineeringStrategy {strategy_id: $sid})
+                MERGE (d)-[:USES_STRATEGY]->(es)
+                """,
+                prog_id=prog_id,
+                sid=sid,
+            )
+
+        # 5. 审计日志
         write_audit_event(
             driver,
             action_type="CREATE",
@@ -115,11 +135,121 @@ def create_development_program(
                 "canonical_name": canonical_name,
                 "organization_id": organization_id,
                 "target_pathogen_species": target_pathogen_species,
+                "strategy_ids": strategy_ids,
             },
             reason=f"创建研发项目: {canonical_name}",
         )
 
         return prog_id
+
+
+def link_program_to_strategy(
+    driver: Driver,
+    program_id: str,
+    strategy_id: str,
+    actor_id: str = "system",
+) -> bool:
+    """
+    v0.6 P1-6：建立 (DevelopmentProgram)-[:USES_STRATEGY]->(EngineeringStrategy) 关系。
+    幂等。
+    """
+    with driver.session() as s:
+        d = s.run(
+            "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d LIMIT 1",
+            pid=program_id,
+        ).single()
+        if not d:
+            raise ValueError(f"DevelopmentProgram {program_id} 不存在")
+        es = s.run(
+            "MATCH (es:EngineeringStrategy {strategy_id: $sid}) RETURN es LIMIT 1",
+            sid=strategy_id,
+        ).single()
+        if not es:
+            raise ValueError(f"EngineeringStrategy {strategy_id} 不存在")
+
+        existing = s.run(
+            """
+            MATCH (d:DevelopmentProgram {program_id: $pid})-[:USES_STRATEGY]->(es:EngineeringStrategy {strategy_id: $sid})
+            RETURN 1 AS x LIMIT 1
+            """,
+            pid=program_id,
+            sid=strategy_id,
+        ).single()
+        if existing:
+            return True
+
+        s.run(
+            """
+            MATCH (d:DevelopmentProgram {program_id: $pid})
+            MATCH (es:EngineeringStrategy {strategy_id: $sid})
+            MERGE (d)-[:USES_STRATEGY]->(es)
+            """,
+            pid=program_id,
+            sid=strategy_id,
+        )
+
+    write_audit_event(
+        driver,
+        action_type="LINK_CREATE",
+        object_type="DevelopmentProgram",
+        object_id=program_id,
+        actor_id=actor_id,
+        delta={
+            "relation": "USES_STRATEGY",
+            "strategy_id": strategy_id,
+        },
+        reason=f"项目 {program_id} 关联策略 {strategy_id}",
+    )
+    return True
+
+
+def backfill_program_uses_strategy(
+    driver: Driver,
+    actor_id: str = "backfill",
+) -> dict:
+    """
+    v0.6 P1-6 backfill：
+    从已有的 (ec:EngineeredPhageConstruct)-[:ASSOCIATED_WITH]->(d:DevelopmentProgram)
+    和 (ec)-[:IMPLEMENTS]->(es:EngineeringStrategy)
+    推导 (d)-[:USES_STRATEGY]->(es)，幂等。
+
+    返回：{"created": N, "details": [...]}
+    """
+    created = 0
+    details = []
+
+    with driver.session() as s:
+        # 找出所有应该有但还没有 USES_STRATEGY 的 (d, es) 组合
+        rows = list(s.run("""
+            MATCH (d:DevelopmentProgram)<-[:ASSOCIATED_WITH]-(ec:EngineeredPhageConstruct)
+                  -[:IMPLEMENTS]->(es:EngineeringStrategy)
+            WHERE NOT (d)-[:USES_STRATEGY]->(es)
+            RETURN DISTINCT d.program_id AS pid, es.strategy_id AS sid
+        """))
+
+        for r in rows:
+            pid = r["pid"]
+            sid = r["sid"]
+            s.run("""
+                MATCH (d:DevelopmentProgram {program_id: $pid})
+                MATCH (es:EngineeringStrategy {strategy_id: $sid})
+                MERGE (d)-[:USES_STRATEGY]->(es)
+            """, pid=pid, sid=sid)
+            created += 1
+            details.append({"program_id": pid, "strategy_id": sid})
+
+    if created > 0:
+        write_audit_event(
+            driver,
+            action_type="LINK_CREATE",
+            object_type="DevelopmentProgram",
+            object_id="bulk_backfill",
+            actor_id=actor_id,
+            delta={"created_usES_STRATEGY": created, "details": details},
+            reason=f"回填 USES_STRATEGY 关系：{created} 条",
+        )
+
+    return {"created": created, "details": details}
 
 
 def update_program_status(
@@ -131,21 +261,8 @@ def update_program_status(
 ):
     """
     更新研发项目状态（PRD 12.3）。
-    
-    当项目状态变化时，关联触发该变化的 IntelligenceEvent。
-    
-    Args:
-        driver: Neo4j 数据库驱动
-        program_id: 项目 ID
-        new_status: 新状态
-        source_event_id: 触发状态变化的情报事件 ID
-        actor_id: 操作者标识
-    
-    Raises:
-        ValueError: 当项目不存在时抛出
     """
     with driver.session() as session:
-        # 1. 查询当前状态
         old = session.run(
             "MATCH (d:DevelopmentProgram {program_id: $pid}) RETURN d.program_status AS status",
             pid=program_id,
@@ -153,7 +270,6 @@ def update_program_status(
         if not old:
             raise ValueError(f"项目 {program_id} 不存在")
 
-        # 2. 更新状态
         session.run(
             """
             MATCH (d:DevelopmentProgram {program_id: $pid})
@@ -163,18 +279,16 @@ def update_program_status(
             new_status=new_status,
         )
 
-        # 3. 关联触发事件
         session.run(
             """
             MATCH (d:DevelopmentProgram {program_id: $pid})
             MATCH (e:IntelligenceEvent {event_id: $source_event_id})
-            CREATE (e)-[:AFFECTS]->(d)
+            MERGE (e)-[:AFFECTS]->(d)
             """,
             pid=program_id,
             source_event_id=source_event_id,
         )
 
-        # 4. 审计日志
         write_audit_event(
             driver,
             action_type="STATUS_CHANGE",
