@@ -398,3 +398,41 @@ button.nav-item-btn.active {
 .le-verified { background: #D1FAE5; color: #065F46; }
 .le-progress { background: var(--c-warning-light); color: #92400E; }
 .le-pending  { background: #F1F5F9; color: #475569; }
+/* ============================================================
+   顶部跑马灯进度条
+   ============================================================ */
+#top-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 9999;
+    pointer-events: none;      /* 不拦截鼠标事件 */
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 0.15s ease-in-out;
+}
+#top-progress::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -40%;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--c-primary, #1B6CA8) 50%,
+        transparent 100%
+    );
+    animation: top-progress-move 1.2s linear infinite;
+}
+#top-progress.loading {
+    opacity: 1;
+}
+@keyframes top-progress-move {
+    0%   { left: -40%; }
+    100% { left: 100%; }
+}

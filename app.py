@@ -1,7 +1,7 @@
 # app.py
 import dash
 import dash_bootstrap_components as dbc
-from dash import html, dcc, Input, Output, State, no_update
+from dash import html, dcc, Input, Output, State, no_update, clientside_callback
 
 from components.navbar import create_navbar
 from components.sidebar import create_sidebar
@@ -59,10 +59,19 @@ def _build_breadcrumb(pathname: str):
     )
 
 
+# ============================================================
+# 布局
+# ============================================================
 app.layout = html.Div(
     id="app-root",
     className="app-root",
     children=[
+        # ★ 顶部进度条（fixed 定位，永远在最上层，不占空间）
+        html.Div(id="top-progress"),
+
+        # ★ 隐藏占位：用于触发 clientside_callback
+        dcc.Store(id="progress-hook", data=0),
+
         dcc.Location(id="url", refresh=False),
 
         dcc.Store(id="store-sidebar-collapsed", data=True),
@@ -90,17 +99,11 @@ app.layout = html.Div(
                     children=[
                         html.Div(id="breadcrumb-bar",
                                  className="breadcrumb-bar"),
-                        dcc.Loading(
-                            id="page-loading",
-                            type="default",       # ★ 改回细长条
-                            color="#1B6CA8",
-                            fullscreen=False,
-                            delay_show=300,
-                            children=html.Div(
-                                id="page-outlet",
-                                className="page-outlet",
-                                children=[dash.page_container],
-                            ),
+                        # ★ 删掉 dcc.Loading，改成裸容器
+                        html.Div(
+                            id="page-outlet",
+                            className="page-outlet",
+                            children=[dash.page_container],
                         ),
                     ],
                 ),
@@ -121,7 +124,6 @@ app.layout = html.Div(
             ],
         ),
 
-        # ★ 通知面板：预先创建空壳，只切换 display
         html.Div(
             id="notify-toast",
             style={"display": "none"},
@@ -139,13 +141,82 @@ app.layout = html.Div(
                          style={"fontWeight": "700", "marginBottom": "8px",
                                 "paddingBottom": "6px",
                                 "borderBottom": "1px solid var(--c-border)"}),
-                html.Div(id="notify-body"),   # ★ 内容动态更新
+                html.Div(id="notify-body"),
             ],
-            # 用 style 里的 position 定义面板位置
         ),
 
         create_confirm_dialog(),
     ],
+)
+
+
+# ============================================================
+# ★ 顶部进度条 hook：监听所有 _dash-update-component 请求
+# ============================================================
+clientside_callback(
+    """
+    function(_) {
+        if (window.__topProgressBound) {
+            return window.dash_clientside.no_update;
+        }
+        window.__topProgressBound = true;
+
+        var pending = 0;
+
+        function show() {
+            var bar = document.getElementById('top-progress');
+            if (bar) bar.classList.add('loading');
+        }
+        function hide() {
+            var bar = document.getElementById('top-progress');
+            if (bar) bar.classList.remove('loading');
+        }
+
+        // ── 拦截 XMLHttpRequest（Dash 用 XHR 发回调） ──
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function() {
+            this.__url = arguments[1] || '';
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+            var isDash = (this.__url || '').indexOf('_dash-update-component') !== -1;
+            if (isDash) {
+                pending += 1;
+                show();
+                this.addEventListener('loadend', function() {
+                    pending = Math.max(0, pending - 1);
+                    if (pending === 0) hide();
+                });
+            }
+            return origSend.apply(this, arguments);
+        };
+
+        // ── 拦截 fetch（有的 Dash 版本用 fetch） ──
+        var origFetch = window.fetch;
+        if (origFetch) {
+            window.fetch = function() {
+                var url = (arguments[0] && arguments[0].url) || arguments[0] || '';
+                var isDash = String(url).indexOf('_dash-update-component') !== -1;
+                if (isDash) {
+                    pending += 1;
+                    show();
+                    return origFetch.apply(this, arguments).finally(function() {
+                        pending = Math.max(0, pending - 1);
+                        if (pending === 0) hide();
+                    });
+                }
+                return origFetch.apply(this, arguments);
+            };
+        }
+
+        return 1;
+    }
+    """,
+    Output("progress-hook", "data"),
+    Input("progress-hook", "data"),
+    prevent_initial_call=False,
 )
 
 
@@ -224,7 +295,7 @@ def cb_llm_status(_):
 
 
 # ============================================================
-# 徽章：动态查询待审核 Review 数量
+# 徽章
 # ============================================================
 @app.callback(
     Output("badge-review", "children"),
@@ -246,9 +317,8 @@ def cb_badge_review(_):
 
 
 # ============================================================
-# 通知面板（★ 三处解耦：内容更新 / 显示切换 / 关闭）
+# 通知面板
 # ============================================================
-# ① 点击铃铛 → toggle display
 @app.callback(
     Output("notify-toast", "style"),
     Output("store-notify-open", "data"),
@@ -265,13 +335,11 @@ def cb_notify_toggle(n_clicks, is_open):
          "background": "var(--c-surface)",
          "border": "1px solid var(--c-border)",
          "borderRadius": "10px", "padding": "16px",
-         "boxShadow": "0 8px 24px rgba(0,0,0,0.12)",
-         "position": "fixed", "top": "68px", "right": "20px"},
+         "boxShadow": "0 8px 24px rgba(0,0,0,0.12)"},
         True,
     )
 
 
-# ② 面板内容刷新（每次打开、或徽章 interval 触发时重新渲染）
 @app.callback(
     Output("notify-body", "children"),
     Input("store-notify-open", "data"),
@@ -280,7 +348,6 @@ def cb_notify_toggle(n_clicks, is_open):
 def cb_notify_body(is_open, _):
     if not is_open:
         return []
-    # 查数据...
     pending_count = 0
     danger_events = []
     try:
@@ -334,7 +401,6 @@ def cb_notify_body(is_open, _):
     return items
 
 
-# ③ 关闭按钮
 @app.callback(
     Output("notify-toast", "style", allow_duplicate=True),
     Output("store-notify-open", "data", allow_duplicate=True),
