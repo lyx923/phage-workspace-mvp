@@ -1,4 +1,4 @@
-# pages/ci.py
+# _legacy_streamlit/ci.py
 import streamlit as st
 import pandas as pd
 import json

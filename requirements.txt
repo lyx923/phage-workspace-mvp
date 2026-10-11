@@ -1,6 +1,17 @@
+# Core backend
 neo4j==6.2.0
 pandas==3.0.3
 openai==2.45.0
 python-dotenv==1.2.2
+redis>=5.0.0
+
+# Notebook (可选，保留)
 jupyter==1.1.1
 notebook==7.6.0
+
+# Dash frontend
+dash>=2.17.0
+dash-bootstrap-components>=1.6.0
+dash-iconify>=0.1.2
+dash-ag-grid>=31.2.0
+dash-cytoscape>=1.0.2

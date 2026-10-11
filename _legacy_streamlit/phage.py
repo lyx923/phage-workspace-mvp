@@ -1,4 +1,4 @@
-# pages/phage.py
+# _legacy_streamlit/phage.py
 import streamlit as st
 import pandas as pd
 import random

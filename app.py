@@ -1,190 +1,349 @@
 # app.py
-import streamlit as st
-import os
-from config import get_driver
+import dash
+import dash_bootstrap_components as dbc
+from dash import html, dcc, Input, Output, State, no_update
 
-# 数据导入相关
-from src.scientific.import_service import (
-    load_phages_from_lysis_csv_simple,
-    import_golden_rules,
-    clear_database,
-    load_cases_from_csv,
-    load_phages_from_csv,
-    load_patients_from_csv,
-    load_organizations_from_csv,
-    load_programs_from_csv,
-    load_events_from_csv,
+from components.navbar import create_navbar
+from components.sidebar import create_sidebar
+from components.confirm_dialog import create_confirm_dialog
+
+app = dash.Dash(
+    __name__,
+    use_pages=True,
+    external_stylesheets=[dbc.themes.BOOTSTRAP, dbc.icons.BOOTSTRAP],
+    suppress_callback_exceptions=True,
+    title="噬清森 AI 精准抗感染平台",
 )
-from src.foundation.schema import (
-    create_schema,
-    create_ontology_modules,
-    create_controlled_vocabularies,
-)
-
-# ★ 新增：监控源相关
-from scripts.monitor_runner import add_global_source, _list_global_sources_raw
-
-# ---------- 获取项目根目录 ----------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# ---------- 页面设置 ----------
-st.set_page_config(page_title="噬菌体智能平台", page_icon="", layout="wide")
+server = app.server
 
 
-# ---------- 缓存数据库连接 ----------
-@st.cache_resource
-def get_db():
-    return get_driver()
+BREADCRUMB_MAP = {
+    "/":                             [("主控台", None)],
+    "/scientific/phage-library":     [("科学域", None), ("噬菌体库", None)],
+    "/scientific/host-strain":       [("科学域", None), ("宿主菌株图谱", None)],
+    "/scientific/lysis-assay":       [("科学域", None), ("裂解实验", None)],
+    "/scientific/clinical-cases":    [("科学域", None), ("临床病例", None)],
+    "/scientific/evidence-packages": [("科学域", None), ("证据包管理", None)],
+    "/ci/intelligence-board":        [("情报域", None), ("情报概览", None)],
+    "/ci/programs":                  [("情报域", None), ("开发项目", None)],
+    "/ci/events":                    [("情报域", None), ("情报事件", None)],
+    "/ci/strategies":                [("情报域", None), ("工程策略", None)],
+    "/ci/tech-assessment":           [("情报域", None), ("技术评估", None)],
+    "/ci/decision-records":          [("情报域", None), ("决策记录", None)],
+    "/knowledge-graph":              [("知识图谱", None)],
+    "/ai-assistant":                 [("AI 助手", None)],
+    "/admin/data-import":            [("系统管理", None), ("数据导入", None)],
+    "/admin/schema":                 [("系统管理", None), ("Schema 管理", None)],
+    "/admin/audit-log":              [("系统管理", None), ("审计日志", None)],
+    "/admin/ontology-module":        [("系统管理", None), ("Ontology 模块", None)],
+}
 
 
-# ---------- 连接数据库 ----------
-try:
-    driver = get_db()
-    with driver.session() as session:
-        session.run("RETURN 1")
-except Exception as e:
-    st.error(f"⚠️ 无法连接 Neo4j 数据库，请检查 config.py 配置。错误: {str(e)}")
-    st.stop()
-
-
-# ---------- 定义页面路由 ----------
-pg = st.navigation(
-    [
-        st.Page("pages/home.py", title="首页", icon=":material/dashboard:", default=True),
-        st.Page("pages/phage.py", title="噬菌体配型", icon=":material/science:"),
-        st.Page("pages/ci.py", title="CI竞争情报", icon=":material/analytics:"),
-    ]
-)
-
-
-# ============================================================
-# 侧边栏（全局）
-# ============================================================
-with st.sidebar:
-    st.markdown(
-        """
-        <div style="
-            font-size: 1.8rem; font-weight: 700; color: #0068c9;
-            padding: 0.5rem 0 0.2rem 0; letter-spacing: -0.5px;
-            border-bottom: 2px solid #e6e9ef; margin-bottom: 0.8rem;
-        ">
-             噬菌体智能平台
-        </div>
-        """,
-        unsafe_allow_html=True
+def _build_breadcrumb(pathname: str):
+    crumbs = BREADCRUMB_MAP.get(
+        pathname, [(pathname.strip("/") or "主控台", None)])
+    items = []
+    for i, (label, href) in enumerate(crumbs):
+        is_last = i == len(crumbs) - 1
+        if is_last:
+            items.append(html.Li(label, className="breadcrumb-item active",
+                                  **{"aria-current": "page"}))
+        else:
+            items.append(html.Li(
+                html.A(label, href=href, className="bc-link") if href else label,
+                className="breadcrumb-item"))
+    return html.Nav(
+        html.Ol(items, className="breadcrumb mb-0"),
+        className="breadcrumb-nav",
+        **{"aria-label": "breadcrumb"},
     )
 
-    # ---- 清空并重新导入全部数据 ----
-    if st.button("🔄 清空并重新导入全部数据", type="secondary", width="stretch"):
-        with st.status("执行数据导入...", expanded=True) as status:
-            status.update(label="正在清空数据库...")
-            clear_database()
-            st.write("✅ 数据库已清空")
 
-            status.update(label="创建约束、索引...")
-            create_schema(driver)
-            create_ontology_modules(driver)
-            create_controlled_vocabularies(driver)
-            st.write("✅ 约束、索引已创建")
+app.layout = html.Div(
+    id="app-root",
+    className="app-root",
+    children=[
+        dcc.Location(id="url", refresh=False),
 
-            status.update(label="导入患者主数据...")
-            load_patients_from_csv(os.path.join(BASE_DIR, "data", "patients.csv"))
-            st.write("✅ 患者主数据导入完成")
+        dcc.Store(id="store-sidebar-collapsed", data=True),
+        dcc.Store(id="store-chat-history", data=[]),
+        dcc.Store(id="store-confirm-payload", data=None),
+        dcc.Store(id="store-active-danger-id", data=None),
+        dcc.Store(id="store-db-stats", data={}),
+        dcc.Store(id="mega-menu-toggle-store", data=0),
+        dcc.Store(id="store-schema-pending", data=False),
+        dcc.Store(id="store-kg-fullscreen", data=0),
+        dcc.Store(id="store-notify-open", data=False),
 
-            status.update(label="导入噬菌体互作...")
-            load_phages_from_csv(os.path.join(BASE_DIR, "data", "phage_interactions.csv"))
-            st.write("✅ 噬菌体互作导入完成")
+        dcc.Interval(id="interval-global", interval=7_200_000, n_intervals=0),
+        dcc.Interval(id="interval-badge", interval=60_000, n_intervals=0),
 
-            status.update(label="导入临床病例...")
-            load_cases_from_csv(os.path.join(BASE_DIR, "data", "cases.csv"))
-            st.write("✅ 病例导入完成")
+        create_navbar(),
 
-            status.update(label="导入裂解谱数据...")
-            result = load_phages_from_lysis_csv_simple(
-                os.path.join(BASE_DIR, "data", "肺克数据脱敏.csv")
-            )
-            st.write(f"✅ 裂解谱导入完成，新增 {result['positive_interactions']} 条记录")
+        html.Div(
+            className="shell-wrapper",
+            children=[
+                create_sidebar(),
+                html.Div(
+                    id="main-area",
+                    className="main-area expanded",
+                    children=[
+                        html.Div(id="breadcrumb-bar",
+                                 className="breadcrumb-bar"),
+                        dcc.Loading(
+                            id="page-loading",
+                            type="default",       # ★ 改回细长条
+                            color="#1B6CA8",
+                            fullscreen=False,
+                            delay_show=300,
+                            children=html.Div(
+                                id="page-outlet",
+                                className="page-outlet",
+                                children=[dash.page_container],
+                            ),
+                        ),
+                    ],
+                ),
+            ],
+        ),
 
-            status.update(label="导入黄金配型知识库...")
-            import_golden_rules()
-            st.write("✅ 黄金配型知识库导入完成")
+        html.Div(
+            className="status-bar",
+            children=[
+                html.Span(id="status-neo4j", className="status-item",
+                          children=[html.Span(className="status-dot dot-ok"),
+                                    " Neo4j 已连接"]),
+                html.Span(id="status-llm", className="status-item",
+                          children=[html.Span(className="status-dot dot-ok"),
+                                    " DeepSeek 已配置"]),
+                html.Span(id="status-sync-time", className="status-item"),
+                html.Span("lyx", className="status-user"),
+            ],
+        ),
 
-            status.update(label="导入组织...")
-            load_organizations_from_csv(
-                driver, os.path.join(BASE_DIR, "data", "ci_organizations.csv")
-            )
-            st.write("✅ 组织导入完成")
+        # ★ 通知面板：预先创建空壳，只切换 display
+        html.Div(
+            id="notify-toast",
+            style={"display": "none"},
+            children=[
+                html.Button(
+                    html.I(className="bi bi-x-lg"),
+                    id="btn-notify-close",
+                    n_clicks=0,
+                    style={"position": "absolute", "top": "10px", "right": "10px",
+                           "background": "none", "border": "none",
+                           "color": "var(--c-text-muted)", "cursor": "pointer",
+                           "fontSize": "14px", "padding": "4px"},
+                ),
+                html.Div("通知中心",
+                         style={"fontWeight": "700", "marginBottom": "8px",
+                                "paddingBottom": "6px",
+                                "borderBottom": "1px solid var(--c-border)"}),
+                html.Div(id="notify-body"),   # ★ 内容动态更新
+            ],
+            # 用 style 里的 position 定义面板位置
+        ),
 
-            status.update(label="导入项目...")
-            load_programs_from_csv(
-                driver, os.path.join(BASE_DIR, "data", "ci_programs.csv")
-            )
-            st.write("✅ 项目导入完成")
+        create_confirm_dialog(),
+    ],
+)
 
-            status.update(label="导入事件...")
-            load_events_from_csv(
-                driver, os.path.join(BASE_DIR, "data", "ci_events.csv")
-            )
-            st.write("✅ 事件导入完成")
 
-            # ============================================================
-            # ★ 新增：添加默认监控源
-            # ============================================================
-            status.update(label="添加默认监控源...")
-            DEFAULT_SOURCES = [
-                {
-                    "url": (
-                        "https://weixin.sogou.com/weixin?type=2&s_from=input"
-                        "&query=创噬纪CreatiPhage&ie=utf8&_sug_=n&_sug_type_="
-                    ),
-                    "type": "sogou_wechat",
-                    "label": "创噬纪 CreatiPhage",
-                },
-            ]
+# ============================================================
+# 侧边栏 / 面包屑
+# ============================================================
+@app.callback(
+    Output("sidebar-panel", "className"),
+    Output("main-area", "className"),
+    Output("store-sidebar-collapsed", "data"),
+    Input("btn-sidebar-toggle", "n_clicks"),
+    Input("url", "pathname"),
+    prevent_initial_call=True,
+)
+def cb_sidebar_toggle(n_clicks, _pathname):
+    from dash import ctx
+    if ctx.triggered_id == "url":
+        return no_update, no_update, no_update
+    expanded = (n_clicks or 0) % 2 == 1
+    if expanded:
+        return "sidebar-panel expanded", "main-area collapsed", False
+    return "sidebar-panel collapsed", "main-area expanded", True
 
-            # 先读取已有监控源，做幂等去重
-            try:
-                existing_urls = {
-                    (g.get("url") or "").strip()
-                    for g in _list_global_sources_raw(driver)
-                }
-            except Exception:
-                existing_urls = set()
 
-            added_src, skipped_src = 0, 0
-            for src in DEFAULT_SOURCES:
-                if src["url"] in existing_urls:
-                    skipped_src += 1
-                    st.write(f"⏭️ 监控源已存在，跳过：{src['label']}")
-                    continue
-                try:
-                    add_global_source(src["url"], src["type"], src["label"])
-                    added_src += 1
-                    st.write(f"✅ 已添加监控源：{src['label']}")
-                except Exception as e:
-                    st.write(f"⚠️ 监控源 '{src['label']}' 添加失败：{e}")
+@app.callback(
+    Output("breadcrumb-bar", "children"),
+    Input("url", "pathname"),
+)
+def cb_breadcrumb(pathname):
+    return _build_breadcrumb(pathname or "/")
 
-            st.write(f"✅ 监控源添加完成（新增 {added_src}，跳过 {skipped_src}）")
 
-            status.update(label="全部完成！", state="complete")
+# ============================================================
+# 状态栏
+# ============================================================
+@app.callback(
+    Output("status-sync-time", "children"),
+    Input("interval-global", "n_intervals"),
+)
+def cb_sync_time(_):
+    from datetime import datetime
+    return f"最后同步: {datetime.now().strftime('%H:%M:%S')}"
 
-        st.success("🎉 所有数据已重新导入！")
-        st.rerun()
 
-    st.markdown("---")
+@app.callback(
+    Output("status-neo4j", "children"),
+    Input("interval-global", "n_intervals"),
+)
+def cb_neo4j_status(_):
+    try:
+        from config import get_driver
+        with get_driver().session() as s:
+            s.run("RETURN 1").single()
+        return [html.Span(className="status-dot dot-ok"), " Neo4j 已连接"]
+    except Exception:
+        return [html.Span(className="status-dot dot-error"), " Neo4j 未连接"]
 
-    # ---- 系统状态 ----
-    st.subheader("⚙️ 系统状态")
+
+@app.callback(
+    Output("status-llm", "children"),
+    Input("interval-global", "n_intervals"),
+)
+def cb_llm_status(_):
     try:
         from config import Config
-        if Config.DS_API_KEY and Config.DS_API_KEY != "your_api_key_here":
-            st.caption("✅ DeepSeek API 已配置")
-        else:
-            st.caption("⚠️ DeepSeek API 未配置，LLM 功能不可用")
+        key = (getattr(Config, "DS_API_KEY", "")
+               or getattr(Config, "DEEPSEEK_API_KEY", ""))
+        if key:
+            return [html.Span(className="status-dot dot-ok"),
+                    " DeepSeek 已配置"]
+        return [html.Span(className="status-dot dot-warning"),
+                " DeepSeek 未配置"]
     except Exception:
-        st.caption("⚠️ 无法读取配置")
+        return [html.Span(className="status-dot dot-warning"),
+                " DeepSeek 未配置"]
 
-    st.caption("演示版本，基于本地 Neo4j 数据库")
+
+# ============================================================
+# 徽章：动态查询待审核 Review 数量
+# ============================================================
+@app.callback(
+    Output("badge-review", "children"),
+    Input("interval-badge", "n_intervals"),
+)
+def cb_badge_review(_):
+    try:
+        from config import get_driver
+        with get_driver().session() as s:
+            rec = s.run("""
+                MATCH (r:Review)
+                WHERE r.decision = 'pending'
+                RETURN count(r) AS n
+            """).single()
+            n = rec["n"] if rec else 0
+        return str(n) if n > 0 else ""
+    except Exception:
+        return ""
 
 
-pg.run()
+# ============================================================
+# 通知面板（★ 三处解耦：内容更新 / 显示切换 / 关闭）
+# ============================================================
+# ① 点击铃铛 → toggle display
+@app.callback(
+    Output("notify-toast", "style"),
+    Output("store-notify-open", "data"),
+    Input("btn-notify", "n_clicks"),
+    State("store-notify-open", "data"),
+    prevent_initial_call=True,
+)
+def cb_notify_toggle(n_clicks, is_open):
+    if is_open:
+        return {"display": "none"}, False
+    return (
+        {"position": "fixed", "top": "68px", "right": "20px",
+         "zIndex": "2000", "width": "320px", "display": "block",
+         "background": "var(--c-surface)",
+         "border": "1px solid var(--c-border)",
+         "borderRadius": "10px", "padding": "16px",
+         "boxShadow": "0 8px 24px rgba(0,0,0,0.12)",
+         "position": "fixed", "top": "68px", "right": "20px"},
+        True,
+    )
+
+
+# ② 面板内容刷新（每次打开、或徽章 interval 触发时重新渲染）
+@app.callback(
+    Output("notify-body", "children"),
+    Input("store-notify-open", "data"),
+    Input("interval-badge", "n_intervals"),
+)
+def cb_notify_body(is_open, _):
+    if not is_open:
+        return []
+    # 查数据...
+    pending_count = 0
+    danger_events = []
+    try:
+        from config import get_driver
+        with get_driver().session() as s:
+            rec = s.run("""
+                MATCH (r:Review)
+                WHERE r.decision = 'pending'
+                RETURN count(r) AS n
+            """).single()
+            pending_count = rec["n"] if rec else 0
+            rows = list(s.run("""
+                MATCH (a:AuditEvent)
+                WHERE a.action_type IN ['DANGER_OP', 'DELETE']
+                RETURN a.audit_id AS id,
+                       a.action_type AS action,
+                       a.object_id AS obj,
+                       a.timestamp AS ts
+                ORDER BY a.timestamp DESC LIMIT 3
+            """))
+            danger_events = [dict(r) for r in rows]
+    except Exception:
+        pass
+
+    items = []
+    if pending_count > 0:
+        items.append(html.Div([
+            html.I(className="bi bi-clipboard-check me-2",
+                   style={"color": "var(--c-primary)"}),
+            html.Span(f"有 {pending_count} 个待审核项"),
+            html.A("去处理 →", href="/admin/audit-log",
+                   style={"float": "right", "fontSize": "12px",
+                          "color": "var(--c-primary)",
+                          "textDecoration": "none"}),
+        ], style={"padding": "8px 0",
+                  "borderBottom": "1px solid var(--c-border)"}))
+
+    for e in danger_events[:3]:
+        items.append(html.Div([
+            html.I(className="bi bi-exclamation-triangle me-2",
+                   style={"color": "var(--c-danger)"}),
+            html.Span(f"[{e['action']}] {e.get('obj', '')}",
+                      style={"fontSize": "12px"}),
+        ], style={"padding": "6px 0"}))
+
+    if not items:
+        items = [html.Div("暂无新通知",
+                          style={"color": "var(--c-text-muted)",
+                                 "textAlign": "center",
+                                 "padding": "12px 0"})]
+    return items
+
+
+# ③ 关闭按钮
+@app.callback(
+    Output("notify-toast", "style", allow_duplicate=True),
+    Output("store-notify-open", "data", allow_duplicate=True),
+    Input("btn-notify-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def cb_notify_close(_):
+    return {"display": "none"}, False
+
+
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=8501)
