@@ -252,7 +252,7 @@ QUICK_PROMPTS = [
     "今日审计事件摘要",
 ]
 
-SYSTEM_PROMPT = """你是噬清森 AI 助手，帮助用户查询噬菌体精准治疗平台的 Ontology 数据。
+SYSTEM_PROMPT = """你是 AI 助手，帮助用户查询噬菌体精准治疗平台的 Ontology 数据。
 
 规则：
 1. 只能基于用户消息中提供的 JSON 数据回答，禁止编造
@@ -328,7 +328,7 @@ layout = html.Div([
                     html.I(className="bi bi-stars",
                            style={"fontSize": "48px",
                                   "color": "var(--c-primary-light)"}),
-                    html.Div("噬清森 AI 助手",
+                    html.Div(" AI 助手",
                              style={"fontSize": "18px", "fontWeight": "700",
                                     "marginTop": "16px"}),
                     html.Div("向我询问平台里的 Ontology 数据",
@@ -415,7 +415,7 @@ def cb_clear(_):
             html.I(className="bi bi-stars",
                    style={"fontSize": "48px",
                           "color": "var(--c-primary-light)"}),
-            html.Div("噬清森 AI 助手",
+            html.Div(" AI 助手",
                      style={"fontSize": "18px", "fontWeight": "700",
                             "marginTop": "16px"}),
             html.Div("向我询问平台里的 Ontology 数据",

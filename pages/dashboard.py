@@ -1,20 +1,28 @@
 # pages/dashboard.py
 import re
 import traceback
-import random
 from datetime import datetime, timezone, timedelta
 
 import dash
-from dash import html, dcc, Input, Output, State, callback
+from dash import (
+    html, dcc, Input, Output, State, callback, no_update,
+    clientside_callback, Patch,
+)
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
 from components.kpi_card import kpi_card
-from data_access.queries import dashboard_stats, list_audit_events
+from data_access.queries import (
+    dashboard_stats,
+    list_audit_events,
+    phage_trend_7d,
+    learning_engine_status,
+)
 
 dash.register_page(__name__, path="/", name="主控台")
 
 LOCAL_TZ = timezone(timedelta(hours=8))
+PAGE_SIZE = 20
 _ISO_PATTERN = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
 )
@@ -57,13 +65,33 @@ def _pretty_reason(text):
     return _ISO_PATTERN.sub(_repl, text)
 
 
-def _build_trend_chart(stats):
-    days = [(datetime.now() - timedelta(days=i)).strftime("%m/%d")
-            for i in range(6, -1, -1)]
-    base = stats.get("phages", 0) or 200
-    vals = [base - random.randint(0, 5) * i for i in range(6, -1, -1)]
+def _render_audit_row(a):
+    """单条审计记录渲染（供初始加载和滚动加载复用）"""
+    reason = _pretty_reason(a.get("reason") or a.get("object_id") or "(无描述)")
+    return html.Div([
+        html.Span(f"[{a.get('action_type') or '?'}]",
+                  className="badge-status badge-active me-2"),
+        html.Span(reason, style={"flex": "1"}),
+        html.Span(_safe_ts(a.get("timestamp")),
+                  style={"fontSize": "12px",
+                         "color": "var(--c-text-muted)",
+                         "fontFamily": "monospace",
+                         "whiteSpace": "nowrap",
+                         "marginLeft": "12px"}),
+    ], className="audit-row")
 
+
+# ============================================================
+# 图表构建
+# ============================================================
+def _build_trend_chart(days, vals):
     fig = go.Figure()
+
+    if not days:
+        days = [(datetime.now() - timedelta(days=i)).strftime("%m/%d")
+                for i in range(6, -1, -1)]
+        vals = [0] * 7
+
     fig.add_trace(go.Scatter(
         x=days, y=vals, mode="lines+markers", name="噬菌体",
         line=dict(color="#1B6CA8", width=2),
@@ -79,6 +107,71 @@ def _build_trend_chart(stats):
                    tickfont=dict(size=11, color="#94A3B8"), zeroline=False),
     )
     return fig
+
+
+# ============================================================
+# Learning Engine 横幅
+# ============================================================
+def _le_badge(state, label, count=None):
+    icon_map = {
+        "verified": "bi bi-check-circle-fill",
+        "progress": "bi bi-arrow-repeat",
+        "pending":  "bi bi-hourglass-split",
+    }
+    cls_map = {
+        "verified": "le-link-item le-verified",
+        "progress": "le-link-item le-progress",
+        "pending":  "le-link-item le-pending",
+    }
+    text_map = {"verified": "已验证", "progress": "进行中", "pending": "待启动"}
+    text = f"{label} {text_map[state]}"
+    if count is not None:
+        text += f"（{count}）"
+    return html.Div(
+        [html.I(className=icon_map[state] + " me-1"), text],
+        className=cls_map[state],
+        title=f"{label}：{text_map[state]}",
+    )
+
+
+def _build_le_banner(le):
+    reuse       = le.get("reuse_events", 0)
+    case_linked = le.get("case_linked", 0)
+    pkg_linked  = le.get("pkg_linked", 0)
+    approved    = le.get("approved_pkgs", 0)
+    total_pkgs  = le.get("total_pkgs", 0)
+
+    if reuse > 0 and case_linked > 0 and pkg_linked > 0:
+        s1 = "verified"
+    elif reuse > 0 or case_linked > 0 or pkg_linked > 0:
+        s1 = "progress"
+    else:
+        s1 = "pending"
+
+    if approved > 0:
+        s2 = "verified"
+    elif total_pkgs > 0:
+        s2 = "progress"
+    else:
+        s2 = "pending"
+
+    s3 = "verified" if reuse > 0 else "pending"
+
+    return [
+        html.Div([
+            html.Div("Learning Engine 状态", className="le-banner-title"),
+            html.Div("验证假设：过去的病例/实验经验能否被编码、审核、复用",
+                     style={"fontSize": "12px",
+                            "color": "var(--c-text-secondary)"}),
+        ]),
+        html.Div(style={"flex": "1"}),
+        _le_badge(s1, "链路 #1", reuse),
+        _le_badge(s2, "链路 #2", approved),
+        _le_badge(s3, "链路 #3", reuse),
+        html.A("查看详情 →", href="/knowledge-graph",
+               style={"fontSize": "12px", "color": "var(--c-primary)",
+                      "fontWeight": "600", "textDecoration": "none"}),
+    ]
 
 
 # ============================================================
@@ -106,33 +199,12 @@ layout = html.Div([
     html.Div(id="dash-kpi-row", className="mb-4"),
 
     # Learning Engine 横幅
-    html.Div(className="le-banner mb-4", children=[
-        html.Div([
-            html.Div("Learning Engine 状态", className="le-banner-title"),
-            html.Div("验证假设：过去的病例/实验经验能否被编码、审核、复用",
-                     style={"fontSize": "12px",
-                            "color": "var(--c-text-secondary)"}),
-        ]),
-        html.Div(style={"flex": "1"}),
-        html.Div([html.I(className="bi bi-check-circle-fill me-1"),
-                  "链路 #1 已验证"],
-                 className="le-link-item le-verified"),
-        html.Div([html.I(className="bi bi-arrow-repeat me-1"),
-                  "链路 #2 进行中"],
-                 className="le-link-item le-progress"),
-        html.Div([html.I(className="bi bi-hourglass-split me-1"),
-                  "链路 #3 待启动"],
-                 className="le-link-item le-pending"),
-        html.A("查看详情 →", href="/knowledge-graph",
-               style={"fontSize": "12px", "color": "var(--c-primary)",
-                      "fontWeight": "600", "textDecoration": "none"}),
-    ]),
+    html.Div(id="dash-le-banner", className="le-banner mb-4"),
 
     # 主体：左活动流 + 右操作栏
     dbc.Row(className="g-3 mb-4", children=[
         dbc.Col(md=7, children=[
-            html.Div(className="surface-card", style={"height": "100%"},
-                     children=[
+            html.Div(className="surface-card", children=[
                 html.Div([
                     html.Span([html.I(className="bi bi-activity me-2"),
                                "近期活动"]),
@@ -141,8 +213,12 @@ layout = html.Div([
                                   "color": "var(--c-primary)",
                                   "textDecoration": "none"}),
                 ], className="surface-card-header"),
-                html.Div(id="dash-recent-audits",
-                         className="surface-card-body"),
+                # ★ 固定高度滚动容器
+                html.Div(
+                    id="dash-recent-audits",
+                    className="surface-card-body dash-scroll-body",
+                    children=[],
+                ),
             ]),
         ]),
         dbc.Col(md=5, children=[
@@ -180,7 +256,7 @@ layout = html.Div([
                 ]),
             ]),
             # AI 快速查询
-            html.Div(className="surface-card mb-3", children=[
+            html.Div(className="surface-card", children=[
                 html.Div([html.I(className="bi bi-stars me-2"),
                           "AI 快速查询"], className="surface-card-header"),
                 html.Div(className="surface-card-body", children=[
@@ -202,13 +278,6 @@ layout = html.Div([
                                   "textDecoration": "none"}),
                 ]),
             ]),
-            # 系统健康
-            html.Div(className="surface-card", children=[
-                html.Div([html.I(className="bi bi-heart-pulse me-2"),
-                          "系统健康"], className="surface-card-header"),
-                html.Div(id="dash-system-health",
-                         className="surface-card-body"),
-            ]),
         ]),
     ]),
 
@@ -222,18 +291,23 @@ layout = html.Div([
                  style={"padding": "12px 16px"}),
     ]),
 
+    # ★ 隐藏控件：滚动加载 & 页码状态
+    html.Button(id="btn-audit-load-more", n_clicks=0,
+                style={"display": "none"}),
+    dcc.Store(id="audit-page", data=1),
+    dcc.Store(id="audit-scroll-hook", data=0),
+
     dcc.Interval(id="interval-dashboard", interval=7_200_000, n_intervals=0),
 ])
 
 
 # ============================================================
-# 主回调
+# 主回调（KPI + 趋势 + LE）
 # ============================================================
 @callback(
     Output("dash-kpi-row", "children"),
-    Output("dash-recent-audits", "children"),
     Output("dash-trend-chart", "figure"),
-    Output("dash-system-health", "children"),
+    Output("dash-le-banner", "children"),
     Input("interval-dashboard", "n_intervals"),
     Input("interval-global", "n_intervals"),
 )
@@ -243,125 +317,130 @@ def cb_refresh(_, __):
     except Exception as e:
         traceback.print_exc()
         return (dbc.Alert(f"加载 KPI 失败：{e}", color="danger"),
-                "", go.Figure(), "")
+                go.Figure(), "")
 
     kpis = dbc.Row(className="g-3", children=[
         dbc.Col(kpi_card("噬菌体",   s.get("phages", 0),
-                         "bi bi-virus", theme="blue"), md=3),
+                         "bi bi-virus", theme="blue",
+                         href="/scientific/phage-library"), md=3),
         dbc.Col(kpi_card("临床病例", s.get("cases", 0),
-                         "bi bi-journal-medical", theme="green"), md=3),
+                         "bi bi-journal-medical", theme="green",
+                         href="/scientific/clinical-cases"), md=3),
         dbc.Col(kpi_card("情报事件", s.get("events", 0),
-                         "bi bi-broadcast", theme="amber"), md=3),
+                         "bi bi-broadcast", theme="amber",
+                         href="/ci/events"), md=3),
         dbc.Col(kpi_card("监控组织", s.get("orgs", 0),
-                         "bi bi-building", theme="red"), md=3),
+                         "bi bi-building", theme="red",
+                         href="/ci/intelligence-board"), md=3),
     ])
 
-    # 活动流
     try:
-        audits = list_audit_events(limit=8)
+        days, vals = phage_trend_7d()
     except Exception:
-        audits = []
-
-    if not audits:
-        audit_children = html.Div(
-            "暂无审计记录",
-            style={"color": "var(--c-text-muted)", "fontSize": "13px",
-                   "padding": "20px 0", "textAlign": "center"})
-    else:
-        audit_children = []
-        for a in audits:
-            reason = _pretty_reason(
-                a.get("reason") or a.get("object_id") or "(无描述)")
-            audit_children.append(html.Div([
-                html.Span(f"[{a.get('action_type') or '?'}]",
-                          className="badge-status badge-active me-2"),
-                html.Span(reason, style={"flex": "1"}),
-                html.Span(_safe_ts(a.get("timestamp")),
-                          style={"fontSize": "12px",
-                                 "color": "var(--c-text-muted)",
-                                 "fontFamily": "monospace",
-                                 "whiteSpace": "nowrap",
-                                 "marginLeft": "12px"}),
-            ], style={"padding": "10px 0",
-                      "borderBottom": "1px solid var(--c-border)",
-                      "display": "flex", "alignItems": "center",
-                      "gap": "8px"}))
-
-    # 趋势图
-    trend_fig = _build_trend_chart(s)
-
-    # 系统健康
-    health_rows = []
-    try:
-        from config import get_driver
-        with get_driver().session() as session:
-            session.run("RETURN 1").single()
-        health_rows.append(html.Div([
-            html.Span(className="status-dot dot-ok"),
-            html.Span("Neo4j 数据库", style={"marginLeft": "8px",
-                                              "flex": "1"}),
-            html.Span("已连接", style={"fontSize": "12px",
-                                       "color": "var(--c-secondary)"}),
-        ], style={"display": "flex", "alignItems": "center",
-                  "padding": "8px 0",
-                  "borderBottom": "1px solid var(--c-border)"}))
-    except Exception:
-        health_rows.append(html.Div([
-            html.Span(className="status-dot dot-error"),
-            html.Span("Neo4j 数据库", style={"marginLeft": "8px",
-                                              "flex": "1"}),
-            html.Span("未连接", style={"fontSize": "12px",
-                                       "color": "var(--c-danger)"}),
-        ], style={"display": "flex", "alignItems": "center",
-                  "padding": "8px 0",
-                  "borderBottom": "1px solid var(--c-border)"}))
+        traceback.print_exc()
+        days, vals = [], []
+    trend_fig = _build_trend_chart(days, vals)
 
     try:
-        from config import Config
-        key = (getattr(Config, "DS_API_KEY", "")
-               or getattr(Config, "DEEPSEEK_API_KEY", ""))
-        if key:
-            health_rows.append(html.Div([
-                html.Span(className="status-dot dot-ok"),
-                html.Span("DeepSeek LLM", style={"marginLeft": "8px",
-                                                  "flex": "1"}),
-                html.Span("已配置", style={"fontSize": "12px",
-                                           "color": "var(--c-secondary)"}),
-            ], style={"display": "flex", "alignItems": "center",
-                      "padding": "8px 0",
-                      "borderBottom": "1px solid var(--c-border)"}))
-        else:
-            health_rows.append(html.Div([
-                html.Span(className="status-dot dot-warning"),
-                html.Span("DeepSeek LLM", style={"marginLeft": "8px",
-                                                  "flex": "1"}),
-                html.Span("未配置", style={"fontSize": "12px",
-                                           "color": "var(--c-warning)"}),
-            ], style={"display": "flex", "alignItems": "center",
-                      "padding": "8px 0",
-                      "borderBottom": "1px solid var(--c-border)"}))
+        le = learning_engine_status()
     except Exception:
-        pass
+        traceback.print_exc()
+        le = {}
+    le_banner = _build_le_banner(le)
 
-    for label, key, color in [
-        ("噬菌体",   "phages",  "var(--c-primary)"),
-        ("临床病例", "cases",   "var(--c-secondary)"),
-        ("情报事件", "events",  "var(--c-warning)"),
-    ]:
-        health_rows.append(html.Div([
-            html.Span("•", style={"color": color, "marginRight": "8px",
-                                   "fontSize": "16px"}),
-            html.Span(label, style={"flex": "1", "fontSize": "13px"}),
-            html.Span(str(s.get(key, 0)),
-                      style={"fontFamily": "monospace",
-                             "fontWeight": "600", "fontSize": "13px"}),
-        ], style={"display": "flex", "alignItems": "center",
-                  "padding": "8px 0",
-                  "borderBottom": "1px solid var(--c-border)"}))
-
-    return kpis, audit_children, trend_fig, health_rows
+    return kpis, trend_fig, le_banner
 
 
+# ============================================================
+# 活动流回调：分页加载 + 滚动追加
+# ============================================================
+@callback(
+    Output("dash-recent-audits", "children"),
+    Output("audit-page", "data"),
+    Input("interval-dashboard", "n_intervals"),
+    Input("interval-global", "n_intervals"),
+    Input("btn-audit-load-more", "n_clicks"),
+    State("audit-page", "data"),
+    prevent_initial_call=False,
+)
+def cb_recent_audits(_, __, ___, page):
+    from dash import ctx
+    triggered = ctx.triggered_id
+    page = page or 1
+
+    # ── 滚动加载下一页：增量追加 ──
+    if triggered == "btn-audit-load-more":
+        offset = page * PAGE_SIZE
+        try:
+            new_rows = list_audit_events(limit=PAGE_SIZE, offset=offset)
+        except Exception:
+            traceback.print_exc()
+            new_rows = []
+
+        if not new_rows:
+            # 已经到底，追加一条提示，同时锁定 page
+            patched = Patch()
+            patched.append(html.Div("— 已加载全部记录 —",
+                                     className="audit-end-hint"))
+            return patched, page
+
+        patched = Patch()
+        for a in new_rows:
+            patched.append(_render_audit_row(a))
+        return patched, page + 1
+
+    # ── interval 刷新：回到第一页 ──
+    try:
+        rows = list_audit_events(limit=PAGE_SIZE, offset=0)
+    except Exception:
+        traceback.print_exc()
+        rows = []
+
+    if not rows:
+        return ([html.Div("暂无审计记录",
+                           style={"color": "var(--c-text-muted)",
+                                  "fontSize": "13px",
+                                  "padding": "20px 0",
+                                  "textAlign": "center"})], 1)
+
+    return ([_render_audit_row(a) for a in rows], 1)
+
+
+# ============================================================
+# 滚动到底 → 自动点击隐藏按钮
+# ============================================================
+clientside_callback(
+    """
+    function(_) {
+        var el = document.getElementById('dash-recent-audits');
+        if (!el || el.__scrollBound) return window.dash_clientside.no_update;
+        el.__scrollBound = true;
+
+        el.addEventListener('scroll', function() {
+            var nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+            if (!nearBottom) return;
+            // 已到底提示已存在，不再触发
+            if (el.querySelector('.audit-end-hint')) return;
+
+            var btn = document.getElementById('btn-audit-load-more');
+            if (btn && !btn.__loading) {
+                btn.__loading = true;
+                btn.click();
+                setTimeout(function(){ btn.__loading = false; }, 600);
+            }
+        });
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("audit-scroll-hook", "data"),
+    Input("dash-recent-audits", "children"),
+    prevent_initial_call=False,
+)
+
+
+# ============================================================
+# AI 快速查询跳转
+# ============================================================
 @callback(
     Output("url", "href"),
     Input("btn-quick-query", "n_clicks"),

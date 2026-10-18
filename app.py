@@ -12,7 +12,7 @@ app = dash.Dash(
     use_pages=True,
     external_stylesheets=[dbc.themes.BOOTSTRAP, dbc.icons.BOOTSTRAP],
     suppress_callback_exceptions=True,
-    title="噬清森 AI 精准抗感染平台",
+    title="AI 精准抗感染平台",
 )
 server = app.server
 
@@ -85,7 +85,7 @@ app.layout = html.Div(
         dcc.Store(id="store-notify-open", data=False),
 
         dcc.Interval(id="interval-global", interval=7_200_000, n_intervals=0),
-        dcc.Interval(id="interval-badge", interval=60_000, n_intervals=0),
+        dcc.Interval(id="interval-badge", interval=600_000, n_intervals=0),
 
         create_navbar(),
 

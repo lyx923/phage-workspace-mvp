@@ -190,7 +190,8 @@ def list_tech_assessments(keyword="", limit=100) -> List[Dict]:
 # Admin
 # ============================================================
 
-def list_audit_events(action_type="", object_type="", limit=500) -> List[Dict]:
+def list_audit_events(action_type="", object_type="", limit=500,
+                      offset=0) -> List[Dict]:
     return _run("""
         MATCH (a:AuditEvent)
         WHERE ($at = '' OR a.action_type = $at)
@@ -199,8 +200,9 @@ def list_audit_events(action_type="", object_type="", limit=500) -> List[Dict]:
                a.object_type AS object_type, a.object_id AS object_id,
                a.actor_id AS actor_id, a.timestamp AS timestamp,
                a.reason AS reason
-        ORDER BY a.timestamp DESC LIMIT $limit
-    """, at=action_type, ot=object_type, limit=limit)
+        ORDER BY a.timestamp DESC
+        SKIP $offset LIMIT $limit
+    """, at=action_type, ot=object_type, limit=limit, offset=offset)
 
 
 def list_ontology_modules() -> List[Dict]:
@@ -234,6 +236,7 @@ def dashboard_stats() -> Dict:
             "audits":    one("MATCH (a:AuditEvent) RETURN count(a)"),
             "constructs": one("MATCH (ec:EngineeredPhageConstruct) RETURN count(ec)"),
         }
+
 
 def list_intelligence_events_for_board(limit=200):
     """情报概览页用：含影响级别和归因组织"""
@@ -302,3 +305,81 @@ def list_constraints():
                 "properties": d.get("properties") or [],
             })
         return out
+
+
+# ============================================================
+# ★ 新增：Dashboard 真实趋势 & Learning Engine 状态
+# ============================================================
+
+def phage_trend_7d():
+    """
+    最近 7 天新增噬菌体数（按 created_at 聚合，含补零天）。
+    返回 (days_labels, values) 二元组，days_labels 形如 ['10/06', ...]。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    since = today - timedelta(days=6)
+
+    rows = _run("""
+        MATCH (p:Phage)
+        WHERE p.created_at IS NOT NULL
+        WITH date(p.created_at) AS d, count(*) AS n
+        WHERE d >= date($since)
+        RETURN toString(d) AS day, n
+    """, since=since.isoformat())
+
+    by_day = {r["day"]: r["n"] for r in rows}
+
+    days, vals = [], []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        days.append(d.strftime("%m/%d"))
+        vals.append(by_day.get(d.isoformat(), 0))
+    return days, vals
+
+
+def learning_engine_status() -> Dict:
+    """
+    Learning Engine 三条链路的真实计数：
+      - reuse_events       : KnowledgeReuseEvent 总数
+      - case_linked        : 已挂 SOURCE_CASE 的复用事件数
+      - pkg_linked         : 已挂 TARGETS_PACKAGE 的复用事件数
+      - approved_pkgs      : 已审核通过的证据包数
+      - total_pkgs         : 证据包总数
+    """
+    with get_driver().session() as s:
+        def one(cypher):
+            r = s.run(cypher).single()
+            return r[0] if r else 0
+        return {
+            "reuse_events": one("MATCH (k:KnowledgeReuseEvent) RETURN count(k)"),
+            "case_linked": one("""
+                MATCH (k:KnowledgeReuseEvent)-[:SOURCE_CASE]->(:ClinicalCase)
+                RETURN count(DISTINCT k)
+            """),
+            "pkg_linked": one("""
+                MATCH (k:KnowledgeReuseEvent)-[:TARGETS_PACKAGE]->(:ScientificEvidencePackage)
+                RETURN count(DISTINCT k)
+            """),
+            "approved_pkgs": one("""
+                MATCH (p:ScientificEvidencePackage)
+                WHERE coalesce(p.review_status, p.status) = 'approved'
+                RETURN count(p)
+            """),
+            "total_pkgs": one("MATCH (p:ScientificEvidencePackage) RETURN count(p)"),
+        }
+
+
+def dataset_counts() -> Dict:
+    """数据导入页：各数据集实时记录数（key = 节点标签）"""
+    with get_driver().session() as s:
+        def one(label):
+            r = s.run(f"MATCH (n:{label}) RETURN count(n)").single()
+            return r[0] if r else 0
+        return {
+            "Phage":        one("Phage"),
+            "ClinicalCase": one("ClinicalCase"),
+            "LysisAssay":   one("LysisAssay"),
+            "Organization": one("Organization"),
+        }

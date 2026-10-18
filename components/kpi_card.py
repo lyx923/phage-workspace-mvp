@@ -1,6 +1,6 @@
 # components/kpi_card.py
-"""KPI 卡片组件 —— 支持趋势方向、图标、颜色主题。"""
-from dash import html
+"""KPI 卡片组件 —— 支持趋势方向、图标、颜色主题、点击跳转。"""
+from dash import html, dcc
 
 _THEMES = {
     "blue":   ("var(--c-primary)",   "var(--c-primary-light)"),
@@ -11,7 +11,7 @@ _THEMES = {
 
 
 def kpi_card(label, value, icon, change_text="", change_dir="neutral",
-             theme="blue", card_id=None):
+             theme="blue", card_id=None, href=None):
     """
     参数：
         label       卡片标题
@@ -21,15 +21,14 @@ def kpi_card(label, value, icon, change_text="", change_dir="neutral",
         change_dir  "up" / "down" / "neutral"
         theme       blue / green / amber / red
         card_id     可选；如果传了，会给容器加 id，并给数字部分加 "{card_id}-value"
+        href        可选；如果传了，整个卡片变成可点击链接
     """
     color, bg = _THEMES.get(theme, _THEMES["blue"])
 
-    # 容器属性：只有 card_id 存在时才加 id
     wrap_kwargs = {}
     if card_id:
         wrap_kwargs["id"] = card_id
 
-    # 数字部分属性：同样只在有 card_id 时加 id
     value_kwargs = {"className": "kpi-value"}
     if card_id:
         value_kwargs["id"] = f"{card_id}-value"
@@ -45,9 +44,21 @@ def kpi_card(label, value, icon, change_text="", change_dir="neutral",
     if change_text:
         children.append(html.Div(change_text, className=change_cls))
 
+    style = {"--kpi-color": color, "--kpi-bg": bg}
+
+    # ★ 有 href → 用 dcc.Link 包裹，整卡可点击
+    if href:
+        return dcc.Link(
+            href=href,
+            className="kpi-card kpi-card-link",
+            style=style,
+            children=children,
+            **wrap_kwargs,
+        )
+
     return html.Div(
         className="kpi-card",
-        style={"--kpi-color": color, "--kpi-bg": bg},
+        style=style,
         children=children,
         **wrap_kwargs,
     )

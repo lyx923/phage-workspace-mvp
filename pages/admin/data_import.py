@@ -5,15 +5,17 @@ from dash import html, dcc, Input, Output, State, callback, no_update
 import dash_bootstrap_components as dbc
 
 from data_access.audit import audit_danger_op
+from data_access.queries import dataset_counts
 from config import get_driver
 
 dash.register_page(__name__, path="/admin/data-import", name="数据导入")
 
+# ★ 去掉写死的 count，count 运行时从数据库查
 DATASETS = [
-    {"name": "公开噬菌体基因组库", "node": "Phage",          "count": 49,  "source": "NCBI RefSeq"},
-    {"name": "去标识化临床病例集", "node": "ClinicalCase",   "count": 17,  "source": "内部去标识化"},
-    {"name": "裂解实验历史记录",   "node": "LysisAssay",     "count": 932, "source": "内部实验数据库"},
-    {"name": "竞争情报基础数据",   "node": "Organization",   "count": 22,  "source": "公开信息整理"},
+    {"name": "公开噬菌体基因组库", "node": "Phage",        "source": "NCBI RefSeq"},
+    {"name": "去标识化临床病例集", "node": "ClinicalCase", "source": "内部去标识化"},
+    {"name": "裂解实验历史记录",   "node": "LysisAssay",   "source": "内部实验数据库"},
+    {"name": "竞争情报基础数据",   "node": "Organization", "source": "公开信息整理"},
 ]
 
 DANGER_ACTIONS = [
@@ -41,7 +43,7 @@ DANGER_ACTIONS = [
 ]
 
 
-def _dataset_card(ds):
+def _dataset_card(ds, count):
     return html.Div(className="surface-card mb-3", children=[
         html.Div([
             html.I(className="bi bi-database-fill-add me-2",
@@ -56,7 +58,7 @@ def _dataset_card(ds):
                                       "color": "var(--c-text-secondary)"}),
             html.Div([
                 html.Span([html.I(className="bi bi-files me-1"),
-                           f"{ds['count']} 条记录"],
+                           f"{count} 条记录"],
                           style={"fontSize": "12px",
                                  "color": "var(--c-text-muted)",
                                  "marginRight": "16px"}),
@@ -88,7 +90,9 @@ layout = html.Div([
 
     html.H6([html.I(className="bi bi-stack me-2"), "可用数据集"],
             style={"fontWeight": "700", "marginBottom": "16px"}),
-    *[_dataset_card(ds) for ds in DATASETS],
+
+    # ★ 数据集卡片容器，由回调动态填充
+    html.Div(id="di-datasets"),
 
     html.Div(className="surface-card mb-4", children=[
         html.Div([
@@ -142,8 +146,28 @@ layout = html.Div([
 
 
 # ============================================================
+# 回调 0：数据集卡片实时计数
+# 触发：全局 2h 定时器 + 危险操作完成（btn-confirm-ok）
+# ============================================================
+@callback(
+    Output("di-datasets", "children"),
+    Input("interval-global", "n_intervals"),
+    Input("btn-confirm-ok", "n_clicks"),
+)
+def cb_load_datasets(_, __):
+    try:
+        counts = dataset_counts()
+    except Exception as e:
+        traceback.print_exc()
+        counts = {}
+    return [
+        _dataset_card(ds, counts.get(ds["node"], 0))
+        for ds in DATASETS
+    ]
+
+
+# ============================================================
 # 回调 1：危险按钮点击 → 写 payload + active-id
-#   ★ 两个 Output 都加 allow_duplicate=True
 # ============================================================
 @callback(
     Output("store-confirm-payload", "data", allow_duplicate=True),
@@ -153,6 +177,9 @@ layout = html.Div([
 )
 def cb_danger_btn(n_clicks_list):
     from dash import ctx
+    # ★ 修复：如果没有任何按钮被真正点击过，直接返回
+    if not any(n_clicks_list):
+        return no_update, no_update
     if not ctx.triggered_id:
         return no_update, no_update
     action_id = ctx.triggered_id["index"]
@@ -174,7 +201,10 @@ def cb_danger_btn(n_clicks_list):
     State("store-active-danger-id", "data"),
     prevent_initial_call=True,
 )
-def cb_execute_danger(_, action_id):
+def cb_execute_danger(n_clicks, action_id):
+    # ★ 修复：如果没有点击次数，直接返回
+    if not n_clicks:
+        return no_update, no_update, no_update
     if not action_id:
         return no_update, no_update, no_update
 

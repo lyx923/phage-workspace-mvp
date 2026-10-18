@@ -167,7 +167,11 @@ def cb_load(_, __):
     Input("btn-schema-reinit", "n_clicks"),
     prevent_initial_call=True,
 )
-def cb_schema_trigger(_):
+def cb_schema_trigger(n_clicks):
+    # ★ 修复：如果没有点击次数，直接返回
+    if not n_clicks:
+        return no_update, no_update
+
     return ({
         "title": "⚠️ 重置 Schema 约束",
         "desc": "将删除并重建全部 Neo4j 索引和唯一性约束，"
@@ -183,7 +187,10 @@ def cb_schema_trigger(_):
     State("store-schema-pending", "data"),
     prevent_initial_call=True,
 )
-def cb_schema_execute(_, pending):
+def cb_schema_execute(n_clicks, pending):
+    # ★ 修复：如果没有点击次数，直接返回
+    if not n_clicks:
+        return no_update, no_update
     if not pending:
         return no_update, no_update
     try:

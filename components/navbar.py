@@ -70,8 +70,8 @@ def create_navbar():
                         className="btn-sidebar-toggle", n_clicks=0),
             html.A(
                 [
-                    html.Div("噬", className="brand-icon"),
-                    html.Span("噬清森 AI", className="brand-name"),
+                    html.Div("AI", className="brand-icon"),
+                    html.Span("助手", className="brand-name"),
                     html.Span("v0.6", className="brand-version"),
                 ],
                 href="/", className="navbar-brand-box",
