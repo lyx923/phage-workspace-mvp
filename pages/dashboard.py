@@ -157,6 +157,9 @@ def _build_le_banner(le):
 
     s3 = "verified" if reuse > 0 else "pending"
 
+    # ★ 修复：链路2 如果只有草稿包，显示总包数(total_pkgs)，如果是已审核显示通过数(approved)
+    display_s2_count = approved if approved > 0 else total_pkgs
+
     return [
         html.Div([
             html.Div("Learning Engine 状态", className="le-banner-title"),
@@ -166,7 +169,7 @@ def _build_le_banner(le):
         ]),
         html.Div(style={"flex": "1"}),
         _le_badge(s1, "链路 #1", reuse),
-        _le_badge(s2, "链路 #2", approved),
+        _le_badge(s2, "链路 #2", display_s2_count),
         _le_badge(s3, "链路 #3", reuse),
         html.A("查看详情 →", href="/knowledge-graph",
                style={"fontSize": "12px", "color": "var(--c-primary)",

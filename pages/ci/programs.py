@@ -1,11 +1,12 @@
 # pages/ci/programs.py
 import dash
-from dash import html, dcc, Input, Output, State, callback, no_update
+from dash import html, dcc, Input, Output, State, callback, no_update, ctx
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
 
 from data_access.queries import list_programs
 from data_access.mutations import add_program
+from config import get_driver
 
 dash.register_page(__name__, path="/ci/programs", name="开发项目")
 
@@ -33,15 +34,37 @@ PROGRAM_TYPE_OPTIONS = [
     {"label": "研究",     "value": "research"},
 ]
 
+# ============================================================
+# ★ 中英文映射字典
+# ============================================================
+STAGE_MAP = {opt["value"]: opt["label"] for opt in STAGE_OPTIONS}
+STATUS_MAP = {
+    "active": "🟢 进行中",
+    "paused": "🟡 暂停",
+    "discontinued": "🔴 已终止",
+}
+MODALITY_MAP = {
+    "natural_phage": "🦠 天然噬菌体",
+    "engineered_phage": "🧬 工程化噬菌体",
+    "cocktail": "🧪 鸡尾酒",
+    "software": "💻 软件/算法",
+    "platform": "⚙️ 平台技术",
+}
+
+# 表格列定义修改
 COLUMNS = [
-    {"field": "id", "headerName": "项目 ID", "width": 200,
+    {"field": "id", "headerName": "项目 ID", "width": 180,
      "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "name", "headerName": "项目名称", "flex": 2},
-    {"field": "org_name", "headerName": "所属组织", "width": 200},
-    {"field": "stage", "headerName": "阶段", "width": 130},
-    {"field": "status", "headerName": "状态", "width": 100},
-    {"field": "modality", "headerName": "模态", "width": 130},
+    {"field": "org_name", "headerName": "所属组织", "width": 180},
+    {"field": "stage_cn", "headerName": "阶段", "width": 110},
+    {"field": "status_cn", "headerName": "状态", "width": 110},
+    {"field": "modality_cn", "headerName": "模态", "width": 150},
     {"field": "pathogens", "headerName": "靶向病原", "flex": 1},
+    # ★ 新增操作列
+    {"field": "actions", "headerName": "操作", "width": 110,
+     "sortable": False, "filter": False,
+     "cellStyle": {"color": "var(--c-primary)", "cursor": "pointer", "fontWeight": "bold", "textAlign": "center"}},
 ]
 
 layout = html.Div([
@@ -78,6 +101,7 @@ layout = html.Div([
                    style={"height": None, "minHeight": "420px"}),
     ]),
 
+    # 新建项目表单
     dbc.Offcanvas(
         id="dp-offcanvas", title="新建开发项目",
         placement="end", is_open=False, style={"width": "520px"},
@@ -109,9 +133,32 @@ layout = html.Div([
             ], style={"display": "flex", "justifyContent": "flex-end"}),
             html.Div(id="dp-form-feedback", className="mt-3"),
         ])]),
+
+    # ★ 新增：修改状态弹窗
+    dcc.Store(id="store-active-program"),
+    dbc.Modal(
+        id="modal-dp-status", is_open=False, centered=True,
+        children=[
+            dbc.ModalHeader(dbc.ModalTitle("修改项目状态")),
+            dbc.ModalBody([
+                html.Div(id="dp-status-info", style={"marginBottom": "20px", "background": "#F8FAFC", "padding": "16px", "borderRadius": "8px"}),
+                dbc.Row([
+                    dbc.Label("新状态", width=3),
+                    dbc.Col(dbc.Select(id="dp-status-select", options=STATUS_OPTIONS, value="active"), width=9)
+                ])
+            ]),
+            dbc.ModalFooter([
+                html.Button("取消", id="btn-dp-status-cancel", className="btn-outline-custom me-2"),
+                html.Button("确认修改", id="btn-dp-status-save", className="btn-primary-custom"),
+            ]),
+        ]
+    )
 ])
 
 
+# ============================================================
+# 列表加载与中文化
+# ============================================================
 @callback(
     Output("dp-grid", "rowData"),
     Output("dp-count-label", "children"),
@@ -120,14 +167,29 @@ layout = html.Div([
     Input("dp-search", "value"),
     Input("dp-stage-filter", "value"),
     Input("dp-status-filter", "value"),
+    Input("btn-dp-status-save", "n_clicks"), # 修改状态后刷新
 )
-def cb_load(_, search, stage, status):
+def cb_load(_, search, stage, status, __):
     try:
         rows = list_programs(keyword=search or "", stage=stage or "", status=status or "")
-        # pathogens 是 list，展平成字符串
+        
         for r in rows:
+            # 展平病原体列表
             if isinstance(r.get("pathogens"), list):
                 r["pathogens"] = ", ".join(r["pathogens"]) if r["pathogens"] else ""
+            
+            # 映射中文字段
+            st = r.get("stage", "")
+            stat = r.get("status", "")
+            mod = r.get("modality", "")
+            
+            r["stage_cn"] = STAGE_MAP.get(st, st)
+            r["status_cn"] = STATUS_MAP.get(stat, stat)
+            r["modality_cn"] = MODALITY_MAP.get(mod, mod)
+            
+            # 注入操作文字
+            r["actions"] = "⚙️ 修改"
+            
         return rows, f"共 {len(rows)} 条", None
     except Exception as e:
         return [], "加载失败", dbc.Alert(f"Neo4j 连接失败：{e}",
@@ -141,7 +203,6 @@ def cb_load(_, search, stage, status):
     prevent_initial_call=True,
 )
 def cb_offcanvas(new_n, cancel_n):
-    from dash import ctx
     return ctx.triggered_id == "btn-dp-new"
 
 
@@ -174,3 +235,66 @@ def cb_save(_, name, org_id, ptype, stage, modality, pathogens):
         return dbc.Alert(f"已创建 {prog_id}", color="success"), False, 1
     except Exception as e:
         return dbc.Alert(f"保存失败：{e}", color="danger"), no_update, no_update
+
+
+# ============================================================
+# ★ 修改项目状态逻辑
+# ============================================================
+# 1. 点击表格操作列，打开弹窗
+@callback(
+    Output("store-active-program", "data"),
+    Output("modal-dp-status", "is_open"),
+    Output("dp-status-info", "children"),
+    Output("dp-status-select", "value"),
+    Input("dp-grid", "cellClicked"),
+    State("dp-grid", "rowData"),
+    prevent_initial_call=True,
+)
+def cb_open_status_modal(cell, row_data):
+    if not cell or cell.get("colId") != "actions":
+        return no_update, no_update, no_update, no_update
+
+    rowIndex = cell.get("rowIndex")
+    if rowIndex is None or not row_data or len(row_data) <= rowIndex:
+        return no_update, no_update, no_update, no_update
+
+    row = row_data[rowIndex]
+    prog_id = row["id"]
+    name = row.get("name", "未知项目")
+    current_status = row.get("status", "active")
+
+    info_ui = [
+        html.Div([html.Span("项目名称: ", style={"fontWeight": "600"}), html.Span(name)], className="mb-2"),
+        html.Div([html.Span("当前状态: ", style={"fontWeight": "600"}), html.Span(STATUS_MAP.get(current_status, current_status))])
+    ]
+    
+    return prog_id, True, info_ui, current_status
+
+
+# 2. 保存修改
+@callback(
+    Output("modal-dp-status", "is_open", allow_duplicate=True),
+    Output("btn-dp-refresh", "n_clicks", allow_duplicate=True),
+    Output("dp-error-banner", "children", allow_duplicate=True),
+    Input("btn-dp-status-save", "n_clicks"),
+    Input("btn-dp-status-cancel", "n_clicks"),
+    State("store-active-program", "data"),
+    State("dp-status-select", "value"),
+    prevent_initial_call=True,
+)
+def cb_save_status(save_n, cancel_n, prog_id, new_status):
+    trigger = ctx.triggered_id
+    if trigger == "btn-dp-status-cancel" or not prog_id:
+        return False, no_update, no_update
+
+    try:
+        with get_driver().session() as s:
+            s.run("""
+                MATCH (d:DevelopmentProgram {program_id: $pid})
+                SET d.program_status = $status, d.updated_at = datetime()
+            """, pid=prog_id, status=new_status)
+            
+        msg = dbc.Alert(f"项目 {prog_id} 状态已更新为【{STATUS_MAP.get(new_status)}】", color="success", dismissable=True, duration=3000)
+        return False, 1, msg
+    except Exception as e:
+        return False, no_update, dbc.Alert(f"修改失败：{e}", color="danger", dismissable=True)

@@ -10,7 +10,6 @@ from data_access.queries import _run
 cyto.load_extra_layouts()
 dash.register_page(__name__, path="/knowledge-graph", name="知识图谱")
 
-
 # ============================================================
 # 节点配色
 # ============================================================
@@ -210,7 +209,7 @@ def _fetch_live_elements(view):
 
 
 # ============================================================
-# 页面骨架
+# 页面骨架（移除了底部表格，全屏留给图谱）
 # ============================================================
 layout = html.Div([
     # 页头
@@ -278,7 +277,7 @@ layout = html.Div([
                     stylesheet=_build_stylesheet(),
                     layout={"name": "cose", "animate": True,
                             "animationDuration": 500},
-                    style={"width": "100%", "height": "640px",
+                    style={"width": "100%", "height": "720px",
                            "background": "#FAFBFC"},
                     minZoom=0.3, maxZoom=2.5,
                 ),
