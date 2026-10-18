@@ -1,7 +1,11 @@
 # app.py
+import os
+from datetime import timedelta
+
 import dash
 import dash_bootstrap_components as dbc
 from dash import html, dcc, Input, Output, State, no_update, clientside_callback
+from flask import session
 
 from components.navbar import create_navbar
 from components.sidebar import create_sidebar
@@ -16,6 +20,15 @@ app = dash.Dash(
 )
 server = app.server
 
+# ============================================================
+# ★ 认证配置
+# ============================================================
+server.secret_key = os.environ.get(
+    "DASH_SECRET_KEY", "dev-secret-change-me-in-prod"
+)
+server.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+server.config["SESSION_COOKIE_HTTPONLY"] = True
+server.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 BREADCRUMB_MAP = {
     "/":                             [("主控台", None)],
@@ -36,8 +49,8 @@ BREADCRUMB_MAP = {
     "/admin/schema":                 [("系统管理", None), ("Schema 管理", None)],
     "/admin/audit-log":              [("系统管理", None), ("审计日志", None)],
     "/admin/ontology-module":        [("系统管理", None), ("Ontology 模块", None)],
+    "/login":                        [("登录", None)],
 }
-
 
 def _build_breadcrumb(pathname: str):
     crumbs = BREADCRUMB_MAP.get(
@@ -58,7 +71,6 @@ def _build_breadcrumb(pathname: str):
         **{"aria-label": "breadcrumb"},
     )
 
-
 # ============================================================
 # 布局
 # ============================================================
@@ -66,13 +78,10 @@ app.layout = html.Div(
     id="app-root",
     className="app-root",
     children=[
-        # ★ 顶部进度条（fixed 定位，永远在最上层，不占空间）
-        html.Div(id="top-progress"),
-
-        # ★ 隐藏占位：用于触发 clientside_callback
-        dcc.Store(id="progress-hook", data=0),
-
         dcc.Location(id="url", refresh=False),
+        
+        # 全局跳转信号
+        dcc.Store(id="store-global-redirect", data=None),
 
         dcc.Store(id="store-sidebar-collapsed", data=True),
         dcc.Store(id="store-chat-history", data=[]),
@@ -97,9 +106,7 @@ app.layout = html.Div(
                     id="main-area",
                     className="main-area expanded",
                     children=[
-                        html.Div(id="breadcrumb-bar",
-                                 className="breadcrumb-bar"),
-                        # ★ 删掉 dcc.Loading，改成裸容器
+                        html.Div(id="breadcrumb-bar", className="breadcrumb-bar"),
                         html.Div(
                             id="page-outlet",
                             className="page-outlet",
@@ -114,11 +121,9 @@ app.layout = html.Div(
             className="status-bar",
             children=[
                 html.Span(id="status-neo4j", className="status-item",
-                          children=[html.Span(className="status-dot dot-ok"),
-                                    " Neo4j 已连接"]),
+                          children=[html.Span(className="status-dot dot-ok"), " Neo4j 已连接"]),
                 html.Span(id="status-llm", className="status-item",
-                          children=[html.Span(className="status-dot dot-ok"),
-                                    " DeepSeek 已配置"]),
+                          children=[html.Span(className="status-dot dot-ok"), " DeepSeek 已配置"]),
                 html.Span(id="status-sync-time", className="status-item"),
                 html.Span("lyx", className="status-user"),
             ],
@@ -128,19 +133,8 @@ app.layout = html.Div(
             id="notify-toast",
             style={"display": "none"},
             children=[
-                html.Button(
-                    html.I(className="bi bi-x-lg"),
-                    id="btn-notify-close",
-                    n_clicks=0,
-                    style={"position": "absolute", "top": "10px", "right": "10px",
-                           "background": "none", "border": "none",
-                           "color": "var(--c-text-muted)", "cursor": "pointer",
-                           "fontSize": "14px", "padding": "4px"},
-                ),
-                html.Div("通知中心",
-                         style={"fontWeight": "700", "marginBottom": "8px",
-                                "paddingBottom": "6px",
-                                "borderBottom": "1px solid var(--c-border)"}),
+                html.Button(html.I(className="bi bi-x-lg"), id="btn-notify-close", n_clicks=0, style={"position": "absolute", "top": "10px", "right": "10px", "background": "none", "border": "none", "color": "var(--c-text-muted)", "cursor": "pointer", "fontSize": "14px", "padding": "4px"}),
+                html.Div("通知中心", style={"fontWeight": "700", "marginBottom": "8px", "paddingBottom": "6px", "borderBottom": "1px solid var(--c-border)"}),
                 html.Div(id="notify-body"),
             ],
         ),
@@ -149,76 +143,22 @@ app.layout = html.Div(
     ],
 )
 
-
 # ============================================================
-# ★ 顶部进度条 hook：监听所有 _dash-update-component 请求
+# ★ 全局 JS 跳转回调 (绝对生效)
 # ============================================================
 clientside_callback(
     """
-    function(_) {
-        if (window.__topProgressBound) {
-            return window.dash_clientside.no_update;
+    function(target) {
+        if (target) {
+            window.location.href = target;
         }
-        window.__topProgressBound = true;
-
-        var pending = 0;
-
-        function show() {
-            var bar = document.getElementById('top-progress');
-            if (bar) bar.classList.add('loading');
-        }
-        function hide() {
-            var bar = document.getElementById('top-progress');
-            if (bar) bar.classList.remove('loading');
-        }
-
-        // ── 拦截 XMLHttpRequest（Dash 用 XHR 发回调） ──
-        var origOpen = XMLHttpRequest.prototype.open;
-        var origSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function() {
-            this.__url = arguments[1] || '';
-            return origOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function() {
-            var isDash = (this.__url || '').indexOf('_dash-update-component') !== -1;
-            if (isDash) {
-                pending += 1;
-                show();
-                this.addEventListener('loadend', function() {
-                    pending = Math.max(0, pending - 1);
-                    if (pending === 0) hide();
-                });
-            }
-            return origSend.apply(this, arguments);
-        };
-
-        // ── 拦截 fetch（有的 Dash 版本用 fetch） ──
-        var origFetch = window.fetch;
-        if (origFetch) {
-            window.fetch = function() {
-                var url = (arguments[0] && arguments[0].url) || arguments[0] || '';
-                var isDash = String(url).indexOf('_dash-update-component') !== -1;
-                if (isDash) {
-                    pending += 1;
-                    show();
-                    return origFetch.apply(this, arguments).finally(function() {
-                        pending = Math.max(0, pending - 1);
-                        if (pending === 0) hide();
-                    });
-                }
-                return origFetch.apply(this, arguments);
-            };
-        }
-
-        return 1;
+        return window.dash_clientside.no_update;
     }
     """,
-    Output("progress-hook", "data"),
-    Input("progress-hook", "data"),
-    prevent_initial_call=False,
+    Output("store-global-redirect", "id"),
+    Input("store-global-redirect", "data"),
+    prevent_initial_call=True,
 )
-
 
 # ============================================================
 # 侧边栏 / 面包屑
@@ -240,7 +180,6 @@ def cb_sidebar_toggle(n_clicks, _pathname):
         return "sidebar-panel expanded", "main-area collapsed", False
     return "sidebar-panel collapsed", "main-area expanded", True
 
-
 @app.callback(
     Output("breadcrumb-bar", "children"),
     Input("url", "pathname"),
@@ -248,9 +187,8 @@ def cb_sidebar_toggle(n_clicks, _pathname):
 def cb_breadcrumb(pathname):
     return _build_breadcrumb(pathname or "/")
 
-
 # ============================================================
-# 状态栏
+# 状态栏 / 徽章 / 通知
 # ============================================================
 @app.callback(
     Output("status-sync-time", "children"),
@@ -259,7 +197,6 @@ def cb_breadcrumb(pathname):
 def cb_sync_time(_):
     from datetime import datetime
     return f"最后同步: {datetime.now().strftime('%H:%M:%S')}"
-
 
 @app.callback(
     Output("status-neo4j", "children"),
@@ -274,7 +211,6 @@ def cb_neo4j_status(_):
     except Exception:
         return [html.Span(className="status-dot dot-error"), " Neo4j 未连接"]
 
-
 @app.callback(
     Output("status-llm", "children"),
     Input("interval-global", "n_intervals"),
@@ -285,18 +221,11 @@ def cb_llm_status(_):
         key = (getattr(Config, "DS_API_KEY", "")
                or getattr(Config, "DEEPSEEK_API_KEY", ""))
         if key:
-            return [html.Span(className="status-dot dot-ok"),
-                    " DeepSeek 已配置"]
-        return [html.Span(className="status-dot dot-warning"),
-                " DeepSeek 未配置"]
+            return [html.Span(className="status-dot dot-ok"), " DeepSeek 已配置"]
+        return [html.Span(className="status-dot dot-warning"), " DeepSeek 未配置"]
     except Exception:
-        return [html.Span(className="status-dot dot-warning"),
-                " DeepSeek 未配置"]
+        return [html.Span(className="status-dot dot-warning"), " DeepSeek 未配置"]
 
-
-# ============================================================
-# 徽章
-# ============================================================
 @app.callback(
     Output("badge-review", "children"),
     Input("interval-badge", "n_intervals"),
@@ -305,20 +234,12 @@ def cb_badge_review(_):
     try:
         from config import get_driver
         with get_driver().session() as s:
-            rec = s.run("""
-                MATCH (r:Review)
-                WHERE r.decision = 'pending'
-                RETURN count(r) AS n
-            """).single()
+            rec = s.run("MATCH (r:Review) WHERE r.decision = 'pending' RETURN count(r) AS n").single()
             n = rec["n"] if rec else 0
         return str(n) if n > 0 else ""
     except Exception:
         return ""
 
-
-# ============================================================
-# 通知面板
-# ============================================================
 @app.callback(
     Output("notify-toast", "style"),
     Output("store-notify-open", "data"),
@@ -332,13 +253,11 @@ def cb_notify_toggle(n_clicks, is_open):
     return (
         {"position": "fixed", "top": "68px", "right": "20px",
          "zIndex": "2000", "width": "320px", "display": "block",
-         "background": "var(--c-surface)",
-         "border": "1px solid var(--c-border)",
+         "background": "var(--c-surface)", "border": "1px solid var(--c-border)",
          "borderRadius": "10px", "padding": "16px",
          "boxShadow": "0 8px 24px rgba(0,0,0,0.12)"},
         True,
     )
-
 
 @app.callback(
     Output("notify-body", "children"),
@@ -353,19 +272,12 @@ def cb_notify_body(is_open, _):
     try:
         from config import get_driver
         with get_driver().session() as s:
-            rec = s.run("""
-                MATCH (r:Review)
-                WHERE r.decision = 'pending'
-                RETURN count(r) AS n
-            """).single()
+            rec = s.run("MATCH (r:Review) WHERE r.decision = 'pending' RETURN count(r) AS n").single()
             pending_count = rec["n"] if rec else 0
             rows = list(s.run("""
                 MATCH (a:AuditEvent)
                 WHERE a.action_type IN ['DANGER_OP', 'DELETE']
-                RETURN a.audit_id AS id,
-                       a.action_type AS action,
-                       a.object_id AS obj,
-                       a.timestamp AS ts
+                RETURN a.audit_id AS id, a.action_type AS action, a.object_id AS obj, a.timestamp AS ts
                 ORDER BY a.timestamp DESC LIMIT 3
             """))
             danger_events = [dict(r) for r in rows]
@@ -375,31 +287,20 @@ def cb_notify_body(is_open, _):
     items = []
     if pending_count > 0:
         items.append(html.Div([
-            html.I(className="bi bi-clipboard-check me-2",
-                   style={"color": "var(--c-primary)"}),
+            html.I(className="bi bi-clipboard-check me-2", style={"color": "var(--c-primary)"}),
             html.Span(f"有 {pending_count} 个待审核项"),
-            html.A("去处理 →", href="/admin/audit-log",
-                   style={"float": "right", "fontSize": "12px",
-                          "color": "var(--c-primary)",
-                          "textDecoration": "none"}),
-        ], style={"padding": "8px 0",
-                  "borderBottom": "1px solid var(--c-border)"}))
+            html.A("去处理 →", href="/admin/audit-log", style={"float": "right", "fontSize": "12px", "color": "var(--c-primary)", "textDecoration": "none"}),
+        ], style={"padding": "8px 0", "borderBottom": "1px solid var(--c-border)"}))
 
     for e in danger_events[:3]:
         items.append(html.Div([
-            html.I(className="bi bi-exclamation-triangle me-2",
-                   style={"color": "var(--c-danger)"}),
-            html.Span(f"[{e['action']}] {e.get('obj', '')}",
-                      style={"fontSize": "12px"}),
+            html.I(className="bi bi-exclamation-triangle me-2", style={"color": "var(--c-danger)"}),
+            html.Span(f"[{e['action']}] {e.get('obj', '')}", style={"fontSize": "12px"}),
         ], style={"padding": "6px 0"}))
 
     if not items:
-        items = [html.Div("暂无新通知",
-                          style={"color": "var(--c-text-muted)",
-                                 "textAlign": "center",
-                                 "padding": "12px 0"})]
+        items = [html.Div("暂无新通知", style={"color": "var(--c-text-muted)", "textAlign": "center", "padding": "12px 0"})]
     return items
-
 
 @app.callback(
     Output("notify-toast", "style", allow_duplicate=True),
@@ -410,6 +311,62 @@ def cb_notify_body(is_open, _):
 def cb_notify_close(_):
     return {"display": "none"}, False
 
+# ============================================================
+# ★ 全局未登录拦截
+# ============================================================
+@app.callback(
+    Output("url", "pathname", allow_duplicate=True),
+    Input("url", "pathname"),
+    prevent_initial_call="initial_duplicate",
+)
+def auth_guard(pathname):
+    if not pathname:
+        return no_update
+    user = session.get("user")
+    
+    # 如果没登录，且不在登录页，强行踢回登录页
+    if not user and pathname != "/login":
+        return "/login"
+        
+    return no_update
+
+# ============================================================
+# ★ 退出登录 (发送跳转信号给前端)
+# ============================================================
+@app.callback(
+    Output("store-global-redirect", "data", allow_duplicate=True),
+    Input("btn-logout", "n_clicks"),
+    prevent_initial_call=True,
+)
+def cb_logout(n_clicks):
+    if not n_clicks:
+        return no_update
+    from auth import logout_user
+    logout_user()
+    return "/login"  # 触发全局 JS 跳转到登录页
+
+# ============================================================
+# ★ 顶栏用户信息同步
+# ============================================================
+@app.callback(
+    Output("navbar-user-name", "children"),
+    Output("user-menu-info", "children"),
+    Input("url", "pathname"),
+)
+def cb_sync_user_display(_pathname):
+    user = session.get("user")
+    if user:
+        return (
+            user.get("name", user.get("username", "用户")),
+            [
+                html.Div([
+                    html.I(className="bi bi-person-circle me-2"),
+                    html.Span(user.get("name", user.get("username", "")), style={"fontWeight": "600"}),
+                ]),
+                html.Div(f"@{user.get('username', '')} · {user.get('role', '')}", style={"fontSize": "11px", "color": "var(--c-text-muted)"}),
+            ],
+        )
+    return "登录", [html.Div("未登录", style={"fontSize": "13px"})]
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=8501)

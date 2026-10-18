@@ -1,5 +1,5 @@
 # components/navbar.py
-from dash import html, dcc, clientside_callback, Input, Output
+from dash import html, dcc, clientside_callback, Input, Output, no_update
 
 # ─────────────────────────────────────────────
 # Mega Menu 定义
@@ -123,8 +123,40 @@ def create_navbar():
                                     "minWidth": "340px"},
                              children=_build_mega_col(ADMIN_MENU)),
                 ]),
-                html.Button("LY", id="btn-user", className="icon-btn",
-                            title="lyx"),
+
+                # ★ 用户菜单（替代原 btn-user）
+                html.Div(className="user-menu-wrap", children=[
+                    html.Button(
+                        [
+                            html.I(className="bi bi-person-circle"),
+                            html.Span(id="navbar-user-name", children="登录"),
+                        ],
+                        id="btn-user-menu",
+                        className="user-menu-btn",
+                        n_clicks=0,
+                        title="用户菜单",
+                    ),
+                    html.Div(
+                        id="user-menu-dropdown",
+                        className="user-menu-dropdown",
+                        children=[
+                            html.Div(id="user-menu-info",
+                                     className="user-menu-info",
+                                     children=[
+                                         html.Div("未登录",
+                                                  style={"fontSize": "13px"}),
+                                     ]),
+                            html.Div(className="user-menu-divider"),
+                            html.Button(
+                                [html.I(className="bi bi-box-arrow-right me-2"),
+                                 "退出登录"],
+                                id="btn-logout",
+                                className="user-menu-item logout",
+                                n_clicks=0,
+                            ),
+                        ],
+                    ),
+                ]),
             ]),
         ],
     )
@@ -194,5 +226,50 @@ clientside_callback(
     """,
     Output("mega-menu-toggle-store", "id"),
     Input("mega-menu-toggle-store", "id"),
+    prevent_initial_call=False,
+)
+
+
+# ─────────────────────────────────────────────
+# ★ 用户菜单：点击切换显示/隐藏
+# ─────────────────────────────────────────────
+clientside_callback(
+    """
+    function(n) {
+        if (!n) return window.dash_clientside.no_update;
+        var dd = document.getElementById('user-menu-dropdown');
+        if (!dd) return window.dash_clientside.no_update;
+        dd.classList.toggle('show');
+        return dd.className;
+    }
+    """,
+    Output("user-menu-dropdown", "className"),
+    Input("btn-user-menu", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
+# ─────────────────────────────────────────────
+# ★ 用户菜单：点击外部区域关闭（只绑定一次）
+# ─────────────────────────────────────────────
+clientside_callback(
+    """
+    function(_) {
+        if (!window.__userMenuBound) {
+            window.__userMenuBound = true;
+            document.addEventListener('click', function(e) {
+                var wrap = document.querySelector('.user-menu-wrap');
+                var dd = document.getElementById('user-menu-dropdown');
+                if (!wrap || !dd) return;
+                if (!wrap.contains(e.target)) {
+                    dd.classList.remove('show');
+                }
+            });
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("btn-user-menu", "title"),
+    Input("btn-user-menu", "title"),
     prevent_initial_call=False,
 )
