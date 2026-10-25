@@ -184,7 +184,7 @@ layout = html.Div([
             dbc.ModalHeader(dbc.ModalTitle("单篇 URL 智能解析")),
             dbc.ModalBody([
                 dbc.InputGroup(className="mb-3", children=[
-                    dbc.Input(id="ie-fetch-url", placeholder="输入单篇文章链接 (如 https://www.biomx.com/news/biomx-acquires-apt)"),
+                    dbc.Input(id="ie-fetch-url", placeholder="输入单篇文章链接 (如 https://mp.weixin.qq.com/s/...)"),
                     dbc.Button([html.I(className="bi bi-search me-1"), "解析网页"], id="btn-ie-do-fetch", className="btn-primary-custom"),
                 ]),
                 
@@ -412,7 +412,6 @@ def run_monitor(n):
         
         extracted_rows = []
         for e in events:
-            # ★ 修复：如果提取出来的组织为空，给个占位符
             org_name = e.get("organization_name", "").strip()
             if not org_name:
                 org_name = "⚠️ 未识别组织"
@@ -446,19 +445,43 @@ def toggle_fetch_modal(n):
     return True
 
 def _extract_date_from_html(html_text):
-    patterns = [
+    """
+    从 HTML 源码中提取日期。
+    针对微信公众号等动态渲染页面增加了时间戳解析。
+    """
+    if not html_text:
+        return ""
+    
+    # 1. 微信特有的 JS 变量时间戳匹配 (10 位秒级时间戳)
+    wechat_ts_patterns = [
+        r'var\s+ct\s*=\s*"(\d{10})"',
+        r'var\s+create_time\s*=\s*"(\d{10})"',
+        r'create_time\s*[:=]\s*["\']?(\d{10})',
+        r'msg_publish_time\s*[:=]\s*["\']?(\d{10})',
+    ]
+    for p in wechat_ts_patterns:
+        m = re.search(p, html_text)
+        if m:
+            ts = int(m.group(1))
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    # 2. 标准 Meta 标签
+    meta_patterns = [
         r'<meta[^>]+property="article:published_time"[^>]+content="([^"]+)"',
         r'<meta[^>]+name="publish_date"[^>]+content="([^"]+)"',
         r'<meta[^>]+property="og:release_date"[^>]+content="([^"]+)"',
-        r'(\d{4}[-/年]\d{1,2}[-/月]\d{1,2})'
     ]
-    for p in patterns:
+    for p in meta_patterns:
         m = re.search(p, html_text, re.IGNORECASE)
         if m:
-            date_str = m.group(1)
-            date_str = date_str.replace("年", "-").replace("月", "-").replace("日", "")
-            date_str = date_str.strip()[:10]
-            return date_str
+            return m.group(1).strip()[:10]
+
+    # 3. 普通文本正则匹配兜底
+    m = re.search(r'(\d{4}[-/年]\d{1,2}[-/月]\d{1,2})', html_text)
+    if m:
+        date_str = m.group(1).replace("年", "-").replace("月", "-").replace("日", "")
+        return date_str.strip()[:10]
+        
     return ""
 
 @callback(
@@ -478,8 +501,14 @@ def cb_fetch_url(n, url):
         return dbc.Alert("请输入合法的 URL", color="warning"), {"display": "none"}, no_update, no_update, no_update, no_update, no_update
 
     session = make_session()
+    # ★ 增加伪装浏览器 headers，防止被微信拦截
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
     try:
-        r = session.get(url, timeout=15)
+        r = session.get(url, headers=headers, timeout=15)
         r.encoding = r.apparent_encoding or "utf-8"
         html_text = r.text
         text = html_to_text(html_text)[:5000]
@@ -512,7 +541,21 @@ def cb_fetch_url(n, url):
     except Exception as e:
         return dbc.Alert(f"大模型提取失败：{e}", color="danger"), {"display": "none"}, no_update, no_update, no_update, no_update, no_update
 
-    real_date = data.get("event_date") or html_date or datetime.date.today().strftime("%Y-%m-%d")
+    # ★ 日期智能判断逻辑
+    llm_date = (data.get("event_date") or "").strip()
+    
+    # 如果模型提取出了合法日期，且不是明显错误的 1月1号（通常是模型瞎猜的）
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', llm_date) and not llm_date.endswith("-01-01"):
+        real_date = llm_date
+    elif html_date:  
+        # 否则优先使用 HTML 解析出的真实时间戳
+        real_date = html_date
+    elif re.match(r'^\d{4}-\d{2}-\d{2}$', llm_date):
+        # 兜底用模型的
+        real_date = llm_date
+    else:
+        # 最后兜底用今天
+        real_date = datetime.date.today().strftime("%Y-%m-%d")
 
     return (
         dbc.Alert("✅ 提取成功，请核对信息后点击下方确认按钮入库：", color="success"),

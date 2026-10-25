@@ -21,7 +21,6 @@ layout = html.Div(
             html.Div(className="login-header", children=[
                 html.Div("AI", className="login-logo"),
                 html.H2("AI 精准抗感染平台", className="login-title"),
-                html.P("登录以继续访问平台", className="login-subtitle"),
             ]),
             html.Div(className="login-body", children=[
                 html.Div(className="login-field", children=[
