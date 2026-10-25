@@ -14,9 +14,10 @@ from config import Config
 dash.register_page(__name__, path="/ai-assistant", name="AI 助手")
 
 # ============================================================
-# 意图路由表（保留你原有的快捷路由，确保高频问题极速响应）
+# ★ v0.7 意图路由表（扩展至 11 个）
 # ============================================================
 INTENT_ROUTES = {
+    # --- 原有 6 个 ---
     "待审核": {
         "label": "证据包审核状态",
         "cypher": """
@@ -77,14 +78,84 @@ INTENT_ROUTES = {
             ORDER BY a.timestamp DESC LIMIT 20
         """,
     },
+    
+    # --- v0.7 新增 5 个实验场景专属路由 ---
+    "酶": {
+        "label": "酶基因库与展示噬菌体",
+        "cypher": """
+            MATCH (e:EnzymeGene)
+            OPTIONAL MATCH (e)<-[:DISPLAYS]-(p:Phage)
+            RETURN e.id AS id, e.name AS name, e.enzyme_class AS class, 
+                   e.specific_activity AS activity, collect(p.name) AS displayed_by_phages
+            ORDER BY e.specific_activity DESC LIMIT 20
+        """,
+    },
+    "生物膜": {
+        "label": "生物膜消除实验结果",
+        "cypher": """
+            MATCH (b:BiofilmAssay)
+            RETURN b.id AS id, b.control_type AS treatment, 
+                   b.biofilm_reduction_pct AS reduction_pct, b.moi AS moi,
+                   b.biofilm_residual_od AS residual_od
+            ORDER BY b.biofilm_reduction_pct DESC LIMIT 20
+        """,
+    },
+    "工程化": {
+        "label": "工程化噬菌体及其亲本",
+        "cypher": """
+            MATCH (ep:Phage {is_engineered: true})
+            OPTIONAL MATCH (ep)-[:ENGINEERED_FROM]->(wt:Phage)
+            OPTIONAL MATCH (ep)-[:DISPLAYS]->(eg:EnzymeGene)
+            RETURN ep.phage_id AS id, ep.name AS name, ep.engineering_status AS status,
+                   wt.name AS parent_phage, eg.name AS enzyme_name
+            ORDER BY ep.created_at DESC LIMIT 20
+        """,
+    },
+    "批次": {
+        "label": "实验批次及其挂载数据量",
+        "cypher": """
+            MATCH (batch:ExperimentBatch)
+            OPTIONAL MATCH (n)-[:BELONGS_TO_BATCH]->(batch)
+            RETURN batch.id AS id, batch.name AS name, batch.experiment_type AS type,
+                   batch.status AS status, count(n) AS linked_records
+            ORDER BY batch.created_at DESC LIMIT 20
+        """,
+    },
+    "对比": {
+        "label": "不同处理方式的生物膜消除率对比",
+        "cypher": """
+            MATCH (b:BiofilmAssay)
+            RETURN b.control_type AS treatment_type,
+                   avg(b.biofilm_reduction_pct) AS avg_reduction,
+                   min(b.biofilm_reduction_pct) AS min_reduction,
+                   max(b.biofilm_reduction_pct) AS max_reduction,
+                   count(*) AS sample_size
+            ORDER BY avg_reduction DESC
+        """,
+    },
+}
+
+# ★ v0.7 新增：意图优先级配置
+INTENT_PRIORITY = {
+    "对比": 10,     # 最高：明确要求比较分析
+    "工程化": 8,    # 实验核心
+    "生物膜": 8,    # 实验核心
+    "酶": 7,        # 实验核心
+    "批次": 6,      # 数据追溯
+    "溶菌": 5,      # 实验基础
+    "待审核": 5,    # 原有
+    "复用": 5,      # 原有
+    "本月": 4,      # 原有
+    "高风险": 4,    # 原有
+    "未关联": 4,    # 原有
+    "今日": 3,      # 原有
 }
 
 QUICK_PROMPTS = [
-    "最近待审核的证据包有哪些？",
-    "哪个噬菌体在克雷伯菌宿主复用率最高？",
-    "新增了哪些情报事件？",
-    "当前有哪些高风险的决策记录？",
-    "列出所有未关联病原体的开发项目",
+    "查询所有已验证的酶基因及其展示噬菌体",
+    "对比不同处理方式的生物膜消除效果",
+    "查询所有工程化噬菌体及其亲本",
+    "最近实验批次挂载了多少数据",
     "今日审计事件摘要",
 ]
 
@@ -98,21 +169,24 @@ SYSTEM_PROMPT = """你是 AI 助手，帮助用户查询噬菌体精准治疗平
 """
 
 # ============================================================
-# 给大模型看的 Neo4j Schema 提示词（用于生成 Cypher）
+# ★ v0.7 更新 Schema 提示词（加入新实体和关系）
 # ============================================================
 SCHEMA_PROMPT = """你是 Neo4j Cypher 专家。请根据用户的自然语言提问，生成一条 Cypher 查询语句。
 已知数据库中有以下节点和属性：
-- (p:Phage) 属性: phage_id, name, family, receptor_target
+- (p:Phage) 属性: phage_id, name, family, receptor_target, is_engineered, engineering_status
 - (p:Pathogen) 属性: pathogen_id, species, resistance_mechanism
 - (h:HostStrain) 属性: host_strain_id, strain_label
-- (a:LysisAssay) 属性: assay_id, result (Lytic/Non-lytic), result_value, evidence_level (L1-L5), qc_status
+- (a:LysisAssay) 属性: assay_id, result (Lytic/Non-lytic), eop_value, evidence_level, qc_status
 - (c:ClinicalCase) 属性: case_id, infection_type, clinical_outcome
 - (pkg:ScientificEvidencePackage) 属性: package_id, status, review_status
 - (e:IntelligenceEvent) 属性: event_id, title, event_type, event_date, review_status
-- (o:Organization) 属性: organization_id, canonical_name, organization_type, headquarters_country
-- (p:DevelopmentProgram) 属性: program_id, canonical_name, development_stage, program_status
-- (d:DecisionRecord) 属性: decision_id, decision_summary, decision_type, outcome_status
+- (o:Organization) 属性: organization_id, canonical_name, organization_type
+- (d:DevelopmentProgram) 属性: program_id, canonical_name, development_stage, program_status
+- (dr:DecisionRecord) 属性: decision_id, decision_summary, decision_type, outcome_status
 - (s:EngineeringStrategy) 属性: strategy_id, strategy_type, evidence_maturity
+- (eg:EnzymeGene) 属性: id, name, gene_symbol, enzyme_class, specific_activity
+- (bf:BiofilmAssay) 属性: id, control_type, biofilm_reduction_pct, biofilm_residual_od
+- (batch:ExperimentBatch) 属性: id, name, experiment_type, status
 
 已知关系：
 - (Phage)-[:USED_IN]->(LysisAssay)
@@ -126,6 +200,10 @@ SCHEMA_PROMPT = """你是 Neo4j Cypher 专家。请根据用户的自然语言�
 - (DevelopmentProgram)-[:TARGETS_PATHOGEN]->(Pathogen)
 - (DevelopmentProgram)-[:USES_STRATEGY]->(EngineeringStrategy)
 - (DecisionRecord)-[:BASED_ON]->(IntelligenceProduct)
+- (Phage)-[:ENGINEERED_FROM]->(Phage)  // v0.7 新增：亲本关系
+- (Phage)-[:DISPLAYS]->(EnzymeGene)   // v0.7 新增：展示酶
+- (EnzymeGene)-[:DEGRADES]->(HostStrain)
+- (节点)-[:BELONGS_TO_BATCH]->(ExperimentBatch) // v0.7 新增：归属批次
 
 要求：
 1. 只能生成只读的 MATCH/RETURN 查询，绝不能包含 CREATE/DELETE/SET/MERGE 等写操作。
@@ -142,10 +220,24 @@ SCHEMA_PROMPT = """你是 Neo4j Cypher 专家。请根据用户的自然语言�
 def _route_intent(query: str):
     if not query:
         return None, None
+    
+    # ★ v0.7 修复：多意图匹配 + 优先级合并
+    matched = []
     for kw, route in INTENT_ROUTES.items():
         if kw in query:
-            return kw, route
-    return None, None
+            matched.append({
+                "keyword": kw,
+                "route": route,
+                "priority": INTENT_PRIORITY.get(kw, 0)
+            })
+            
+    if not matched:
+        return None, None
+        
+    # 按优先级降序排序，取最高优先级的
+    matched.sort(key=lambda x: x["priority"], reverse=True)
+    best = matched[0]
+    return best["keyword"], best["route"]
 
 
 def _call_deepseek(question: str, data_str: str) -> str:
@@ -186,7 +278,7 @@ def _generate_cypher(question: str) -> str:
 
 
 # ============================================================
-# 页面布局（完整版，无省略）
+# 页面布局
 # ============================================================
 layout = html.Div([
     html.Div(className="page-header", children=[
@@ -222,7 +314,7 @@ layout = html.Div([
         html.Div([
             dcc.Textarea(
                 id="ai-input",
-                placeholder="输入问题，例如：BiomX 最近有什么新闻？",
+                placeholder="输入问题，例如：对比不同处理方式的生物膜消除效果",
                 style={"flex": "1", "border": "1px solid var(--c-border)", "borderRadius": "6px", "padding": "10px 14px", "fontSize": "14px", "resize": "none", "minHeight": "42px", "fontFamily": "inherit"},
                 value="", rows=1,
             ),

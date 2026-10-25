@@ -34,7 +34,9 @@ BREADCRUMB_MAP = {
     "/":                             [("主控台", None)],
     "/scientific/phage-library":     [("科学域", None), ("噬菌体库", None)],
     "/scientific/host-strain":       [("科学域", None), ("宿主菌株图谱", None)],
+    "/scientific/enzyme-gene":       [("科学域", None), ("酶基因库", None)],
     "/scientific/lysis-assay":       [("科学域", None), ("裂解实验", None)],
+    "/scientific/biofilm-assay":     [("科学域", None), ("生物膜实验", None)],
     "/scientific/clinical-cases":    [("科学域", None), ("临床病例", None)],
     "/scientific/evidence-packages": [("科学域", None), ("证据包管理", None)],
     "/ci/intelligence-board":        [("情报域", None), ("情报概览", None)],
@@ -45,8 +47,10 @@ BREADCRUMB_MAP = {
     "/ci/decision-records":          [("情报域", None), ("决策记录", None)],
     "/knowledge-graph":              [("知识图谱", None)],
     "/ai-assistant":                 [("AI 助手", None)],
+    "/admin/experiment-batch":       [("系统管理", None), ("实验批次", None)],
     "/admin/data-import":            [("系统管理", None), ("数据导入", None)],
     "/admin/schema":                 [("系统管理", None), ("Schema 管理", None)],
+    "/admin/schema-registry":        [("系统管理", None), ("Schema 版本", None)],
     "/admin/audit-log":              [("系统管理", None), ("审计日志", None)],
     "/admin/ontology-module":        [("系统管理", None), ("Ontology 模块", None)],
     "/login":                        [("登录", None)],
@@ -78,6 +82,11 @@ app.layout = html.Div(
     id="app-root",
     className="app-root",
     children=[
+        # ★ 顶部进度条（fixed 定位，永远在最上层，不占空间）
+        html.Div(id="top-progress"),
+        # ★ 隐藏占位：用于触发 clientside_callback
+        dcc.Store(id="progress-hook", data=0),
+
         dcc.Location(id="url", refresh=False),
         
         # 全局跳转信号
@@ -141,6 +150,75 @@ app.layout = html.Div(
 
         create_confirm_dialog(),
     ],
+)
+
+# ============================================================
+# ★ 顶部进度条 hook：监听所有 _dash-update-component 请求
+# ============================================================
+clientside_callback(
+    """
+    function(_) {
+        if (window.__topProgressBound) {
+            return window.dash_clientside.no_update;
+        }
+        window.__topProgressBound = true;
+
+        var pending = 0;
+
+        function show() {
+            var bar = document.getElementById('top-progress');
+            if (bar) bar.classList.add('loading');
+        }
+        function hide() {
+            var bar = document.getElementById('top-progress');
+            if (bar) bar.classList.remove('loading');
+        }
+
+        // ── 拦截 XMLHttpRequest（Dash 用 XHR 发回调） ──
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function() {
+            this.__url = arguments[1] || '';
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+            var isDash = (this.__url || '').indexOf('_dash-update-component') !== -1;
+            if (isDash) {
+                pending += 1;
+                show();
+                this.addEventListener('loadend', function() {
+                    pending = Math.max(0, pending - 1);
+                    if (pending === 0) hide();
+                });
+            }
+            return origSend.apply(this, arguments);
+        };
+
+        // ── 拦截 fetch（有的 Dash 版本用 fetch） ──
+        var origFetch = window.fetch;
+        if (origFetch) {
+            window.fetch = function() {
+                var url = (arguments[0] && arguments[0].url) || arguments[0] || '';
+                var isDash = String(url).indexOf('_dash-update-component') !== -1;
+                if (isDash) {
+                    pending += 1;
+                    show();
+                    return origFetch.apply(this, arguments).finally(function() {
+                        pending = Math.max(0, pending - 1);
+                        if (pending === 0) hide();
+                    });
+                }
+                return origFetch.apply(this, arguments);
+            };
+        }
+
+        return 1;
+    }
+    """,
+    Output("progress-hook", "data"),
+    Input("progress-hook", "data"),
+    prevent_initial_call=False,
 )
 
 # ============================================================

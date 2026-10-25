@@ -1,3 +1,4 @@
+# config.py
 import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
@@ -7,6 +8,10 @@ from redis.connection import ConnectionPool
 load_dotenv()
 
 class Config:
+    # 应用基础信息
+    APP_TITLE = "噬清森AI精准抗感染平台"
+    APP_VERSION = "0.7.0-EXP"
+
     # Neo4j 配置
     NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
@@ -34,15 +39,25 @@ class Config:
     PHAGE_CSV = f"{DATA_DIR}/phage_interactions.csv"
 
 
+# ★ 优化：Neo4j 驱动全局单例
+_driver = None
+
 def get_driver():
-    """获取Neo4j驱动"""
-    return GraphDatabase.driver(Config.NEO4J_URI, auth=(Config.NEO4J_USER, Config.NEO4J_PASSWORD))
+    """获取 Neo4j 驱动（全局单例复用，避免并发打满连接池）"""
+    global _driver
+    if _driver is None:
+        _driver = GraphDatabase.driver(
+            Config.NEO4J_URI, 
+            auth=(Config.NEO4J_USER, Config.NEO4J_PASSWORD)
+        )
+    return _driver
 
 
 # Redis 连接池全局单例
 _redis_pool = None
+
 def get_redis_client() -> Redis:
-    """获取Redis客户端（连接池复用，和get_driver风格保持一致）"""
+    """获取 Redis 客户端（连接池复用）"""
     global _redis_pool
     if _redis_pool is None:
         _redis_pool = ConnectionPool(

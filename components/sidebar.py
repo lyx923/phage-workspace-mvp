@@ -5,7 +5,9 @@ SIDEBAR_STRUCTURE = [
     {"section": "科学域", "items": [
         ("bi bi-virus",            "噬菌体库",   "/scientific/phage-library"),
         ("bi bi-diagram-3",        "宿主菌株",   "/scientific/host-strain"),
+        ("bi bi-dna",              "酶基因库",   "/scientific/enzyme-gene"),
         ("bi bi-eyedropper",       "裂解实验",   "/scientific/lysis-assay"),
+        ("bi bi-bounding-box",     "生物膜实验", "/scientific/biofilm-assay"),
         ("bi bi-journal-medical",  "临床病例",   "/scientific/clinical-cases"),
         ("bi bi-folder2-open",     "证据包",     "/scientific/evidence-packages"),
     ]},
@@ -21,8 +23,10 @@ SIDEBAR_STRUCTURE = [
         ("bi bi-share",            "知识图谱",   "/knowledge-graph"),
     ]},
     {"section": "系统管理", "items": [
+        ("bi bi-layers",           "实验批次",   "/admin/experiment-batch"),
         ("bi bi-cloud-upload",     "数据导入",   "/admin/data-import"),
         ("bi bi-database-gear",    "Schema",     "/admin/schema"),
+        ("bi bi-code-square",      "Schema版本", "/admin/schema-registry"),
         ("bi bi-shield-check",     "审计日志",   "/admin/audit-log"),
         ("bi bi-puzzle",           "Ontology",   "/admin/ontology-module"),
     ]},

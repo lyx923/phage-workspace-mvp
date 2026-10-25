@@ -300,6 +300,12 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (tc:TechnicalClaim) ON (tc.claim_status);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (tr:TechnicalResult) ON (tr.outcome_direction);")
 
+        # -------- v0.7 新增约束 --------
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:EnzymeGene) REQUIRE e.id IS UNIQUE")
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (b:ExperimentBatch) REQUIRE b.id IS UNIQUE")
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (b:BiofilmAssay) REQUIRE b.id IS UNIQUE")
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SchemaVersion) REQUIRE s.version IS UNIQUE")
+
         # P1 关系属性索引（Neo4j 4.3+）
         try:
             session.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:OWNS_OR_CONTROLS]-() ON (r.relation_type);")

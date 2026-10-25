@@ -10,7 +10,9 @@ SCIENTIFIC_MENU = [
         ("bi bi-diagram-3",  "宿主菌株图谱", "/scientific/host-strain"),
     ]},
     {"section": "实验与结果", "items": [
+        ("bi bi-fingerprint",      "酶基因库",     "/scientific/enzyme-gene"),   # ★ 修复图标
         ("bi bi-eyedropper",       "裂解实验记录", "/scientific/lysis-assay"),
+        ("bi bi-bounding-box",     "生物膜实验",   "/scientific/biofilm-assay"),
         ("bi bi-journal-medical",  "临床病例",     "/scientific/clinical-cases"),
         ("bi bi-folder2-open",     "证据包管理",   "/scientific/evidence-packages"),
     ]},
@@ -31,10 +33,12 @@ CI_MENU = [
 
 ADMIN_MENU = [
     {"section": "数据管理", "items": [
+        ("bi bi-layers",        "实验批次",     "/admin/experiment-batch"),
         ("bi bi-cloud-upload",  "数据导入",     "/admin/data-import"),
         ("bi bi-database-gear", "Schema 管理", "/admin/schema"),
     ]},
     {"section": "审计与治理", "items": [
+        ("bi bi-code-square",  "Schema 版本",  "/admin/schema-registry"),
         ("bi bi-shield-check", "审计日志",       "/admin/audit-log"),
         ("bi bi-puzzle",       "Ontology 模块", "/admin/ontology-module"),
     ]},
@@ -72,7 +76,7 @@ def create_navbar():
                 [
                     html.Div("AI", className="brand-icon"),
                     html.Span("助手", className="brand-name"),
-                    html.Span("v0.6", className="brand-version"),
+                    html.Span("v0.7", className="brand-version"),
                 ],
                 href="/", className="navbar-brand-box",
             ),

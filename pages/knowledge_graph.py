@@ -11,7 +11,7 @@ cyto.load_extra_layouts()
 dash.register_page(__name__, path="/knowledge-graph", name="知识图谱")
 
 # ============================================================
-# 节点配色
+# 节点配色（v0.7 新增 3 种节点）
 # ============================================================
 NODE_COLORS = {
     "Phage":                    "#1B6CA8",
@@ -31,11 +31,14 @@ NODE_COLORS = {
     "Review":                   "#8B5CF6",
     "EngineeringStrategy":      "#059669",
     "EngineeredPhageConstruct": "#0EA5E9",
+    # v0.7 新增
+    "EnzymeGene":               "#7C3AED",
+    "BiofilmAssay":             "#DC2626",
+    "ExperimentBatch":          "#6B7280",
 }
 
-
 # ============================================================
-# 静态 Ontology 结构图
+# 静态 Ontology 结构图（加入 v0.7 关系）
 # ============================================================
 ONTOLOGY_ELEMENTS = [
     # Foundation 层
@@ -45,6 +48,7 @@ ONTOLOGY_ELEMENTS = [
     {"data": {"id": "Review",         "label": "Review",         "layer": "Foundation"}},
     {"data": {"id": "AuditEvent",     "label": "AuditEvent",     "layer": "Foundation"}},
     {"data": {"id": "OntologyModule", "label": "OntologyModule", "layer": "Foundation"}},
+    {"data": {"id": "ExperimentBatch","label": "ExperimentBatch","layer": "Foundation"}},
     # Scientific 层
     {"data": {"id": "Phage",                     "label": "Phage",             "layer": "Scientific"}},
     {"data": {"id": "HostStrain",                "label": "HostStrain",        "layer": "Scientific"}},
@@ -52,6 +56,8 @@ ONTOLOGY_ELEMENTS = [
     {"data": {"id": "ClinicalCase",              "label": "ClinicalCase",      "layer": "Scientific"}},
     {"data": {"id": "ScientificEvidencePackage", "label": "EvidencePackage",   "layer": "Scientific"}},
     {"data": {"id": "KnowledgeReuseEvent",       "label": "KnowledgeReuseEvent","layer": "Scientific"}},
+    {"data": {"id": "EnzymeGene",                "label": "EnzymeGene",        "layer": "Scientific"}},
+    {"data": {"id": "BiofilmAssay",              "label": "BiofilmAssay",      "layer": "Scientific"}},
     # CI 层
     {"data": {"id": "DevelopmentProgram",       "label": "DevelopmentProgram",   "layer": "CI"}},
     {"data": {"id": "IntelligenceEvent",        "label": "IntelligenceEvent",    "layer": "CI"}},
@@ -77,6 +83,14 @@ ONTOLOGY_ELEMENTS = [
     {"data": {"source": "IntelligenceEvent",        "target": "Organization",     "label": "INVOLVES"}},
     {"data": {"source": "IntelligenceEvent",        "target": "SourceArtifact",   "label": "HAS_SOURCE"}},
     {"data": {"source": "DecisionRecord",           "target": "IntelligenceProduct","label": "BASED_ON"}},
+    # v0.7 新增
+    {"data": {"source": "Phage",                    "target": "Phage",            "label": "ENGINEERED_FROM"}},
+    {"data": {"source": "Phage",                    "target": "EnzymeGene",       "label": "DISPLAYS"}},
+    {"data": {"source": "EnzymeGene",               "target": "HostStrain",       "label": "DEGRADES"}},
+    {"data": {"source": "LysisAssay",               "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
+    {"data": {"source": "EnzymeGene",               "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
+    {"data": {"source": "BiofilmAssay",             "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
+    {"data": {"source": "BiofilmAssay",             "target": "Phage",            "label": "TREATS"}},
 ]
 
 
@@ -169,6 +183,18 @@ def _fetch_live_elements(view):
                    p.package_id AS pid
             LIMIT 40
         """)
+    elif view == "engineering":
+        # ★ v0.7 修复：严格指定工程化噬菌体 -> 亲本的方向
+        rows = _run("""
+            MATCH (ep:Phage)-[:ENGINEERED_FROM]->(wt:Phage)
+            OPTIONAL MATCH (ep)-[:DISPLAYS]->(eg:EnzymeGene)
+            OPTIONAL MATCH (eg)-[:DEGRADES]->(hs:HostStrain)
+            RETURN wt.phage_id AS wt_id, wt.name AS wt_name,
+                   ep.phage_id AS ep_id, ep.name AS ep_name, ep.engineering_status AS ep_status,
+                   eg.id AS eg_id, eg.name AS eg_name, eg.specific_activity AS eg_activity,
+                   hs.host_strain_id AS hs_id, hs.strain_label AS hs_label
+            LIMIT 100
+        """)
     else:
         return ONTOLOGY_ELEMENTS
 
@@ -196,6 +222,7 @@ def _fetch_live_elements(view):
             add_edge(r["eid"], r["sid"], "HAS_SOURCE")
             add_edge(r["bid"], r["oid"], "COVERS")
             add_edge(r["did"], r["bid"], "BASED_ON")
+            
     elif view == "reuse":
         for r in rows:
             add_node(r["kid"], r["ktype"], "KnowledgeReuseEvent")
@@ -204,19 +231,31 @@ def _fetch_live_elements(view):
         for r in rows:
             add_edge(r["kid"], r["cid"], "SOURCE_CASE")
             add_edge(r["kid"], r["pid"], "TARGETS_PACKAGE")
+            
+    elif view == "engineering":
+        for r in rows:
+            add_node(r["wt_id"], r["wt_name"], "Phage") # 亲本
+            add_node(r["ep_id"], r["ep_name"], "Phage") # 工程化
+            add_node(r["eg_id"], r["eg_name"], "EnzymeGene")
+            add_node(r["hs_id"], r["hs_label"], "HostStrain")
+            
+        for r in rows:
+            add_edge(r["ep_id"], r["wt_id"], "ENGINEERED_FROM")
+            add_edge(r["ep_id"], r["eg_id"], "DISPLAYS")
+            add_edge(r["eg_id"], r["hs_id"], "DEGRADES")
 
     return list(nodes.values()) + edges
 
 
 # ============================================================
-# 页面骨架（移除了底部表格，全屏留给图谱）
+# 页面骨架
 # ============================================================
 layout = html.Div([
     # 页头
     html.Div(className="page-header", children=[
         html.Div([
             html.Div("知识图谱", className="page-title"),
-            html.Div("Ontology 链路可视化 · 归因溯源 · 跨病例复用",
+            html.Div("Ontology 链路可视化 · 归因溯源 · 工程化血缘",
                      className="page-subtitle"),
         ]),
         html.Div(className="page-actions", children=[
@@ -242,6 +281,7 @@ layout = html.Div([
                     {"label": " Ontology 结构图", "value": "ontology"},
                     {"label": " 归因溯源图",       "value": "attribution"},
                     {"label": " 跨病例复用图",     "value": "reuse"},
+                    {"label": " 工程化血缘图",     "value": "engineering"},
                 ],
                 value="ontology",
                 inline=True,
@@ -269,8 +309,11 @@ layout = html.Div([
 
     dbc.Row(className="g-3", children=[
         dbc.Col(md=8, children=[
-            html.Div(id="kg-cyto-wrap", className="surface-card",
+            html.Div(id="kg-cyto-wrap", className="surface-card", style={"position": "relative"},
                      children=[
+                # ★ 空状态提示 UI
+                html.Div(id="kg-empty-tip", style={"display": "none", "position": "absolute", "top": "50%", "left": "50%", "transform": "translate(-50%, -50%)", "textAlign": "center", "zIndex": "10", "pointerEvents": "none"}),
+                
                 cyto.Cytoscape(
                     id="kg-cyto",
                     elements=ONTOLOGY_ELEMENTS,
@@ -311,6 +354,8 @@ layout = html.Div([
 @callback(
     Output("kg-cyto", "elements"),
     Output("kg-cyto", "layout"),
+    Output("kg-empty-tip", "children"),
+    Output("kg-empty-tip", "style"),
     Input("kg-view-mode", "value"),
     Input("kg-layout-algo", "value"),
     Input("btn-kg-relayout", "n_clicks"),
@@ -322,11 +367,23 @@ def cb_update_graph(view_mode, layout_algo, _relayout):
         print(f"[kg] fetch error: {e}")
         elements = ONTOLOGY_ELEMENTS
 
-    layout_cfg = {"name": layout_algo, "animate": True,
-                  "animationDuration": 500}
+    # 空状态提示判断
+    empty_tip_ui = no_update
+    empty_tip_style = {"display": "none"}
+    
+    if not elements:
+        empty_tip_ui = [
+            html.I(className="bi bi-inbox", style={"fontSize": "48px", "color": "var(--c-border)", "marginBottom": "16px"}),
+            html.Div("暂无相关图谱数据", style={"fontSize": "16px", "fontWeight": "600", "color": "var(--c-text-muted)"}),
+            html.Div("请先去「科学域 -> 噬菌体库」录入带有亲本和酶基因的工程化噬菌体", style={"fontSize": "13px", "color": "var(--c-text-muted)", "marginTop": "8px"})
+        ]
+        empty_tip_style = {"display": "block", "position": "absolute", "top": "50%", "left": "50%", "transform": "translate(-50%, -50%)", "textAlign": "center", "zIndex": "10"}
+
+    layout_cfg = {"name": layout_algo, "animate": True, "animationDuration": 500}
     if layout_algo == "cose":
         layout_cfg.update({"nodeRepulsion": 8000, "idealEdgeLength": 120})
-    return elements, layout_cfg
+        
+    return elements, layout_cfg, empty_tip_ui, empty_tip_style
 
 
 # ============================================================
@@ -344,12 +401,27 @@ def cb_node_detail(node_data):
     node_id = node_data.get("id", "")
     node_label = node_data.get("label", node_id)
     node_layer = node_data.get("layer", "—")
+    
     color = NODE_COLORS.get(node_id, "#64748B")
+    if node_id not in NODE_COLORS:
+        if "IntelligenceEvent" in node_layer: color = NODE_COLORS["IntelligenceEvent"]
+        elif "Organization" in node_layer: color = NODE_COLORS["Organization"]
+        elif "SourceArtifact" in node_layer: color = NODE_COLORS["SourceArtifact"]
+        elif "IntelligenceProduct" in node_layer: color = NODE_COLORS["IntelligenceProduct"]
+        elif "DecisionRecord" in node_layer: color = NODE_COLORS["DecisionRecord"]
+        elif "Phage" in node_layer: color = NODE_COLORS["Phage"]
+        elif "EnzymeGene" in node_layer: color = NODE_COLORS["EnzymeGene"]
+        elif "HostStrain" in node_layer: color = NODE_COLORS["HostStrain"]
 
     props = {}
     try:
-        rows = _run(f"MATCH (n:{node_id}) "
-                    f"RETURN properties(n) AS props LIMIT 1")
+        if node_id in NODE_COLORS:
+            rows = _run(f"MATCH (n:{node_id}) RETURN properties(n) AS props LIMIT 1")
+        else:
+            rows = _run("MATCH (n {id: $id}) RETURN properties(n) AS props LIMIT 1", id=node_id)
+            if not rows:
+                rows = _run("MATCH (n) WHERE n.phage_id = $id OR n.event_id = $id OR n.brief_id = $id OR n.organization_id = $id RETURN properties(n) AS props LIMIT 1", id=node_id)
+
         if rows:
             props = rows[0].get("props") or {}
     except Exception:
@@ -358,34 +430,18 @@ def cb_node_detail(node_data):
     prop_rows = []
     for k, v in list(props.items())[:8]:
         prop_rows.append(html.Div([
-            html.Span(str(k), style={"color": "var(--c-text-muted)",
-                                     "fontWeight": "500"}),
-            html.Span(str(v)[:60], style={"fontFamily": "monospace",
-                                           "textAlign": "right",
-                                           "wordBreak": "break-all"}),
-        ], style={"display": "flex", "justifyContent": "space-between",
-                  "padding": "6px 0",
-                  "borderBottom": "1px solid var(--c-border)",
-                  "fontSize": "12px", "gap": "8px"}))
+            html.Span(str(k), style={"color": "var(--c-text-muted)", "fontWeight": "500"}),
+            html.Span(str(v)[:60], style={"fontFamily": "monospace", "textAlign": "right", "wordBreak": "break-all"}),
+        ], style={"display": "flex", "justifyContent": "space-between", "padding": "6px 0", "borderBottom": "1px solid var(--c-border)", "fontSize": "12px", "gap": "8px"}))
 
     if not prop_rows:
-        prop_rows = [html.Div("（静态 Ontology 节点，无实例属性）",
-                              style={"color": "var(--c-text-muted)",
-                                     "fontSize": "12px",
-                                     "padding": "12px 0",
-                                     "textAlign": "center"})]
+        prop_rows = [html.Div("（静态 Ontology 节点，无实例属性）", style={"color": "var(--c-text-muted)", "fontSize": "12px", "padding": "12px 0", "textAlign": "center"})]
 
     return [
-        html.Div(style={"background": color, "borderRadius": "8px",
-                        "padding": "12px 16px", "marginBottom": "16px"},
+        html.Div(style={"background": color, "borderRadius": "8px", "padding": "12px 16px", "marginBottom": "16px"},
                  children=[
-                     html.Div(node_label, style={"color": "#fff",
-                                                  "fontWeight": "700",
-                                                  "fontSize": "16px"}),
-                     html.Div(f"层：{node_layer}",
-                              style={"color": "rgba(255,255,255,0.75)",
-                                     "fontSize": "12px",
-                                     "marginTop": "3px"}),
+                     html.Div(node_label, style={"color": "#fff", "fontWeight": "700", "fontSize": "16px"}),
+                     html.Div(f"层：{node_layer}", style={"color": "rgba(255,255,255,0.75)", "fontSize": "12px", "marginTop": "3px"}),
                  ]),
         html.Div(prop_rows),
     ]
