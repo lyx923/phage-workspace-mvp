@@ -54,47 +54,42 @@ def _get_client() -> OpenAI:
 def _retrieve_golden_rules(species: str, strain_type: Optional[str] = None) -> Dict:
     """
     从 Neo4j 检索指定病原菌关联的黄金规则及其推荐的噬菌体。
-
-    规则只有在全部必填条件（species + strain_type）满足时才能应用。
-    如果查询中缺少 strain_type，返回提示信息，不应用规则。
-
-    Returns:
-        Dict: {rule_phages, matched_rules, missing_condition, message}
     """
-    with get_driver() as driver:
-        with driver.session() as session:
-            # 如果缺少 strain_type，返回提示，不应用规则
-            if not strain_type:
-                return {
-                    "rule_phages": [],
-                    "matched_rules": [],
-                    "missing_condition": "strain_type",
-                    "message": "规则存在，但当前上下文缺少适用条件（strain_type）"
-                }
-
-            # 使用 ScientificKnowledgeRule 标签，并要求 strain_type 匹配且规则状态为 active
-            rule_result = session.run("""
-                MATCH (p:Pathogen {species: $species})
-                OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:ScientificKnowledgeRule)
-                WHERE r.strain_type = $strain_type
-                  AND r.status = 'active'
-                OPTIONAL MATCH (r)-[:RECOMMENDS_PHAGE]->(ph:Phage)
-                RETURN COLLECT(DISTINCT ph.name) AS rule_phages,
-                       COLLECT(DISTINCT {
-                           rule_id: r.rule_id, 
-                           treatment: r.treatment, 
-                           outcome: r.outcome,
-                           required_attributes: r.required_attributes,
-                           applicability: r.applicability
-                       }) AS rules
-            """, species=species, strain_type=strain_type)
-            rule_data = rule_result.single().data()
+    # ★ 修复：去掉 with，避免关闭连接池
+    driver = get_driver()
+    with driver.session() as session:
+        # 如果缺少 strain_type，返回提示，不应用规则
+        if not strain_type:
             return {
-                "rule_phages": rule_data.get('rule_phages', []),
-                "matched_rules": rule_data.get('rules', []),
-                "missing_condition": None,
-                "message": None
+                "rule_phages": [],
+                "matched_rules": [],
+                "missing_condition": "strain_type",
+                "message": "规则存在，但当前上下文缺少适用条件（strain_type）"
             }
+
+        # 使用 ScientificKnowledgeRule 标签，并要求 strain_type 匹配且规则状态为 active
+        rule_result = session.run("""
+            MATCH (p:Pathogen {species: $species})
+            OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:ScientificKnowledgeRule)
+            WHERE r.strain_type = $strain_type
+              AND r.status = 'active'
+            OPTIONAL MATCH (r)-[:RECOMMENDS_PHAGE]->(ph:Phage)
+            RETURN COLLECT(DISTINCT ph.name) AS rule_phages,
+                   COLLECT(DISTINCT {
+                       rule_id: r.rule_id, 
+                       treatment: r.treatment, 
+                       outcome: r.outcome,
+                       required_attributes: r.required_attributes,
+                       applicability: r.applicability
+                   }) AS rules
+        """, species=species, strain_type=strain_type)
+        rule_data = rule_result.single().data()
+        return {
+            "rule_phages": rule_data.get('rule_phages', []),
+            "matched_rules": rule_data.get('rules', []),
+            "missing_condition": None,
+            "message": None
+        }
 
 
 # ==================== 数据格式化函数 ====================
@@ -141,10 +136,6 @@ def _merge_golden_rule_phages(
 ) -> List[Dict]:
     """
     将黄金规则推荐的噬菌体合并到互作路径的噬菌体列表中。
-
-    - 若规则因缺少条件而未匹配，则添加提示条目
-    - 已存在于互作列表中的噬菌体 → 提升为 validated_rule 优先级
-    - 不在互作列表中的噬菌体 → 新增条目，放在列表最前面
     """
     # 缺少条件 → 加提示条目
     if rule_data.get('missing_condition'):
@@ -212,12 +203,6 @@ def build_evidence_package(
 ) -> Dict:
     """
     调用 DeepSeek API 组织检索结果，生成结构化的 Evidence Package。
-
-    严格要求：
-        - 只使用提供的检索结果
-        - validated_rule 必须排第一位
-        - explanation 中逐条列出所有噬菌体（禁止使用"等"字）
-        - 严禁治疗推荐表达
     """
     matched_rules = query_context.get('matched_rules', [])
     rules_text = json.dumps(matched_rules, ensure_ascii=False, indent=2) if matched_rules else "未匹配到黄金规则"
@@ -309,9 +294,10 @@ def build_evidence_package_from_db(
     """
     一站式入口：检索互作路径 + 黄金规则路径 → 合并 → 构建 Evidence Package（LLM）→ 持久化。
     """
-    with get_driver() as driver:
-        raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
-        raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
+    raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
 
     formatted_phages = _format_matching_phages(raw_phages)
 
@@ -345,20 +331,21 @@ def verify_llm_effectiveness(case_id: str = "CASE-001") -> Dict:
     """
     验证 LLM 推荐效果 vs 真实临床方案。
     """
-    with get_driver() as driver:
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (c:ClinicalCase {case_id: $case_id})-[:INVOLVES_PATHOGEN]->(p:Pathogen)
-                OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:KnowledgeRule)
-                RETURN c.case_id AS case_id,
-                       c.infection_type AS infection_type,
-                       c.phage_treatment AS actual_treatment,
-                       c.microbiological_outcome AS actual_outcome,
-                       p.species AS species,
-                       p.resistance_mechanism AS resistance,
-                       COLLECT(DISTINCT {rule_id: r.rule_id, treatment: r.treatment, outcome: r.outcome}) AS rules
-            """, case_id=case_id)
-            case_data = result.single().data()
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (c:ClinicalCase {case_id: $case_id})-[:INVOLVES_PATHOGEN]->(p:Pathogen)
+            OPTIONAL MATCH (p)-[:HAS_VALIDATED_RULE]->(r:KnowledgeRule)
+            RETURN c.case_id AS case_id,
+                   c.infection_type AS infection_type,
+                   c.phage_treatment AS actual_treatment,
+                   c.microbiological_outcome AS actual_outcome,
+                   p.species AS species,
+                   p.resistance_mechanism AS resistance,
+                   COLLECT(DISTINCT {rule_id: r.rule_id, treatment: r.treatment, outcome: r.outcome}) AS rules
+        """, case_id=case_id)
+        case_data = result.single().data()
 
     if not case_data:
         return {"error": f"病例 {case_id} 不存在"}
@@ -399,172 +386,164 @@ def rule_based_evidence_package(
 ) -> Dict:
     """
     纯规则引擎：同时检索互作路径和黄金规则路径，不调用 LLM。
-
-    排序规则：
-        priority='high' 排第一，然后按 evidence_level（L1 最高），
-        最后按 infection_probability 倒序。
     """
-    with get_driver() as driver:
-        raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
-        raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
+    raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
 
-        matching_evidence = []
-        for item in raw_phages:
-            ref = item.get('evidence_ref')
-            if isinstance(ref, str):
-                ref = [x.strip() for x in ref.split(',') if x.strip()]
-            elif ref is None:
-                ref = []
+    matching_evidence = []
+    for item in raw_phages:
+        ref = item.get('evidence_ref')
+        if isinstance(ref, str):
+            ref = [x.strip() for x in ref.split(',') if x.strip()]
+        elif ref is None:
+            ref = []
 
-            matching_evidence.append({
-                "phage_name": item.get('name'),
-                "family": item.get('family'),
-                "infection_result": item.get('infection_result'),
-                "infection_probability": item.get('infection_probability'),
-                "evidence_level": item.get('evidence_level'),
-                "evidence_ref": ref,
-                "notes": item.get('notes')
-            })
+        matching_evidence.append({
+            "phage_name": item.get('name'),
+            "family": item.get('family'),
+            "infection_result": item.get('infection_result'),
+            "infection_probability": item.get('infection_probability'),
+            "evidence_level": item.get('evidence_level'),
+            "evidence_ref": ref,
+            "notes": item.get('notes')
+        })
 
-        # 检索并合并黄金规则
-        rule_data = _retrieve_golden_rules(species, strain_type)
-        matching_evidence = _merge_golden_rule_phages(matching_evidence, rule_data)
+    # 检索并合并黄金规则
+    rule_data = _retrieve_golden_rules(species, strain_type)
+    matching_evidence = _merge_golden_rule_phages(matching_evidence, rule_data)
 
-        # 排序
-        def sort_key(e):
-            priority = e.get('priority', 'normal')
-            level = e.get('evidence_level', 'L5')
-            prob = e.get('infection_probability', 0) or 0
-            if priority == 'high':
-                return (0, 0, 1.0)
-            level_order = {'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5}
-            return (1, level_order.get(level, 5), -prob)
+    # 排序
+    def sort_key(e):
+        priority = e.get('priority', 'normal')
+        level = e.get('evidence_level', 'L5')
+        prob = e.get('infection_probability', 0) or 0
+        if priority == 'high':
+            return (0, 0, 1.0)
+        level_order = {'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5}
+        return (1, level_order.get(level, 5), -prob)
 
-        matching_evidence.sort(key=sort_key)
+    matching_evidence.sort(key=sort_key)
 
-        clinical_evidence = [
-            {
-                "case_id": item.get('case_id'),
-                "infection_type": item.get('infection_type'),
-                "phage_treatment": item.get('phage_treatment'),
-                "clinical_outcome": item.get('clinical_outcome'),
-                "microbiological_outcome": item.get('microbiological_outcome')
-            }
-            for item in raw_cases
-        ]
-
-        total = len(matching_evidence)
-        clinical_cnt = len(clinical_evidence)
-
-        golden_phages = [e['phage_name'] for e in matching_evidence if e.get('priority') == 'high']
-        validated_phages = [e['phage_name'] for e in matching_evidence if e.get('evidence_level') == 'L3']
-
-        if golden_phages:
-            explanation = (
-                f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
-                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(golden_phages)} 由经过临床验证的黄金规则推荐，证据排序较高。"
-            )
-        elif validated_phages:
-            explanation = (
-                f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
-                f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(validated_phages[:3])} 有临床病例验证，需领域专家进一步审核。"
-            )
-        else:
-            explanation = f"检索到 {total} 个匹配噬菌体和 {clinical_cnt} 个相似病例，无临床验证噬菌体，建议人工复核。"
-
-        return {
-            "matching_evidence": matching_evidence,
-            "clinical_evidence": clinical_evidence,
-            "explanation": explanation,
-            "_engine_type": "rule_based",
-            "_golden_rules_applied": golden_phages
+    clinical_evidence = [
+        {
+            "case_id": item.get('case_id'),
+            "infection_type": item.get('infection_type'),
+            "phage_treatment": item.get('phage_treatment'),
+            "clinical_outcome": item.get('clinical_outcome'),
+            "microbiological_outcome": item.get('microbiological_outcome')
         }
+        for item in raw_cases
+    ]
+
+    total = len(matching_evidence)
+    clinical_cnt = len(clinical_evidence)
+
+    golden_phages = [e['phage_name'] for e in matching_evidence if e.get('priority') == 'high']
+    validated_phages = [e['phage_name'] for e in matching_evidence if e.get('evidence_level') == 'L3']
+
+    if golden_phages:
+        explanation = (
+            f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
+            f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(golden_phages)} 由经过临床验证的黄金规则推荐，证据排序较高。"
+        )
+    elif validated_phages:
+        explanation = (
+            f"针对 {species}（{resistance or '未知耐药'}）引起的 {infection_type or '未知感染'}，"
+            f"共检索到 {total} 个匹配噬菌体。其中 {', '.join(validated_phages[:3])} 有临床病例验证，需领域专家进一步审核。"
+        )
+    else:
+        explanation = f"检索到 {total} 个匹配噬菌体和 {clinical_cnt} 个相似病例，无临床验证噬菌体，建议人工复核。"
+
+    return {
+        "matching_evidence": matching_evidence,
+        "clinical_evidence": clinical_evidence,
+        "explanation": explanation,
+        "_engine_type": "rule_based",
+        "_golden_rules_applied": golden_phages
+    }
 
 
 # ==================== 持久化 Evidence Package ====================
 def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
     """
     将 Evidence Package 持久化为 ScientificEvidencePackage 节点，并建立所有必要关系。
-
-    符合 PRD 5.4 节要求：
-    - 字段完整（package_type, query_context, generated_by, model_used, prompt_version, 
-      updated_at, review_status, schema_version）
-    - 建立关系：USES_ASSAY, REFERENCES_CASE, CITES_SOURCE, INCLUDES_CANDIDATE
-    - status 默认为 draft（DeepSeek 只生成 draft）
     """
     package_id = f"EP-{uuid.uuid4().hex[:8].upper()}"
 
-    with get_driver() as driver:
-        with driver.session() as session:
-            # 1. 创建 ScientificEvidencePackage 节点（完整字段）
-            session.run("""
-                CREATE (p:ScientificEvidencePackage {
-                    package_id: $package_id,
-                    package_type: 'evidence_summary',
-                    query_context: $query_context,
-                    status: 'draft',
-                    generated_by: $generated_by,
-                    model_used: $model_used,
-                    prompt_version: $prompt_version,
-                    created_at: datetime(),
-                    updated_at: datetime(),
-                    review_status: 'pending',
-                    summary: $summary,
-                    limitations: $limitations,
-                    schema_version: '1.0.0'
-                })
-            """,
-            package_id=package_id,
-            query_context=json.dumps(query_context, ensure_ascii=False, default=str),
-            generated_by=query_context.get('generated_by', 'system'),
-            model_used=query_context.get('model_used', 'deepseek-v3'),
-            prompt_version=query_context.get('prompt_version', 'v1.0'),
-            summary=package_dict.get('explanation', ''),
-            limitations='需人工进一步确认')
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    with driver.session() as session:
+        # 1. 创建 ScientificEvidencePackage 节点（完整字段）
+        session.run("""
+            CREATE (p:ScientificEvidencePackage {
+                package_id: $package_id,
+                package_type: 'evidence_summary',
+                query_context: $query_context,
+                status: 'draft',
+                generated_by: $generated_by,
+                model_used: $model_used,
+                prompt_version: $prompt_version,
+                created_at: datetime(),
+                updated_at: datetime(),
+                review_status: 'pending',
+                summary: $summary,
+                limitations: $limitations,
+                schema_version: '1.0.0'
+            })
+        """,
+        package_id=package_id,
+        query_context=json.dumps(query_context, ensure_ascii=False, default=str),
+        generated_by=query_context.get('generated_by', 'system'),
+        model_used=query_context.get('model_used', 'deepseek-v3'),
+        prompt_version=query_context.get('prompt_version', 'v1.0'),
+        summary=package_dict.get('explanation', ''),
+        limitations='需人工进一步确认')
 
-            # 2. INCLUDES_CANDIDATE → Phage
-            for item in package_dict.get('matching_evidence', []):
-                phage_name = item.get('phage_name')
-                if phage_name:
-                    session.run("""
-                        MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
-                        MATCH (ph:Phage {name: $phage_name})
-                        CREATE (pkg)-[:INCLUDES_CANDIDATE]->(ph)
-                    """, package_id=package_id, phage_name=phage_name)
-
-            # 3. USES_ASSAY → LysisAssay
-            for item in package_dict.get('matching_evidence', []):
-                assay_id = item.get('assay_id')
-                if assay_id:
-                    session.run("""
-                        MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
-                        MATCH (a:LysisAssay {assay_id: $assay_id})
-                        CREATE (pkg)-[:USES_ASSAY]->(a)
-                    """, package_id=package_id, assay_id=assay_id)
-
-            # 4. REFERENCES_CASE → ClinicalCase
-            for case in package_dict.get('clinical_evidence', []):
-                case_id = case.get('case_id')
-                if case_id:
-                    session.run("""
-                        MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
-                        MATCH (c:ClinicalCase {case_id: $case_id})
-                        CREATE (pkg)-[:REFERENCES_CASE]->(c)
-                    """, package_id=package_id, case_id=case_id)
-
-            # 5. CITES_SOURCE → SourceArtifact
-            source_refs = set()
-            for item in package_dict.get('matching_evidence', []):
-                for ref in item.get('evidence_ref', []):
-                    if ref and str(ref).strip():
-                        source_refs.add(ref.strip())
-
-            for ref in source_refs:
+        # 2. INCLUDES_CANDIDATE → Phage
+        for item in package_dict.get('matching_evidence', []):
+            phage_name = item.get('phage_name')
+            if phage_name:
                 session.run("""
                     MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
-                    MATCH (s:SourceArtifact)
-                    WHERE s.title CONTAINS $ref OR s.source_id CONTAINS $ref
-                    CREATE (pkg)-[:CITES_SOURCE]->(s)
-                """, package_id=package_id, ref=ref)
+                    MATCH (ph:Phage {name: $phage_name})
+                    CREATE (pkg)-[:INCLUDES_CANDIDATE]->(ph)
+                """, package_id=package_id, phage_name=phage_name)
+
+        # 3. USES_ASSAY → LysisAssay
+        for item in package_dict.get('matching_evidence', []):
+            assay_id = item.get('assay_id')
+            if assay_id:
+                session.run("""
+                    MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+                    MATCH (a:LysisAssay {assay_id: $assay_id})
+                    CREATE (pkg)-[:USES_ASSAY]->(a)
+                """, package_id=package_id, assay_id=assay_id)
+
+        # 4. REFERENCES_CASE → ClinicalCase
+        for case in package_dict.get('clinical_evidence', []):
+            case_id = case.get('case_id')
+            if case_id:
+                session.run("""
+                    MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+                    MATCH (c:ClinicalCase {case_id: $case_id})
+                    CREATE (pkg)-[:REFERENCES_CASE]->(c)
+                """, package_id=package_id, case_id=case_id)
+
+        # 5. CITES_SOURCE → SourceArtifact
+        source_refs = set()
+        for item in package_dict.get('matching_evidence', []):
+            for ref in item.get('evidence_ref', []):
+                if ref and str(ref).strip():
+                    source_refs.add(ref.strip())
+
+        for ref in source_refs:
+            session.run("""
+                MATCH (pkg:ScientificEvidencePackage {package_id: $package_id})
+                MATCH (s:SourceArtifact)
+                WHERE s.title CONTAINS $ref OR s.source_id CONTAINS $ref
+                CREATE (pkg)-[:CITES_SOURCE]->(s)
+            """, package_id=package_id, ref=ref)
 
     return package_id

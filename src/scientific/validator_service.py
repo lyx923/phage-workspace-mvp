@@ -1,15 +1,6 @@
 # src/scientific/validator_service.py
 """
 配型效果验证工具。
-
-支持 L1-L5 五级证据等级（基于新模型 LysisAssay + HostStrain）。
-
-职责：
-    - query_phages_for_host / query_hosts_for_phage：正反向查询
-    - get_phage_recommendation：一站式推荐
-    - query_l3_evidence / batch_validate_hosts / validate_without_sequencing：验证
-    - cluster_strains_from_csv / query_phages_by_pseudo_type_from_mapping：
-      基于裂解谱聚类的伪型别推荐
 """
 from typing import List, Dict, Optional
 import pandas as pd
@@ -27,45 +18,38 @@ def query_phages_for_host(
 ) -> List[Dict]:
     """
     查询某个宿主菌株能匹配哪些噬菌体（基于 LysisAssay 和 HostStrain）。
-
-    Args:
-        host_strain: 宿主菌株编号
-        limit: 返回上限
-        evidence_level: 可选，只返回指定等级的噬菌体
-
-    Returns:
-        List[Dict]: 每条含 phage_name / phage_id / evidence_level / qc_status
     """
     host_strain = host_strain.strip()
-    with get_driver() as driver:
-        with driver.session() as session:
-            level_filter = ""
-            if evidence_level:
-                level_filter = f"AND a.evidence_level = '{evidence_level}'"
+    # ★ 修复
+    driver = get_driver()
+    with driver.session() as session:
+        level_filter = ""
+        if evidence_level:
+            level_filter = f"AND a.evidence_level = '{evidence_level}'"
 
-            result = session.run(f"""
-                MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
-                WHERE h.strain_label = $host_strain
-                {level_filter}
-                MATCH (ph:Phage)-[:USED_IN]->(a)
-                RETURN ph.name AS phage_name,
-                       ph.phage_id AS phage_id,
-                       a.evidence_level AS evidence_level,
-                       a.evidence_ref AS evidence_ref,
-                       a.qc_status AS qc_status
-                ORDER BY 
-                    CASE a.evidence_level
-                        WHEN 'L5' THEN 1
-                        WHEN 'L4' THEN 2
-                        WHEN 'L3' THEN 3
-                        WHEN 'L2' THEN 4
-                        WHEN 'L1' THEN 5
-                        ELSE 6
-                    END,
-                    ph.name
-                LIMIT $limit
-            """, host_strain=host_strain, limit=limit)
-            return [dict(record) for record in result]
+        result = session.run(f"""
+            MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+            WHERE h.strain_label = $host_strain
+            {level_filter}
+            MATCH (ph:Phage)-[:USED_IN]->(a)
+            RETURN ph.name AS phage_name,
+                   ph.phage_id AS phage_id,
+                   a.evidence_level AS evidence_level,
+                   a.evidence_ref AS evidence_ref,
+                   a.qc_status AS qc_status
+            ORDER BY 
+                CASE a.evidence_level
+                    WHEN 'L5' THEN 1
+                    WHEN 'L4' THEN 2
+                    WHEN 'L3' THEN 3
+                    WHEN 'L2' THEN 4
+                    WHEN 'L1' THEN 5
+                    ELSE 6
+                END,
+                ph.name
+            LIMIT $limit
+        """, host_strain=host_strain, limit=limit)
+        return [dict(record) for record in result]
 
 
 def query_hosts_for_phage(
@@ -75,36 +59,32 @@ def query_hosts_for_phage(
 ) -> List[Dict]:
     """
     反向查询：给定噬菌体，返回能裂解的宿主菌株列表。
-
-    Args:
-        phage_name: 噬菌体名称（支持 name 字段匹配）
-        limit: 返回上限
-        evidence_level: 可选，只返回指定等级
     """
-    with get_driver() as driver:
-        with driver.session() as session:
-            level_filter = ""
-            if evidence_level:
-                level_filter = f"AND a.evidence_level = '{evidence_level}'"
+    # ★ 修复
+    driver = get_driver()
+    with driver.session() as session:
+        level_filter = ""
+        if evidence_level:
+            level_filter = f"AND a.evidence_level = '{evidence_level}'"
 
-            result = session.run(f"""
-                MATCH (ph:Phage {{name: $phage_name}})-[:USED_IN]->(a:LysisAssay)
-                {level_filter}
-                MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
-                RETURN h.strain_label AS host_strain,
-                       a.evidence_level AS evidence_level
-                ORDER BY 
-                    CASE a.evidence_level
-                        WHEN 'L5' THEN 1
-                        WHEN 'L4' THEN 2
-                        WHEN 'L3' THEN 3
-                        WHEN 'L2' THEN 4
-                        WHEN 'L1' THEN 5
-                        ELSE 6
-                    END
-                LIMIT $limit
-            """, phage_name=phage_name, limit=limit)
-            return [dict(record) for record in result]
+        result = session.run(f"""
+            MATCH (ph:Phage {{name: $phage_name}})-[:USED_IN]->(a:LysisAssay)
+            {level_filter}
+            MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
+            RETURN h.strain_label AS host_strain,
+                   a.evidence_level AS evidence_level
+            ORDER BY 
+                CASE a.evidence_level
+                    WHEN 'L5' THEN 1
+                    WHEN 'L4' THEN 2
+                    WHEN 'L3' THEN 3
+                    WHEN 'L2' THEN 4
+                    WHEN 'L1' THEN 5
+                    ELSE 6
+                END
+            LIMIT $limit
+        """, phage_name=phage_name, limit=limit)
+        return [dict(record) for record in result]
 
 
 def get_phage_recommendation(
@@ -116,9 +96,6 @@ def get_phage_recommendation(
 ) -> Dict:
     """
     一站式推荐入口：
-
-    - 若提供 host_strain：走菌株级查询（query_phages_for_host）
-    - 否则走 Evidence Package 全流程（build_evidence_package_from_db）
     """
     if host_strain:
         phages = query_phages_for_host(host_strain, limit=20)
@@ -151,35 +128,34 @@ def get_phage_recommendation(
 def query_l3_evidence(host_strain: Optional[str] = None) -> List[Dict]:
     """
     查询 L3/L4/L5 证据（基于 LysisAssay）。
-
-    可按宿主菌株过滤。
     """
-    with get_driver() as driver:
-        with driver.session() as session:
-            strain_filter = ""
-            if host_strain:
-                strain_filter = f"AND h.strain_label = '{host_strain}'"
+    # ★ 修复
+    driver = get_driver()
+    with driver.session() as session:
+        strain_filter = ""
+        if host_strain:
+            strain_filter = f"AND h.strain_label = '{host_strain}'"
 
-            result = session.run(f"""
-                MATCH (a:LysisAssay)
-                WHERE a.evidence_level IN ['L3', 'L4', 'L5']
-                OPTIONAL MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
-                MATCH (ph:Phage)-[:USED_IN]->(a)
-                RETURN ph.name AS phage_name,
-                       ph.phage_id AS phage_id,
-                       a.evidence_level AS evidence_level,
-                       a.evidence_ref AS evidence_ref,
-                       h.strain_label AS host_strain
-                ORDER BY 
-                    CASE a.evidence_level
-                        WHEN 'L5' THEN 1
-                        WHEN 'L4' THEN 2
-                        WHEN 'L3' THEN 3
-                        ELSE 4
-                    END,
-                    ph.name
-            """)
-            return [dict(record) for record in result]
+        result = session.run(f"""
+            MATCH (a:LysisAssay)
+            WHERE a.evidence_level IN ['L3', 'L4', 'L5']
+            OPTIONAL MATCH (a)-[:TESTED_AGAINST]->(h:HostStrain)
+            MATCH (ph:Phage)-[:USED_IN]->(a)
+            RETURN ph.name AS phage_name,
+                   ph.phage_id AS phage_id,
+                   a.evidence_level AS evidence_level,
+                   a.evidence_ref AS evidence_ref,
+                   h.strain_label AS host_strain
+            ORDER BY 
+                CASE a.evidence_level
+                    WHEN 'L5' THEN 1
+                    WHEN 'L4' THEN 2
+                    WHEN 'L3' THEN 3
+                    ELSE 4
+                END,
+                ph.name
+        """)
+        return [dict(record) for record in result]
 
 
 def batch_validate_hosts(
@@ -189,8 +165,6 @@ def batch_validate_hosts(
 ) -> pd.DataFrame:
     """
     批量验证多个宿主菌株，返回 DataFrame 汇总。
-
-    列：菌株 / 总匹配 / L1-L5 分级计数 / 其他 / 高等级噬菌体(L3+)
     """
     results = []
     for host in host_strains:
@@ -224,9 +198,6 @@ def batch_validate_hosts(
 def validate_without_sequencing(host_strain: str) -> Dict:
     """
     不依赖测序，仅凭菌株编号推荐噬菌体。
-
-    Returns:
-        Dict: 含 total_phages / has_high_level_evidence / l2_phages 等
     """
     phages = query_phages_for_host(host_strain, limit=20)
 
@@ -256,12 +227,6 @@ import pandas as pd
 def cluster_strains_from_csv(csv_path: str, n_clusters: int = 8, random_state: int = 42):
     """
     从裂解谱 CSV 读取数据，对菌株进行 KMeans 聚类。
-
-    CSV 结构：首列为噬菌体名，中间列为宿主菌株，最后一列为备注列。
-    菌株矩阵为 宿主 x 噬菌体，值 1/0。
-
-    Returns:
-        (strain_to_cluster, matrix_scaled, kmeans)
     """
     df = pd.read_csv(csv_path, encoding="utf-8")
     host_cols = df.columns[1:-1]
@@ -282,17 +247,6 @@ def query_phages_by_pseudo_type_from_mapping(
 ) -> List[Dict]:
     """
     基于聚类映射，查询某个伪型别（簇）中，至少覆盖 min_host_count 个菌株的噬菌体。
-
-    使用新模型 LysisAssay 和 HostStrain。
-
-    Args:
-        strain_to_cluster: 菌株 → 簇标签 映射
-        pseudo_type_label: 目标簇标签
-        min_host_count: 至少覆盖的菌株数
-        limit: 返回上限
-
-    Returns:
-        List[Dict]: 每条含 phage_name / evidence_level / host_count
     """
     strains_in_group = [strain for strain, label in strain_to_cluster.items() if label == pseudo_type_label]
     if not strains_in_group:
@@ -300,31 +254,32 @@ def query_phages_by_pseudo_type_from_mapping(
 
     print(f"🔍 查询簇 {pseudo_type_label+1}，包含 {len(strains_in_group)} 个菌株")
 
-    with get_driver() as driver:
-        with driver.session() as session:
-            # 修复：在 WITH 中保留 h，避免引用未定义变量
-            result = session.run("""
-                MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
-                WITH a, h, $strains AS strains
-                WITH a, h, REDUCE(s = 0, strain IN strains | 
-                         s + CASE WHEN h.strain_label CONTAINS strain THEN 1 ELSE 0 END
-                     ) AS host_count
-                WHERE host_count >= $min_host_count
-                MATCH (ph:Phage)-[:USED_IN]->(a)
-                RETURN ph.name AS phage_name,
-                       ph.phage_id AS phage_id,
-                       a.evidence_level AS evidence_level,
-                       a.evidence_ref AS evidence_ref,
-                       host_count
-                ORDER BY host_count DESC,
-                         CASE a.evidence_level
-                             WHEN 'L5' THEN 1
-                             WHEN 'L4' THEN 2
-                             WHEN 'L3' THEN 3
-                             WHEN 'L2' THEN 4
-                             WHEN 'L1' THEN 5
-                             ELSE 6
-                         END
-                LIMIT $limit
-            """, strains=strains_in_group, min_host_count=min_host_count, limit=limit)
-            return [dict(record) for record in result]
+    # ★ 修复
+    driver = get_driver()
+    with driver.session() as session:
+        # 修复：在 WITH 中保留 h，避免引用未定义变量
+        result = session.run("""
+            MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(h:HostStrain)
+            WITH a, h, $strains AS strains
+            WITH a, h, REDUCE(s = 0, strain IN strains | 
+                     s + CASE WHEN h.strain_label CONTAINS strain THEN 1 ELSE 0 END
+                 ) AS host_count
+            WHERE host_count >= $min_host_count
+            MATCH (ph:Phage)-[:USED_IN]->(a)
+            RETURN ph.name AS phage_name,
+                   ph.phage_id AS phage_id,
+                   a.evidence_level AS evidence_level,
+                   a.evidence_ref AS evidence_ref,
+                   host_count
+            ORDER BY host_count DESC,
+                     CASE a.evidence_level
+                         WHEN 'L5' THEN 1
+                         WHEN 'L4' THEN 2
+                         WHEN 'L3' THEN 3
+                         WHEN 'L2' THEN 4
+                         WHEN 'L1' THEN 5
+                         ELSE 6
+                     END
+            LIMIT $limit
+        """, strains=strains_in_group, min_host_count=min_host_count, limit=limit)
+        return [dict(record) for record in result]

@@ -2,6 +2,8 @@
 import json
 import urllib.parse
 import re
+import time
+import uuid
 from datetime import datetime
 
 import dash
@@ -221,7 +223,6 @@ def _route_intent(query: str):
     if not query:
         return None, None
     
-    # ★ v0.7 修复：多意图匹配 + 优先级合并
     matched = []
     for kw, route in INTENT_ROUTES.items():
         if kw in query:
@@ -234,7 +235,6 @@ def _route_intent(query: str):
     if not matched:
         return None, None
         
-    # 按优先级降序排序，取最高优先级的
     matched.sort(key=lambda x: x["priority"], reverse=True)
     best = matched[0]
     return best["keyword"], best["route"]
@@ -275,6 +275,29 @@ def _generate_cypher(question: str) -> str:
         return data.get("cypher", "")
     except Exception as e:
         raise ValueError(f"大模型生成 Cypher 失败: {e}")
+
+
+# ============================================================
+# ★ v0.7 新增：静默写入 EvalLog
+# ============================================================
+def _write_evallog(query: str, intent: str, cypher: str, answer: str, latency_ms: int):
+    """静默写入 EvalLog，不阻塞主流程"""
+    try:
+        eval_id = f"EVAL-{uuid.uuid4().hex[:8].upper()}"
+        _run("""
+            CREATE (e:EvalLog {
+                id: $id,
+                query_text: $q,
+                intent_matched: $intent,
+                executed_cypher: $exec_cy,
+                response_text: $ans,
+                latency_ms: $lat,
+                created_at: datetime()
+            })
+        """, id=eval_id, q=query, intent=intent or "fallback", exec_cy=cypher or "", ans=answer, lat=latency_ms)
+    except Exception as e:
+        # 静默失败，不影响用户体验
+        print(f"[EvalLog] 写入失败: {e}")
 
 
 # ============================================================
@@ -369,7 +392,7 @@ def cb_clear(_):
 
 
 # ============================================================
-# 回调 3：发送消息（集成动态 Cypher 查询）
+# 回调 3：发送消息（集成动态 Cypher 查询 + EvalLog 写入）
 # ============================================================
 @callback(
     Output("ai-messages", "children", allow_duplicate=True),
@@ -384,6 +407,9 @@ def cb_send(n_clicks, user_input, history):
     if not user_input or not user_input.strip():
         return no_update, no_update, no_update
 
+    # ★ 记录开始时间
+    start_time = time.time()
+
     query = user_input.strip()
     ts = datetime.now().strftime("%H:%M")
     history = history or []
@@ -393,10 +419,12 @@ def cb_send(n_clicks, user_input, history):
     source_ids = []
     matched_label = None
     generated_cypher = None
+    executed_cypher = None
 
     if route:
         # 1. 命中固定意图
         matched_label = route.get("label", kw)
+        executed_cypher = route["cypher"]
         try:
             raw = _run(route["cypher"])
             data_str = json.dumps(raw, ensure_ascii=False, indent=2, default=str)
@@ -412,6 +440,7 @@ def cb_send(n_clicks, user_input, history):
         matched_label = "🤖 AI 动态图谱检索"
         try:
             generated_cypher = _generate_cypher(query)
+            executed_cypher = generated_cypher
             
             # 安全检查：防御恶意写操作
             forbidden = ["CREATE", "DELETE", "SET ", "MERGE", "REMOVE", "DROP"]
@@ -429,6 +458,16 @@ def cb_send(n_clicks, user_input, history):
                 
         except Exception as e:
             answer = f"我在理解你的问题时遇到了困难：{e}\n\n请尝试更具体地提问，或者使用下方的快捷提问。"
+
+    # ★ 计算耗时并写入 EvalLog
+    latency_ms = int((time.time() - start_time) * 1000)
+    _write_evallog(
+        query=query,
+        intent=kw or "dynamic",
+        cypher=executed_cypher or "",
+        answer=answer,
+        latency_ms=latency_ms
+    )
 
     history.append({
         "role": "assistant",

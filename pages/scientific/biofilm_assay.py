@@ -25,7 +25,6 @@ CTYPE_MAP = {
     "blank": "⚪ 空白对照"
 }
 
-# ★ 新增：PRD 规定的实验状态枚举
 STATUS_OPTIONS = [
     {"label": "📝 草稿 (draft)", "value": "draft"},
     {"label": "✅ 已完成 (completed)", "value": "completed"},
@@ -45,19 +44,16 @@ COLUMNS = [
     {"field": "status_cn", "headerName": "状态", "width": 120},
     {"field": "batch_name", "headerName": "所属批次", "width": 150},
     {"field": "created_by", "headerName": "录入人", "width": 110},
-    # ★ 修复：加宽操作列到 160，并强制不换行
     {"field": "actions", "headerName": "操作", "width": 160, "sortable": False, "filter": False, 
      "cellStyle": {"color": "var(--c-primary)", "cursor": "pointer", "textAlign": "center", "fontWeight": "bold", "whiteSpace": "nowrap"}},
 ]
 
-# 健壮的数据拉取函数
 def _get_phages():
     try:
         with get_driver().session() as s:
             rows = s.run("MATCH (p:Phage) RETURN p.phage_id AS id, p.name AS name ORDER BY p.created_at DESC LIMIT 100")
             return [{"label": f"{r['name']} ({r['id']})", "value": r['id']} for r in rows if r.get('id')]
     except Exception as e: 
-        print(f"Error loading phages: {e}")
         return []
 
 def _get_hosts():
@@ -66,7 +62,6 @@ def _get_hosts():
             rows = s.run("MATCH (h:HostStrain) RETURN h.host_strain_id AS id, h.strain_label AS label ORDER BY h.strain_label LIMIT 100")
             return [{"label": f"{r['label']} ({r['id']})", "value": r['id']} for r in rows if r.get('id')]
     except Exception as e: 
-        print(f"Error loading hosts: {e}")
         return []
 
 def _get_batches():
@@ -75,7 +70,6 @@ def _get_batches():
             rows = s.run("MATCH (b:ExperimentBatch) RETURN b.id AS id, b.name AS name ORDER BY b.created_at DESC")
             return [{"label": f"{r['name'] or r['id']}", "value": r['id']} for r in rows if r.get('id')]
     except Exception as e: 
-        print(f"Error loading batches: {e}")
         return []
 
 layout = html.Div([
@@ -90,6 +84,9 @@ layout = html.Div([
             html.Button([html.I(className="bi bi-plus-lg me-1"), "录入实验"], id="btn-ba-new", className="btn-primary-custom"),
         ]),
     ]),
+
+    html.Div(id="ba-summary-cards", className="mb-4"),
+
     html.Div(className="surface-card", children=[
         dag.AgGrid(
             id="ba-grid", columnDefs=COLUMNS, rowData=[], 
@@ -98,7 +95,6 @@ layout = html.Div([
         ),
     ]),
 
-    # 新建 / 编辑 复用抽屉
     dcc.Store(id="store-ba-edit-id"),
     dbc.Offcanvas(
         id="ba-offcanvas", title="录入生物膜实验", placement="end", is_open=False, style={"width": "520px"},
@@ -110,7 +106,6 @@ layout = html.Div([
             dbc.Row([dbc.Label("残留 OD *", width=4), dbc.Col(dbc.Input(id="ba-form-od-res", type="number", step="0.01", value=0.3), width=8)], className="mb-3"),
             dbc.Row([dbc.Label("MOI", width=4), dbc.Col(dbc.Input(id="ba-form-moi", type="number", step="0.1", value=1.0), width=8)], className="mb-3"),
             dbc.Row([dbc.Label("处理时长(h)", width=4), dbc.Col(dbc.Input(id="ba-form-duration", type="number", value=24), width=8)], className="mb-3"),
-            # ★ 新增：实验状态选择
             dbc.Row([dbc.Label("实验状态", width=4), dbc.Col(dbc.Select(id="ba-form-status", options=STATUS_OPTIONS, value="completed"), width=8)], className="mb-3"),
             dbc.Row([dbc.Label("所属批次 *", width=4), dbc.Col(dcc.Dropdown(id="ba-form-batch", options=[]), width=8)], className="mb-4"),
             html.Div([
@@ -121,7 +116,6 @@ layout = html.Div([
             html.Div(id="ba-form-feedback", className="mt-3"),
         ])]) ,
 
-    # 删除确认弹窗
     dcc.Store(id="store-ba-delete-id"),
     dbc.Modal(
         id="modal-ba-delete", is_open=False, centered=True,
@@ -136,9 +130,38 @@ layout = html.Div([
     )
 ])
 
-# ============================================================
-# 列表加载
-# ============================================================
+@callback(
+    Output("ba-summary-cards", "children"),
+    Input("btn-ba-refresh", "n_clicks"),
+    Input("btn-ba-save", "n_clicks"),
+)
+def update_summary_cards(_, __):
+    try:
+        with get_driver().session() as s:
+            rows = s.run("""
+                MATCH (b:BiofilmAssay)
+                RETURN b.control_type AS ctype, 
+                       avg(b.biofilm_reduction_pct) AS avg_reduction, 
+                       count(*) AS n
+            """).data()
+        
+        cards = []
+        for r in rows:
+            if not r["ctype"]: continue
+            label = CTYPE_MAP.get(r["ctype"], r["ctype"])
+            avg = round(r["avg_reduction"], 1) if r["avg_reduction"] else 0
+            cards.append(
+                dbc.Col(html.Div([
+                    html.Div(label, style={"fontSize": "12px", "color": "var(--c-text-muted)"}),
+                    html.Div(f"均值 {avg}%", style={"fontSize": "20px", "fontWeight": "700", "color": "var(--c-primary)"}),
+                    html.Div(f"n={r['n']}", style={"fontSize": "11px", "color": "var(--c-text-secondary)"})
+                ], className="p-3 border rounded bg-light text-center"), md=3)
+            )
+        
+        return dbc.Row(cards, className="g-3") if cards else html.Div("暂无对比数据", className="text-muted text-center py-3")
+    except Exception as e:
+        return dbc.Alert(f"加载摘要失败: {e}", color="warning")
+
 @callback(
     Output("ba-grid", "rowData"),
     Input("btn-ba-refresh", "n_clicks"),
@@ -171,12 +194,8 @@ def load_biofilm(_, __, ___):
                 
             return rows
     except Exception as e: 
-        print(f"Error loading biofilm: {e}")
         return []
 
-# ============================================================
-# 回调拆分：打开抽屉、加载下拉选项
-# ============================================================
 @callback(
     Output("ba-offcanvas", "is_open"),
     Output("ba-offcanvas", "title"),
@@ -212,9 +231,6 @@ def toggle_ba_offcanvas(new_n, cancel_n, cell, data):
 
     return False, no_update, no_update, no_update, no_update, no_update, no_update
 
-# ============================================================
-# 回调拆分：回填表单数据
-# ============================================================
 @callback(
     Output("ba-form-ctype", "value"),
     Output("ba-form-host", "value"),
@@ -223,7 +239,7 @@ def toggle_ba_offcanvas(new_n, cancel_n, cell, data):
     Output("ba-form-od-res", "value"),
     Output("ba-form-moi", "value"),
     Output("ba-form-duration", "value"),
-    Output("ba-form-status", "value"), # ★ 新增
+    Output("ba-form-status", "value"),
     Output("ba-form-batch", "value"),
     Input("store-ba-edit-id", "data"),
     State("ba-grid", "rowData"),
@@ -231,11 +247,9 @@ def toggle_ba_offcanvas(new_n, cancel_n, cell, data):
     prevent_initial_call=True,
 )
 def fill_form_data(edit_id, data, cell):
-    # 新建：填入默认值
     if not edit_id:
         return "engineered_phage", None, None, 1.2, 0.3, 1.0, 24, "completed", None
 
-    # 编辑：回填数据
     if cell and data:
         rowIndex = cell.get("rowIndex")
         if rowIndex is not None and rowIndex < len(data):
@@ -248,12 +262,11 @@ def fill_form_data(edit_id, data, cell):
                 row.get("biofilm_residual_od"),
                 row.get("moi"),
                 row.get("treatment_duration_h"),
-                row.get("status", "completed"), # ★ 新增回填
+                row.get("status", "completed"),
                 row.get("batch_id")
             )
     return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
-# 保存（新增/更新）
 @callback(
     Output("ba-form-feedback", "children"),
     Output("ba-offcanvas", "is_open", allow_duplicate=True),
@@ -267,7 +280,7 @@ def fill_form_data(edit_id, data, cell):
     State("ba-form-od-res", "value"),
     State("ba-form-moi", "value"),
     State("ba-form-duration", "value"),
-    State("ba-form-status", "value"), # ★ 接收状态
+    State("ba-form-status", "value"),
     State("ba-form-batch", "value"),
     prevent_initial_call=True,
 )
@@ -284,7 +297,6 @@ def save_biofilm(_, edit_id, ctype, host, phage, od_form, od_res, moi, duration,
             
         with get_driver().session() as s:
             if edit_id:
-                # 更新
                 s.run("""
                     MATCH (b:BiofilmAssay {id: $id})
                     SET b.control_type = $ctype, b.host_strain_id = $host, b.phage_id = $phage,
@@ -308,8 +320,8 @@ def save_biofilm(_, edit_id, ctype, host, phage, od_form, od_res, moi, duration,
                      batch_id=batch_id)
                 audit("UPDATE", "BiofilmAssay", edit_id, reason=f"更新生物膜实验: {edit_id}")
                 msg = f"更新成功，消除率 {reduction}%"
+                target_id = edit_id
             else:
-                # 新建
                 bf_id = f"BF-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:3].upper()}"
                 s.run("""
                     CREATE (b:BiofilmAssay {
@@ -332,12 +344,21 @@ def save_biofilm(_, edit_id, ctype, host, phage, od_form, od_res, moi, duration,
                      batch_id=batch_id, creator=creator)
                 audit("CREATE", "BiofilmAssay", bf_id, reason=f"录入生物膜实验: {bf_id}")
                 msg = f"录入成功，消除率 {reduction}%"
+                target_id = bf_id
+
+            # ★ 只建立 PRECEDED_BY 关系
+            if phage:
+                s.run("""
+                    MATCH (b:BiofilmAssay {id: $id})
+                    MATCH (a:LysisAssay)-[:TESTED_AGAINST]->(:HostStrain {host_strain_id: $host})
+                    MATCH (ph:Phage {phage_id: $phage})-[:USED_IN]->(a)
+                    MERGE (b)-[:PRECEDED_BY]->(a)
+                """, id=target_id, host=host, phage=phage)
 
         return dbc.Alert(msg, color="success"), False, 1
     except Exception as e:
         return dbc.Alert(f"保存失败：{e}", color="danger"), no_update, no_update
 
-# 触发删除弹窗
 @callback(
     Output("modal-ba-delete", "is_open"),
     Output("store-ba-delete-id", "data"),
@@ -350,7 +371,6 @@ def trigger_delete(n, edit_id):
         return no_update, no_update
     return True, edit_id
 
-# 确认删除
 @callback(
     Output("modal-ba-delete", "is_open", allow_duplicate=True),
     Output("ba-offcanvas", "is_open", allow_duplicate=True),

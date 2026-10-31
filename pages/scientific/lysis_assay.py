@@ -53,13 +53,15 @@ QC_OPTIONS = [
 ]
 QC_MAP = {"pending": "📝 待审核", "passed": "✅ 已通过", "failed": "❌ 未通过"}
 
-# ★ 优化：使用 flex 让关键列自适应填满屏幕
+# ★ 新增了 control_phage_id 和 replication_n 两列
 COLUMNS = [
     {"field": "id", "headerName": "实验 ID", "width": 150, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "phage_name", "headerName": "噬菌体", "flex": 1, "minWidth": 120},
     {"field": "host_label", "headerName": "宿主菌株", "flex": 1, "minWidth": 120},
     {"field": "assay_type_cn", "headerName": "实验类型", "flex": 1, "minWidth": 130},
     {"field": "result", "headerName": "结果", "width": 100},
+    {"field": "control_phage_id", "headerName": "对照噬菌体", "width": 120},
+    {"field": "replication_n", "headerName": "重复次数", "width": 90, "type": "numericColumn"},
     {"field": "eop_value", "headerName": "EOP 值", "width": 100, "type": "numericColumn"},
     {"field": "host_mucoid_cn", "headerName": "黏液型宿主", "width": 100},
     {"field": "evidence_level", "headerName": "证据等级", "width": 100},
@@ -146,6 +148,12 @@ layout = html.Div([
             dbc.Row([dbc.Label("病原物种 *", width=3), dbc.Col(dcc.Dropdown(id="la-form-pathogen", options=_list_pathogen_options(), placeholder="选择病原"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("实验类型", width=3), dbc.Col(dbc.Select(id="la-form-type", options=ASSAY_TYPE_OPTIONS, value="spot"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("结果", width=3), dbc.Col(dbc.Select(id="la-form-result", options=RESULT_OPTIONS, value="Lytic"), width=9)], className="mb-3"),
+            
+            # ★ 新增字段：对照噬菌体 和 重复次数
+            dbc.Row([dbc.Label("对照噬菌体", width=3), dbc.Col(dcc.Dropdown(id="la-form-control-phage", options=[], placeholder="选择对照噬菌体 (可选)"), width=9)], className="mb-3"),
+            dbc.Row([dbc.Label("重复次数", width=3), dbc.Col(dbc.Input(id="la-form-replication", type="number", value=3), width=9)], className="mb-3"),
+            # ------------------------------------------------
+
             dbc.Row([dbc.Label("EOP 值", width=3), dbc.Col(dbc.Input(id="la-form-eop", type="number", step="0.001"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("黏液型宿主", width=3), dbc.Col(dbc.Select(id="la-form-mucoid", options=[{"label":"是","value":"true"},{"label":"否","value":"false"}], value="false"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("证据等级", width=3), dbc.Col(dbc.Select(id="la-form-evidence", options=EVIDENCE_OPTIONS, value="L2"), width=9)], className="mb-3"),
@@ -196,6 +204,7 @@ layout = html.Div([
 def cb_load(_, search, __, ___, ____):
     try:
         with get_driver().session() as s:
+            # ★ 查询语句中新增 a.control_phage_id 和 a.replication_n
             q = """
             MATCH (a:LysisAssay)
             WHERE ($kw = '' OR toLower(a.assay_id) CONTAINS toLower($kw))
@@ -205,6 +214,7 @@ def cb_load(_, search, __, ___, ____):
                    a.eop_value AS eop_value, a.host_mucoid AS host_mucoid,
                    a.evidence_level AS evidence_level, a.qc_status AS qc_status,
                    a.od_timeseries AS od_timeseries, a.pathogen_id AS pathogen_id,
+                   a.control_phage_id AS control_phage_id, a.replication_n AS replication_n,
                    ph.phage_id AS phage_id, ph.name AS phage_name, h.host_strain_id AS host_id, h.strain_label AS host_label
             ORDER BY a.created_at DESC LIMIT 100
             """
@@ -231,6 +241,7 @@ def cb_load(_, search, __, ___, ____):
     Output("la-offcanvas", "is_open"),
     Output("la-offcanvas", "title"),
     Output("la-form-phage", "options"),
+    Output("la-form-control-phage", "options"), # ★ 新增：对照噬菌体选项
     Output("la-form-host", "options"),
     Output("store-la-edit-id", "data"),
     Output("btn-la-delete", "style"),
@@ -243,20 +254,20 @@ def cb_load(_, search, __, ___, ____):
 def toggle_la_offcanvas(new_n, cancel_n, cell, data):
     trigger = ctx.triggered_id
     if trigger == "btn-la-cancel":
-        return False, no_update, no_update, no_update, no_update, no_update
+        return False, no_update, no_update, no_update, no_update, no_update, no_update
 
     phages = _get_phage_options()
     hosts = _get_host_options()
 
     if trigger == "btn-la-new":
-        return True, "新增裂解实验", phages, hosts, None, {"display": "none"}
+        return True, "新增裂解实验", phages, phages, hosts, None, {"display": "none"}
 
     if trigger == "la-grid" and cell and cell.get("colId") == "actions":
         rowIndex = cell.get("rowIndex")
         if rowIndex is not None and data and rowIndex < len(data):
-            return True, "编辑裂解实验", phages, hosts, data[rowIndex]["id"], {"display": "inline-block"}
+            return True, "编辑裂解实验", phages, phages, hosts, data[rowIndex]["id"], {"display": "inline-block"}
 
-    return False, no_update, no_update, no_update, no_update, no_update
+    return False, no_update, no_update, no_update, no_update, no_update, no_update
 
 @callback(
     Output("la-form-phage", "value"),
@@ -264,6 +275,8 @@ def toggle_la_offcanvas(new_n, cancel_n, cell, data):
     Output("la-form-pathogen", "value"),
     Output("la-form-type", "value"),
     Output("la-form-result", "value"),
+    Output("la-form-control-phage", "value"), # ★ 新增输出
+    Output("la-form-replication", "value"),   # ★ 新增输出
     Output("la-form-eop", "value"),
     Output("la-form-mucoid", "value"),
     Output("la-form-evidence", "value"),
@@ -277,7 +290,8 @@ def toggle_la_offcanvas(new_n, cancel_n, cell, data):
 )
 def fill_la_form(edit_id, data, cell):
     if not edit_id:
-        return None, None, None, "spot", "Lytic", None, "false", "L2", "pending", "", _render_od_curve(None)
+        # 新建：默认值
+        return None, None, None, "spot", "Lytic", None, 3, None, "false", "L2", "pending", "", _render_od_curve(None)
 
     if cell and data:
         rowIndex = cell.get("rowIndex")
@@ -292,6 +306,8 @@ def fill_la_form(edit_id, data, cell):
                 row.get("pathogen_id"),
                 row.get("assay_type", "spot"),
                 row.get("result", "Lytic"),
+                row.get("control_phage_id"),      # ★ 回填对照噬菌体
+                row.get("replication_n", 3),      # ★ 回填重复次数
                 row.get("eop_value"),
                 "true" if row.get("host_mucoid") else "false",
                 row.get("evidence_level", "L2"),
@@ -299,7 +315,7 @@ def fill_la_form(edit_id, data, cell):
                 od_str,
                 _render_od_curve(od_str)
             )
-    return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+    return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
 # 实时渲染输入框的 JSON
 @callback(
@@ -324,6 +340,8 @@ def update_chart_live(json_str):
     State("la-form-pathogen", "value"),
     State("la-form-type", "value"),
     State("la-form-result", "value"),
+    State("la-form-control-phage", "value"), # ★ 新增 State
+    State("la-form-replication", "value"),   # ★ 新增 State
     State("la-form-eop", "value"),
     State("la-form-mucoid", "value"),
     State("la-form-evidence", "value"),
@@ -331,7 +349,7 @@ def update_chart_live(json_str):
     State("la-form-od", "value"),
     prevent_initial_call=True,
 )
-def save_la(_, edit_id, phage_id, host_id, pathogen_species, atype, result, eop, mucoid, evidence, qc, od_str):
+def save_la(_, edit_id, phage_id, host_id, pathogen_species, atype, result, control_phage, replication, eop, mucoid, evidence, qc, od_str):
     if not phage_id or not host_id or not pathogen_species:
         return dbc.Alert("噬菌体、宿主、病原为必填项", color="danger"), no_update, no_update
     if od_str:
@@ -344,34 +362,41 @@ def save_la(_, edit_id, phage_id, host_id, pathogen_species, atype, result, eop,
 
         with get_driver().session() as s:
             if edit_id:
+                # ★ 更新语句中新增字段
                 s.run("""
                     MATCH (a:LysisAssay {assay_id: $aid})
                     SET a.assay_type = $atype, a.result = $result, a.eop_value = $eop,
                         a.host_mucoid = $mucoid, a.evidence_level = $level, a.qc_status = $qc,
-                        a.od_timeseries = $od, a.updated_at = datetime()
+                        a.od_timeseries = $od, a.control_phage_id = $control_phage, 
+                        a.replication_n = $replication, a.updated_at = datetime()
                     WITH a
                     OPTIONAL MATCH (ph:Phage)-[r1:USED_IN]->(a) DELETE r1
                     WITH a
                     OPTIONAL MATCH (a)-[r2:TESTED_AGAINST]->() DELETE r2
                 """, aid=edit_id, atype=atype, result=result, eop=float(eop) if eop else None,
-                     mucoid=is_mucoid, level=evidence, qc=qc, od=od_str)
+                     mucoid=is_mucoid, level=evidence, qc=qc, od=od_str,
+                     control_phage=control_phage, replication=int(replication) if replication else 3)
                 aid = edit_id
                 msg = f"已更新实验 {aid}"
             else:
+                # ★ 创建语句中新增字段
                 aid = f"ASSAY-{uuid.uuid4().hex[:8].upper()}"
                 s.run("""
                     CREATE (a:LysisAssay {
                         assay_id: $aid, pathogen_id: $pathid,
                         assay_type: $atype, result: $result, eop_value: $eop,
                         host_mucoid: $mucoid, evidence_level: $level, qc_status: $qc,
-                        od_timeseries: $od, validation_status: 'unreviewed',
+                        od_timeseries: $od, control_phage_id: $control_phage, 
+                        replication_n: $replication, validation_status: 'unreviewed',
                         created_at: datetime(), updated_at: datetime()
                     })
                 """, aid=aid, pathid=pathogen_id, atype=atype, result=result,
                      eop=float(eop) if eop else None, mucoid=is_mucoid,
-                     level=evidence, qc=qc, od=od_str)
+                     level=evidence, qc=qc, od=od_str,
+                     control_phage=control_phage, replication=int(replication) if replication else 3)
                 msg = f"已创建实验 {aid}"
 
+            # 重建关联
             s.run("""
                 MATCH (a:LysisAssay {assay_id: $aid})
                 MATCH (ph:Phage {phage_id: $pid}) MERGE (ph)-[:USED_IN]->(a)

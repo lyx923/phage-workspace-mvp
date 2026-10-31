@@ -7,6 +7,7 @@ from data_access.queries import list_constraints
 
 dash.register_page(__name__, path="/admin/schema", name="Schema 管理")
 
+# ★ v0.7 更新：加入新增节点的约束检查
 EXPECTED = [
     ("Organization",          "organization_id", "Foundation"),
     ("Pathogen",              "pathogen_id",     "Foundation"),
@@ -14,12 +15,15 @@ EXPECTED = [
     ("Review",                "review_id",       "Foundation"),
     ("AuditEvent",            "audit_id",        "Foundation"),
     ("OntologyModule",        "module_id",       "Foundation"),
+    ("ExperimentBatch",       "id",              "Foundation"), # v0.7
     ("Phage",                 "phage_id",        "Scientific"),
     ("HostStrain",            "host_strain_id",  "Scientific"),
     ("LysisAssay",            "assay_id",        "Scientific"),
     ("ClinicalCase",          "case_id",         "Scientific"),
     ("ScientificEvidencePackage", "package_id",  "Scientific"),
     ("KnowledgeReuseEvent",   "reuse_event_id",  "Scientific"),
+    ("EnzymeGene",            "id",              "Scientific"), # v0.7
+    ("BiofilmAssay",          "id",              "Scientific"), # v0.7
     ("DevelopmentProgram",    "program_id",      "CI"),
     ("IntelligenceEvent",     "event_id",        "CI"),
     ("EngineeringStrategy",   "strategy_id",     "CI"),
@@ -39,7 +43,7 @@ layout = html.Div([
     html.Div(className="page-header", children=[
         html.Div([
             html.Div("Schema 管理", className="page-title"),
-            html.Div("Neo4j 约束与索引 · Foundation v0.6",
+            html.Div("Neo4j 约束与索引 · Foundation v0.7",
                      className="page-subtitle"),
         ]),
         html.Div(className="page-actions", children=[

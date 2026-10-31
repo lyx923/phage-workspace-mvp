@@ -258,7 +258,7 @@ python tests/acceptance_stage2.py
 
 ## **3.6 启动前端**
 
-streamlit run app.py  
+python app.py 
 \# 或：jupyter notebook
 
 - **四、核心设计原则**

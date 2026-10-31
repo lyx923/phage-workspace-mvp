@@ -25,7 +25,7 @@ COLUMNS = [
     {"field": "name", "headerName": "酶名称", "flex": 1, "minWidth": 180},
     {"field": "gene_symbol", "headerName": "基因符号", "width": 120, "cellStyle": {"fontFamily": "monospace"}},
     {"field": "class_cn", "headerName": "酶类型", "width": 130},
-    {"field": "target_polysaccharide", "headerName": "靶向多糖", "width": 130},
+    {"field": "target_polysaccharide", "headerName": "靶向多糖", "width": 150},
     {"field": "specific_activity", "headerName": "比活性(U/mg)", "width": 130, "type": "numericColumn"},
     {"field": "status_cn", "headerName": "状态", "width": 120},
     {"field": "activity_assay_date", "headerName": "测定日期", "width": 120},

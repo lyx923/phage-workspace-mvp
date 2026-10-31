@@ -31,7 +31,16 @@ ENGINEERING_STATUS_OPTIONS = [
 ]
 ENG_STATUS_MAP = {opt["value"]: opt["label"] for opt in ENGINEERING_STATUS_OPTIONS}
 
-# ★ 扩展后的表格列
+# ★ v0.7 新增：工程化改造方法枚举 (PRD 3.3)
+ENGINEERING_METHOD_OPTIONS = [
+    {"label": "同源重组 (homologous_recombination)", "value": "homologous_recombination"},
+    {"label": "CRISPR-Cas13a 反选择", "value": "CRISPR_Cas13a"},
+    {"label": "CRISPR-Cas9", "value": "CRISPR_Cas9"},
+    {"label": "其他", "value": "other"},
+]
+ENG_METHOD_MAP = {opt["value"]: opt["label"] for opt in ENGINEERING_METHOD_OPTIONS}
+
+# ★ 扩展后的表格列 (新增 engineering_method 列)
 COLUMNS = [
     {"field": "id", "headerName": "噬菌体 ID", "width": 160, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "name", "headerName": "名称", "flex": 1, "minWidth": 150},
@@ -39,6 +48,7 @@ COLUMNS = [
     {"field": "family", "headerName": "科", "width": 130},
     {"field": "receptor_target", "headerName": "受体靶点", "width": 130},
     {"field": "eng_status_cn", "headerName": "改造状态", "width": 160},
+    {"field": "engineering_method_cn", "headerName": "改造方法", "width": 180},  # ★ 新增列
     {"field": "parent_phage_id", "headerName": "亲本噬菌体", "width": 150, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "inserted_gene_id", "headerName": "携带酶基因", "width": 150, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "actions", "headerName": "操作", "width": 100, "sortable": False, "filter": False, "cellStyle": {"color": "var(--c-primary)", "cursor": "pointer", "fontWeight": "bold", "textAlign": "center"}},
@@ -99,6 +109,8 @@ layout = html.Div([
             dbc.Row(id="ph-form-eng-fields", style={"display": "none"}, children=[
                 dbc.Col(width=12, children=[
                     dbc.Row([dbc.Label("改造状态", width=3), dbc.Col(dbc.Select(id="ph-form-eng-status", options=ENGINEERING_STATUS_OPTIONS, value="designed"), width=9)], className="mb-3"),
+                    # ★ 新增：改造方法下拉框
+                    dbc.Row([dbc.Label("改造方法", width=3), dbc.Col(dbc.Select(id="ph-form-eng-method", options=ENGINEERING_METHOD_OPTIONS, value="homologous_recombination"), width=9)], className="mb-3"),
                     dbc.Row([dbc.Label("亲本噬菌体", width=3), dbc.Col(dcc.Dropdown(id="ph-form-parent", options=[], placeholder="选择野生型亲本"), width=9)], className="mb-3"),
                     dbc.Row([dbc.Label("携带酶基因", width=3), dbc.Col(dcc.Dropdown(id="ph-form-enzyme", options=[], placeholder="选择插入的酶基因"), width=9)], className="mb-4"),
                 ])
@@ -124,7 +136,7 @@ layout = html.Div([
 @callback(
     Output("ph-grid", "rowData"),
     Output("ph-count-label", "children"),
-    Output("ph-error-banner", "children"),  # ★ 修复：补上这个 Output
+    Output("ph-error-banner", "children"),
     Input("btn-ph-refresh", "n_clicks"),
     Input("ph-search", "value"),
     Input("ph-family-filter", "value"),
@@ -133,7 +145,7 @@ layout = html.Div([
 def cb_load(_, search, family, __):
     try:
         with get_driver().session() as s:
-            # 查询基础信息 + 关联的酶基因
+            # ★ 查询语句新增 p.engineering_method
             q = """
             MATCH (p:Phage)
             WHERE ($kw = '' OR toLower(p.name) CONTAINS toLower($kw) OR toLower(p.phage_id) CONTAINS toLower($kw))
@@ -141,7 +153,8 @@ def cb_load(_, search, family, __):
             OPTIONAL MATCH (p)-[:DISPLAYS]->(e:EnzymeGene)
             RETURN p.phage_id AS id, p.name AS name, p.family AS family, p.receptor_target AS receptor_target,
                    p.is_engineered AS is_engineered, p.engineering_status AS eng_status,
-                   p.parent_phage_id AS parent_phage_id, e.id AS inserted_gene_id
+                   p.engineering_method AS eng_method, p.parent_phage_id AS parent_phage_id, 
+                   e.id AS inserted_gene_id
             ORDER BY p.created_at DESC LIMIT 200
             """
             rows = [dict(r) for r in s.run(q, kw=search or "", fam=family or "")]
@@ -149,6 +162,7 @@ def cb_load(_, search, family, __):
             for r in rows:
                 r["is_engineered_cn"] = "🧬 工程化" if r.get("is_engineered") else "🦠 野生型"
                 r["eng_status_cn"] = ENG_STATUS_MAP.get(r.get("eng_status"), "")
+                r["engineering_method_cn"] = ENG_METHOD_MAP.get(r.get("eng_method"), r.get("eng_method") or "—")  # ★ 映射改造方法
                 r["actions"] = "🔍 详情"
                 
             return rows, f"共 {len(rows)} 条", None
@@ -188,11 +202,12 @@ def toggle_eng_fields(is_eng):
     State("ph-form-receptor", "value"),
     State("ph-form-is-eng", "value"),
     State("ph-form-eng-status", "value"),
+    State("ph-form-eng-method", "value"),   # ★ 新增 State
     State("ph-form-parent", "value"),
     State("ph-form-enzyme", "value"),
     prevent_initial_call=True,
 )
-def cb_save(_, name, family, receptor, is_eng, eng_status, parent_id, enzyme_id):
+def cb_save(_, name, family, receptor, is_eng, eng_status, eng_method, parent_id, enzyme_id):
     if not name or not name.strip():
         return dbc.Alert("名称不能为空", color="danger"), no_update, no_update
     try:
@@ -203,15 +218,17 @@ def cb_save(_, name, family, receptor, is_eng, eng_status, parent_id, enzyme_id)
         is_eng_bool = (is_eng == "true")
         
         with get_driver().session() as s:
-            # 1. 创建/更新噬菌体节点
+            # 1. 创建/更新噬菌体节点（★ 新增 engineering_method 字段）
             s.run("""
                 MERGE (p:Phage {phage_id: $pid})
                 SET p.name = $name, p.family = $family, p.receptor_target = $rec,
                     p.is_engineered = $is_eng, p.engineering_status = $eng_status,
+                    p.engineering_method = $eng_method,
                     p.parent_phage_id = $parent_id, p.created_by = $creator,
                     p.created_at = COALESCE(p.created_at, datetime()), p.updated_at = datetime()
             """, pid=phage_id, name=name.strip(), family=family or "", rec=receptor or "",
                  is_eng=is_eng_bool, eng_status=eng_status if is_eng_bool else None,
+                 eng_method=eng_method if is_eng_bool else None,
                  parent_id=parent_id if is_eng_bool else None, creator=creator)
             
             # 2. 如果工程化，处理血缘关系
@@ -219,13 +236,13 @@ def cb_save(_, name, family, receptor, is_eng, eng_status, parent_id, enzyme_id)
                 # 清除旧关系
                 s.run("MATCH (p:Phage {phage_id: $pid})-[r:ENGINEERED_FROM|DISPLAYS]->() DELETE r", pid=phage_id)
                 
-                # 建立 ENGINEERED_FROM 亲本关系
+                # 建立 ENGINEERED_FROM 亲本关系（★ 使用用户填写的改造方法）
                 if parent_id:
                     s.run("""
                         MATCH (p:Phage {phage_id: $pid})
                         MATCH (parent:Phage {phage_id: $parent_id})
-                        CREATE (p)-[:ENGINEERED_FROM {method: 'homologous_recombination', edit_date: date()}]->(parent)
-                    """, pid=phage_id, parent_id=parent_id)
+                        CREATE (p)-[:ENGINEERED_FROM {method: $method, edit_date: date()}]->(parent)
+                    """, pid=phage_id, parent_id=parent_id, method=eng_method or "homologous_recombination")
                 
                 # 建立 DISPLAYS 酶基因关系
                 if enzyme_id:
@@ -286,6 +303,11 @@ def show_detail(cell, data):
                 dbc.Col([html.Div("类型", className="text-muted small"), html.Div("🧬 工程化" if p.get("is_engineered") else "🦠 野生型", style={"fontWeight": "600"})], width=6),
                 dbc.Col([html.Div("改造状态", className="text-muted small"), html.Div(ENG_STATUS_MAP.get(p.get("engineering_status"), "—"))], width=6),
             ], className="mb-4"),
+            # ★ 新增：改造方法展示
+            dbc.Row([
+                dbc.Col([html.Div("改造方法", className="text-muted small"), 
+                         html.Div(ENG_METHOD_MAP.get(p.get("engineering_method"), p.get("engineering_method") or "—"))], width=12),
+            ], className="mb-4"),
         ]
 
         # 如果是工程化噬菌体，渲染血缘图
@@ -309,8 +331,8 @@ def show_detail(cell, data):
             else:
                 blood_line.append(html.Div("⚠️ 未关联亲本", style={"textAlign": "center", "color": "var(--c-warning)", "marginBottom": "12px"}))
 
-            # 2. 改造方法
-            method_text = rel.get("method", "unknown") if rel else "未知方法"
+            # 2. 改造方法（★ 从关系的 method 属性读取，与表单中填写的值一致）
+            method_text = ENG_METHOD_MAP.get(rel.get("method") if rel else None, "未知方法") if rel else "未知方法"
             blood_line.append(html.Div([
                 html.I(className="bi bi-arrow-down", style={"fontSize": "20px", "color": "#CBD5E1"}),
                 html.Div(f"改造方法: {method_text}", style={"fontSize": "11px", "color": "#64748B", "marginTop": "4px"})

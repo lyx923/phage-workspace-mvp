@@ -35,10 +35,10 @@ STATUS_MAP = {opt["value"]: opt["label"] for opt in STATUS_OPTIONS}
 COLUMNS = [
     {"field": "id", "headerName": "批次 ID", "width": 160, "cellStyle": {"fontFamily": "monospace", "fontSize": "12px"}},
     {"field": "name", "headerName": "批次名称", "flex": 1, "minWidth": 200},
-    {"field": "type_cn", "headerName": "实验类型", "width": 220},
+    {"field": "type_cn", "headerName": "实验类型", "width": 230},
     {"field": "operator", "headerName": "操作人", "width": 110},
     {"field": "date", "headerName": "实验日期", "width": 120},
-    {"field": "status_cn", "headerName": "状态", "width": 140},
+    {"field": "status_cn", "headerName": "状态", "width": 160},
     # ★ 加宽操作列到 160
     {"field": "actions", "headerName": "操作与详情", "width": 160, "sortable": False, "filter": False, 
      "cellStyle": {"color": "var(--c-primary)", "cursor": "pointer", "textAlign": "center", "fontWeight": "bold"}},

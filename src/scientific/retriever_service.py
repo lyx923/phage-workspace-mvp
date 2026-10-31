@@ -28,14 +28,6 @@ def find_matching_phages(
     查询匹配该病原菌的所有噬菌体互作关系（基于 LysisAssay）。
 
     排序：L5 > L4 > L3 > L2 > L1，同级别按 result_value 倒序。
-
-    Args:
-        species: 病原物种
-        resistance: 耐药机制（可选，模糊匹配）
-        limit: 返回上限
-
-    Returns:
-        List[Dict]: 每条含 phage_id / name / family / assay_id / evidence_level 等
     """
     query = """
     MATCH (ph:Phage)-[:USED_IN]->(a:LysisAssay)
@@ -79,14 +71,6 @@ def find_similar_cases(
     查询相同病原菌 + 相同/相似感染类型的历史病例。
 
     感染类型匹配为双向 CONTAINS（A contains B 或 B contains A）。
-
-    Args:
-        species: 病原物种
-        infection_type: 感染类型（可选）
-        limit: 返回上限
-
-    Returns:
-        List[Dict]: 病例列表，含 TREATED_WITH 的噬菌体名
     """
     query = """
     MATCH (c:ClinicalCase)-[:INVOLVES_PATHOGEN]->(p:Pathogen)
@@ -120,14 +104,6 @@ def find_similar_cases(
 def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> Dict:
     """
     分析病例 B 是否复用了病例 A 的噬菌体经验。
-
-    三种复用类型：
-        direct_reuse    —— B 直接使用 A 用过的噬菌体
-        evidence_upgrade —— A 的经验被编码为 L3/L4/L5 证据，出现在 B 的检索结果中
-        no_reuse        —— 无显著关联
-
-    Returns:
-        Dict: 含 reuse_type / reused_phages / reuse_count / is_reuse_valid / explanation
     """
     with driver.session() as session:
         # 查询病例 A
@@ -251,20 +227,23 @@ def analyze_cross_case_reuse(driver: Driver, case_a_id: str, case_b_id: str) -> 
 # ==================== 便捷函数 ====================
 def find_matching_phages_simple(species: str, resistance: Optional[str] = None, limit: int = 20) -> List[Dict]:
     """无需显式传 driver 的 find_matching_phages 便捷入口。"""
-    with get_driver() as driver:
-        return find_matching_phages(driver, species, resistance, limit)
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    return find_matching_phages(driver, species, resistance, limit)
 
 
 def find_similar_cases_simple(species: str, infection_type: Optional[str] = None, limit: int = 10) -> List[Dict]:
     """无需显式传 driver 的 find_similar_cases 便捷入口。"""
-    with get_driver() as driver:
-        return find_similar_cases(driver, species, infection_type, limit)
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    return find_similar_cases(driver, species, infection_type, limit)
 
 
 def analyze_cross_case_reuse_simple(case_a_id: str, case_b_id: str) -> Dict:
     """无需显式传 driver 的 analyze_cross_case_reuse 便捷入口。"""
-    with get_driver() as driver:
-        return analyze_cross_case_reuse(driver, case_a_id, case_b_id)
+    # ★ 修复：去掉 with
+    driver = get_driver()
+    return analyze_cross_case_reuse(driver, case_a_id, case_b_id)
 
 
 # ==================== 知识复用持久化 ====================
@@ -276,13 +255,6 @@ def analyze_and_persist_reuse(
 ) -> Dict:
     """
     一站式函数：分析跨病例复用并持久化为 KnowledgeReuseEvent。
-
-    - 若复用无效或类型为 no_reuse，不创建事件
-    - 若病例 A 无噬菌体记录，不创建事件
-    - 否则创建事件并建立 SOURCE_CASE / TARGETS_PACKAGE / REUSES 关系
-
-    Returns:
-        Dict: {analysis, persistence}
     """
     # 1. 分析复用
     result = analyze_cross_case_reuse(driver, case_a_id, case_b_id)
@@ -388,15 +360,6 @@ def confirm_knowledge_reuse(
 ) -> str:
     """
     人工确认或拒绝知识复用事件，并创建 Review 记录。
-
-    Args:
-        reuse_event_id: 复用事件 ID
-        reviewer_id: 审核人
-        decision: confirmed / rejected
-        comment: 审核意见
-
-    Returns:
-        str: review_id
     """
     with driver.session() as session:
         # 只允许 detected 状态的事件被审核

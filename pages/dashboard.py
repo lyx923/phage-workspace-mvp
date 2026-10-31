@@ -126,10 +126,26 @@ def _build_od_line(rows):
 def _build_biofilm_bar(rows):
     fig = go.Figure()
     if not rows: return fig
-    names = [f"{r.get('phage_id', 'Blank')[:8]}" for r in rows]
+    
+    # ★ 修改：把处理类型（control_type）也拼接到 Y 轴标签中
+    CTYPE_MAP = {
+        "engineered_phage": "🧬 工程化",
+        "wild_type_phage": "🦠 野生型",
+        "free_enzyme": "🧪 游离酶",
+        "blank": "⚪ 空白对照"
+    }
+    names = [
+        f"{CTYPE_MAP.get(r.get('control_type'), r.get('control_type') or '未知')} - {str(r.get('phage_id', 'Blank'))[:8]}" 
+        for r in rows
+    ]
+    
     vals = [r.get("biofilm_reduction_pct", 0) for r in rows]
     colors = ["#0D9373" if v > 80 else "#F59E0B" if v > 50 else "#DC2626" for v in vals]
-    fig.add_trace(go.Bar(x=vals, y=names, orientation='h', marker_color=colors, text=[f"{v}%" for v in vals], textposition='auto'))
+    
+    fig.add_trace(go.Bar(
+        x=vals, y=names, orientation='h', 
+        marker_color=colors, text=[f"{v}%" for v in vals], textposition='auto'
+    ))
     fig.update_layout(
         height=260, margin=dict(l=0, r=0, t=20, b=0),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -332,10 +348,13 @@ def cb_refresh(_, __):
         eop_fig, od_fig = go.Figure(), go.Figure()
 
     try:
+        # ★ 修改：查询中加入了 b.control_type AS control_type
         bio_rows = _run("""
             MATCH (b:BiofilmAssay)
             WHERE b.biofilm_reduction_pct IS NOT NULL
-            RETURN b.id AS id, b.phage_id AS phage_id, b.biofilm_reduction_pct AS biofilm_reduction_pct
+            RETURN b.id AS id, b.phage_id AS phage_id, 
+                   b.control_type AS control_type,
+                   b.biofilm_reduction_pct AS biofilm_reduction_pct
             ORDER BY b.biofilm_reduction_pct DESC LIMIT 10
         """)
         bio_fig = _build_biofilm_bar(bio_rows)
