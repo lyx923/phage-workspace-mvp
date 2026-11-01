@@ -1,5 +1,6 @@
 # components/navbar.py
 from dash import html, dcc, clientside_callback, Input, Output, no_update
+from config import Config
 
 # ─────────────────────────────────────────────
 # Mega Menu 定义
@@ -10,7 +11,7 @@ SCIENTIFIC_MENU = [
         ("bi bi-diagram-3",  "宿主菌株图谱", "/scientific/host-strain"),
     ]},
     {"section": "实验与结果", "items": [
-        ("bi bi-fingerprint",      "酶基因库",     "/scientific/enzyme-gene"),   # ★ 修复图标
+        ("bi bi-fingerprint",      "酶基因库",     "/scientific/enzyme-gene"),
         ("bi bi-eyedropper",       "裂解实验记录", "/scientific/lysis-assay"),
         ("bi bi-bounding-box",     "生物膜实验",   "/scientific/biofilm-assay"),
         ("bi bi-journal-medical",  "临床病例",     "/scientific/clinical-cases"),
@@ -66,6 +67,10 @@ def _build_mega_col(menu_def):
 # 顶栏
 # ─────────────────────────────────────────────
 def create_navbar():
+    # 自动从 Config 提取短版本号，例如 "0.8.0-EXP" -> "v0.8"
+    version_str = getattr(Config, "APP_VERSION", "0.8.0-EXP")
+    short_ver = "v" + ".".join(version_str.split("-")[0].split(".")[:2])
+
     return html.Header(
         className="top-navbar",
         children=[
@@ -76,7 +81,7 @@ def create_navbar():
                 [
                     html.Div("AI", className="brand-icon"),
                     html.Span("助手", className="brand-name"),
-                    html.Span("v0.7", className="brand-version"),
+                    html.Span(short_ver, className="brand-version"), # ★ 动态版本号
                 ],
                 href="/", className="navbar-brand-box",
             ),
@@ -128,7 +133,7 @@ def create_navbar():
                              children=_build_mega_col(ADMIN_MENU)),
                 ]),
 
-                # ★ 用户菜单（替代原 btn-user）
+                # ★ 用户菜单
                 html.Div(className="user-menu-wrap", children=[
                     html.Button(
                         [

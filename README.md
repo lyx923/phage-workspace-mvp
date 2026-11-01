@@ -133,7 +133,9 @@ phage-workspace-mvp/
 │ ├── ci/ # 包含 events.py, programs.py, strategies.py 等  
 │ └── scientific/ # 包含 enzyme_gene.py, biofilm_assay.py, lysis_assay.py 等  
 ├── scripts/  
-│ ├── v08_tools.py # v0.8 修复工具（生成本体文档/验证依赖/检查schema）  
+│ ├── generate_ontology_docs.py # R-02 生成本体文档  
+│ ├── verify_requirements.py # R-05 验证依赖版本  
+│ ├── separate_legacy_deps.py # R-08 归档依赖分离  
 │ └── monitor_runner.py # 情报抓取脚本  
 ├── src/ # 后端服务层（包含 foundation/, scientific/, ci/ 等）  
 ├── tests/ # 验收脚本  
@@ -141,7 +143,7 @@ phage-workspace-mvp/
 │ └── acceptance_stage2.py # 原验收脚本（改造中）  
 ├── docs/  
 │ ├── ontology_schema.md # 自动生成的本体文档  
-│ └── v08_notes.md # v0.8 修复说明与规划中项  
+│ └── planned_nodes.md # 规划中 / 已废弃节点与关系说明  
 └── \_legacy_streamlit/ # 已归档，不参与主应用运行
 
 # **四、核心设计原则**

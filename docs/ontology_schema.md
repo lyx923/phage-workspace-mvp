@@ -1,6 +1,6 @@
 # Ontology Schema 文档骨架
 
-> 本文件由 `python scripts/v08_tools.py docs` 自动生成，请勿手工修改自动生成行。
+> 本文件由 `python scripts/generate_ontology_docs.py` 自动生成。
 > 请领域专家在「定义（待补充）」列填入中文定义。
 
 ## 节点标签（Node Labels）
@@ -133,8 +133,6 @@
 | WATCHES | |
 
 ## 关系矩阵（人工补充）
-
-> 用于记录关系的「主语 → 宾语」和是否候选收敛，避免同名不同义。
 
 | 关系类型 | 主语 | 宾语 | 说明 | 是否候选收敛 |
 |---|---|---|---|---|

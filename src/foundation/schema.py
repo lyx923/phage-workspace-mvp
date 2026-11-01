@@ -302,16 +302,8 @@ def create_schema(driver):
                 p.engineering_status = null,
                 p.regulatory_status = 'research_only'
         """)
-        
-        # ★ v0.8 更新版本号
-        session.run("""
-            MERGE (v:SchemaVersion {version: '0.8.0'})
-            SET v.applied_at = datetime(), 
-                v.description = 'v0.8-EXP 清理与基线修复', 
-                v.reversible = true
-        """)
 
-        print("✅ 所有数据库约束与索引创建完成（含 v0.8 清理）")
+        print("✅ 所有数据库约束与索引创建完成（v0.8 基线）")
 
     # 声明 CI 链路契约
     try:

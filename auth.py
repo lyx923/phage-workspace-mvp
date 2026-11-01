@@ -3,7 +3,7 @@
 基于 Neo4j 的用户认证模块。
 首次运行时，如果数据库中不存在 User 节点，会自动初始化两个测试账号。
 
-v0.7 扩展：
+扩展：
     - 引入 UserRole 枚举
     - 预置 PERMISSION_MATRIX 权限矩阵
     - 提供 check_permission / require_role 空壳，为 v1.0 鉴权做插槽
@@ -15,7 +15,7 @@ from enum import Enum
 
 
 # ============================================================
-# ★ v0.7 新增：角色枚举与权限矩阵
+# 新增：角色枚举与权限矩阵
 # ============================================================
 class UserRole(str, Enum):
     RESEARCHER = "researcher"       # 实验数据录入/查询
@@ -24,7 +24,7 @@ class UserRole(str, Enum):
     ADMIN = "admin"                 # 全部权限
 
 
-# 权限矩阵 (v0.7 仅定义, v1.0 接入真实执行)
+# 权限矩阵 ( 仅定义, v1.0 接入真实执行)
 PERMISSION_MATRIX = {
     ("EnzymeGene", "create"): [UserRole.RESEARCHER, UserRole.ADMIN],
     ("EnzymeGene", "delete"): [UserRole.ADMIN],
