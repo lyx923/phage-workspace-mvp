@@ -90,7 +90,7 @@ ONTOLOGY_ELEMENTS = [
     {"data": {"source": "LysisAssay",               "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
     {"data": {"source": "EnzymeGene",               "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
     {"data": {"source": "BiofilmAssay",             "target": "ExperimentBatch",  "label": "BELONGS_TO_BATCH"}},
-    {"data": {"source": "BiofilmAssay",             "target": "Phage",            "label": "TREATS"}},
+    # ★ v0.8 修复：移除了未定义的 TREATS 关系
 ]
 
 

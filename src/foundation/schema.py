@@ -123,8 +123,7 @@ def create_schema(driver):
         session.run("CREATE CONSTRAINT case_id_unique IF NOT EXISTS FOR (c:ClinicalCase) REQUIRE c.case_id IS UNIQUE;")
         # 3. Phage 唯一约束
         session.run("CREATE CONSTRAINT phage_id_unique IF NOT EXISTS FOR (p:Phage) REQUIRE p.phage_id IS UNIQUE;")
-        # 4. PhageHostInteraction 唯一约束
-        session.run("CREATE CONSTRAINT interaction_id_unique IF NOT EXISTS FOR (i:PhageHostInteraction) REQUIRE i.interaction_id IS UNIQUE;")
+        # ★ v0.8 修复 (R-09)：移除了 PhageHostInteraction 唯一约束，该实体已废弃，由 LysisAssay 替代
 
         # -------- 第二阶段新增对象（科学子网） --------
         session.run("CREATE CONSTRAINT host_strain_id_unique IF NOT EXISTS FOR (h:HostStrain) REQUIRE h.host_strain_id IS UNIQUE;")
@@ -177,7 +176,7 @@ def create_schema(driver):
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:ScientificEvidencePackage) ON (p.review_status);")
         session.run("CREATE INDEX IF NOT EXISTS FOR (p:ScientificEvidencePackage) ON (p.package_type);")
 
-        # -------- KnowledgeReuseEvent 约束与索引 (修复缺失) --------
+        # -------- KnowledgeReuseEvent 约束与索引 --------
         session.run("CREATE CONSTRAINT knowledge_reuse_id_unique IF NOT EXISTS FOR (k:KnowledgeReuseEvent) REQUIRE k.reuse_event_id IS UNIQUE;")
         session.run("CREATE INDEX IF NOT EXISTS FOR (k:KnowledgeReuseEvent) ON (k.status);")
 
@@ -304,14 +303,15 @@ def create_schema(driver):
                 p.regulatory_status = 'research_only'
         """)
         
+        # ★ v0.8 更新版本号
         session.run("""
-            MERGE (v:SchemaVersion {version: '2.0.0'})
+            MERGE (v:SchemaVersion {version: '0.8.0'})
             SET v.applied_at = datetime(), 
-                v.description = 'v0.7-EXP 实验集成扩展', 
+                v.description = 'v0.8-EXP 清理与基线修复', 
                 v.reversible = true
         """)
 
-        print("✅ 所有数据库约束与索引创建完成（含 v0.7 扩展）")
+        print("✅ 所有数据库约束与索引创建完成（含 v0.8 清理）")
 
     # 声明 CI 链路契约
     try:

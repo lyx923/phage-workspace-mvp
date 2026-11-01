@@ -322,18 +322,17 @@ def save_biofilm(_, edit_id, ctype, host, phage, od_form, od_res, moi, duration,
                 msg = f"更新成功，消除率 {reduction}%"
                 target_id = edit_id
             else:
+                # ★ v0.8 修复：先 MATCH 批次，再 CREATE 节点，防止孤儿节点
                 bf_id = f"BF-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:3].upper()}"
                 s.run("""
+                    MATCH (batch:ExperimentBatch {id: $batch_id})
                     CREATE (b:BiofilmAssay {
                         id: $id, control_type: $ctype, host_strain_id: $host, phage_id: $phage,
                         biofilm_formation_od: $od_form, biofilm_residual_od: $od_res,
                         biofilm_reduction_pct: $reduction,
                         moi: $moi, treatment_duration_h: $duration,
                         status: $estatus, created_at: datetime(), created_by: $creator
-                    })
-                    WITH b
-                    MATCH (batch:ExperimentBatch {id: $batch_id})
-                    CREATE (b)-[:BELONGS_TO_BATCH {recorded_at: datetime()}]->(batch)
+                    })-[:BELONGS_TO_BATCH {recorded_at: datetime()}]->(batch)
                 """, id=bf_id, ctype=ctype, host=host, phage=phage,
                      od_form=float(od_form) if od_form else 0.0,
                      od_res=float(od_res) if od_res else 0.0,

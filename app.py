@@ -10,6 +10,7 @@ from flask import session
 from components.navbar import create_navbar
 from components.sidebar import create_sidebar
 from components.confirm_dialog import create_confirm_dialog
+from config import Config
 
 app = dash.Dash(
     __name__,
@@ -295,10 +296,8 @@ def cb_neo4j_status(_):
 )
 def cb_llm_status(_):
     try:
-        from config import Config
-        key = (getattr(Config, "DS_API_KEY", "")
-               or getattr(Config, "DEEPSEEK_API_KEY", ""))
-        if key:
+        # ★ v0.8 修复：只使用 Config.DS_API_KEY
+        if Config.DS_API_KEY:
             return [html.Span(className="status-dot dot-ok"), " DeepSeek 已配置"]
         return [html.Span(className="status-dot dot-warning"), " DeepSeek 未配置"]
     except Exception:
@@ -447,4 +446,5 @@ def cb_sync_user_display(_pathname):
     return "登录", [html.Div("未登录", style={"fontSize": "13px"})]
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=8501)
+    # ★ v0.8 修复：端口和调试模式从 Config 读取
+    app.run(debug=Config.DEBUG_MODE, host=Config.HOST, port=Config.PORT)

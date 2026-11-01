@@ -146,7 +146,6 @@ def toggle_eg_offcanvas(new_n, cancel_n, cell, data):
         if rowIndex is not None and data and rowIndex < len(data):
             row = data[rowIndex]
             
-            # ★ 修复：防止 Neo4j 返回日期对象导致前端组件崩溃，强制转为字符串
             raw_date = row.get("activity_assay_date")
             date_str = str(raw_date)[:10] if raw_date else ""
             
@@ -242,9 +241,10 @@ def save_enzyme(_, edit_id, name, symbol, eclass, target, source, vector, purifi
                 audit("UPDATE", "EnzymeGene", edit_id, reason=f"更新酶基因: {name}")
                 msg = f"已成功更新酶基因 {edit_id}"
             else:
-                # 新建
+                # 新建（★ v0.8 修复：先 MATCH 批次，再 CREATE 节点，防止孤儿节点）
                 eg_id = f"EG-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:3].upper()}"
                 s.run("""
+                    MATCH (b:ExperimentBatch {id: $batch_id})
                     CREATE (e:EnzymeGene {
                         id: $id, name: $name, gene_symbol: $symbol, enzyme_class: $eclass,
                         target_polysaccharide: $target, source_organism: $source,
@@ -252,10 +252,7 @@ def save_enzyme(_, edit_id, name, symbol, eclass, target, source, vector, purifi
                         specific_activity: $activity, activity_assay_date: $date,
                         status: 'expressed', sequence_verified: false,
                         created_at: datetime(), created_by: $creator
-                    })
-                    WITH e
-                    MATCH (b:ExperimentBatch {id: $batch_id})
-                    CREATE (e)-[:BELONGS_TO_BATCH {recorded_at: datetime()}]->(b)
+                    })-[:BELONGS_TO_BATCH {recorded_at: datetime()}]->(b)
                 """, id=eg_id, name=name, symbol=symbol, eclass=eclass, target=target,
                      source=source, vector=vector, purification=purification,
                      activity=float(activity) if activity else None, date=date, batch_id=batch_id, creator=creator)
@@ -299,11 +296,9 @@ def confirm_delete(confirm_n, cancel_n, delete_id):
         with get_driver().session() as s:
             s.run("MATCH (e:EnzymeGene {id: $id}) DETACH DELETE e", id=delete_id)
         
-        # ★ 修复：将 "DELETE" 改为后端允许的 "UPDATE"（或 "LINK_DELETE" / "MIGRATION"）
         audit("UPDATE", "EnzymeGene", delete_id, reason=f"删除酶基因记录: {delete_id}")
         msg = dbc.Alert(f"记录 {delete_id} 已成功删除", color="success", dismissable=True)
         
-        # 关闭弹窗、关闭抽屉、刷新列表
         return False, False, 1, msg
     except Exception as e:
         return False, no_update, no_update, dbc.Alert(f"删除失败: {e}", color="danger")

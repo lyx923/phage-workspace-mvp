@@ -1,17 +1,32 @@
+# ============================================================
+# 噬清森 AI 精准抗感染平台 · 运行依赖
+# v0.8.0-EXP
+# ============================================================
+
 # Core backend
-neo4j==6.2.0
-pandas==3.0.3
-openai==2.45.0
-python-dotenv==1.2.2
-redis>=5.0.0
+neo4j>=5.26,<6
+pandas>=2.2,<3
+openai>=1.40,<2
+python-dotenv>=1.0,<2
+redis>=5.0,<6
+requests>=2.32,<3
+
+# Web / Dash
+flask>=3.0,<4
+werkzeug>=3.0,<4
+dash>=2.17,<3
+dash-bootstrap-components>=1.6,<2
+dash-ag-grid>=31.2,<32
+dash-cytoscape>=1.0,<2
+plotly>=5.22,<6
+
+# 数据处理 / 聚类
+numpy>=1.26,<3
+scikit-learn>=1.5,<2
+
+# 测试
+pytest>=8.0,<9
 
 # Notebook (可选，保留)
-jupyter==1.1.1
-notebook==7.6.0
-
-# Dash frontend
-dash>=2.17.0
-dash-bootstrap-components>=1.6.0
-dash-iconify>=0.1.2
-dash-ag-grid>=31.2.0
-dash-cytoscape>=1.0.2
+jupyter>=1.1,<2
+notebook>=7.2,<8

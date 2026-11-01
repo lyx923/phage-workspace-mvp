@@ -53,7 +53,7 @@ QC_OPTIONS = [
 ]
 QC_MAP = {"pending": "📝 待审核", "passed": "✅ 已通过", "failed": "❌ 未通过"}
 
-# ★ 新增了 control_phage_id 和 replication_n 两列
+# ★ 表格列定义
 COLUMNS = [
     {"field": "id", "headerName": "实验 ID", "width": 150, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "phage_name", "headerName": "噬菌体", "flex": 1, "minWidth": 120},
@@ -149,10 +149,8 @@ layout = html.Div([
             dbc.Row([dbc.Label("实验类型", width=3), dbc.Col(dbc.Select(id="la-form-type", options=ASSAY_TYPE_OPTIONS, value="spot"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("结果", width=3), dbc.Col(dbc.Select(id="la-form-result", options=RESULT_OPTIONS, value="Lytic"), width=9)], className="mb-3"),
             
-            # ★ 新增字段：对照噬菌体 和 重复次数
             dbc.Row([dbc.Label("对照噬菌体", width=3), dbc.Col(dcc.Dropdown(id="la-form-control-phage", options=[], placeholder="选择对照噬菌体 (可选)"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("重复次数", width=3), dbc.Col(dbc.Input(id="la-form-replication", type="number", value=3), width=9)], className="mb-3"),
-            # ------------------------------------------------
 
             dbc.Row([dbc.Label("EOP 值", width=3), dbc.Col(dbc.Input(id="la-form-eop", type="number", step="0.001"), width=9)], className="mb-3"),
             dbc.Row([dbc.Label("黏液型宿主", width=3), dbc.Col(dbc.Select(id="la-form-mucoid", options=[{"label":"是","value":"true"},{"label":"否","value":"false"}], value="false"), width=9)], className="mb-3"),
@@ -204,7 +202,6 @@ layout = html.Div([
 def cb_load(_, search, __, ___, ____):
     try:
         with get_driver().session() as s:
-            # ★ 查询语句中新增 a.control_phage_id 和 a.replication_n
             q = """
             MATCH (a:LysisAssay)
             WHERE ($kw = '' OR toLower(a.assay_id) CONTAINS toLower($kw))
@@ -241,7 +238,7 @@ def cb_load(_, search, __, ___, ____):
     Output("la-offcanvas", "is_open"),
     Output("la-offcanvas", "title"),
     Output("la-form-phage", "options"),
-    Output("la-form-control-phage", "options"), # ★ 新增：对照噬菌体选项
+    Output("la-form-control-phage", "options"),
     Output("la-form-host", "options"),
     Output("store-la-edit-id", "data"),
     Output("btn-la-delete", "style"),
@@ -275,8 +272,8 @@ def toggle_la_offcanvas(new_n, cancel_n, cell, data):
     Output("la-form-pathogen", "value"),
     Output("la-form-type", "value"),
     Output("la-form-result", "value"),
-    Output("la-form-control-phage", "value"), # ★ 新增输出
-    Output("la-form-replication", "value"),   # ★ 新增输出
+    Output("la-form-control-phage", "value"),
+    Output("la-form-replication", "value"),
     Output("la-form-eop", "value"),
     Output("la-form-mucoid", "value"),
     Output("la-form-evidence", "value"),
@@ -306,8 +303,8 @@ def fill_la_form(edit_id, data, cell):
                 row.get("pathogen_id"),
                 row.get("assay_type", "spot"),
                 row.get("result", "Lytic"),
-                row.get("control_phage_id"),      # ★ 回填对照噬菌体
-                row.get("replication_n", 3),      # ★ 回填重复次数
+                row.get("control_phage_id"),
+                row.get("replication_n", 3),
                 row.get("eop_value"),
                 "true" if row.get("host_mucoid") else "false",
                 row.get("evidence_level", "L2"),
@@ -340,8 +337,8 @@ def update_chart_live(json_str):
     State("la-form-pathogen", "value"),
     State("la-form-type", "value"),
     State("la-form-result", "value"),
-    State("la-form-control-phage", "value"), # ★ 新增 State
-    State("la-form-replication", "value"),   # ★ 新增 State
+    State("la-form-control-phage", "value"),
+    State("la-form-replication", "value"),
     State("la-form-eop", "value"),
     State("la-form-mucoid", "value"),
     State("la-form-evidence", "value"),
@@ -357,31 +354,43 @@ def save_la(_, edit_id, phage_id, host_id, pathogen_species, atype, result, cont
         except: return dbc.Alert("OD 时序数据不是合法的 JSON 格式", color="danger"), no_update, no_update
 
     try:
+        # 获取或创建病原体
         pathogen_id = get_or_create_pathogen(get_driver(), species=pathogen_species, actor_id="dash_frontend")
         is_mucoid = (mucoid == "true")
 
         with get_driver().session() as s:
             if edit_id:
-                # ★ 更新语句中新增字段
+                # 更新
                 s.run("""
                     MATCH (a:LysisAssay {assay_id: $aid})
+                    MATCH (ph:Phage {phage_id: $pid})
+                    MATCH (h:HostStrain {host_strain_id: $hid})
+                    MATCH (p:Pathogen {pathogen_id: $pathid})
                     SET a.assay_type = $atype, a.result = $result, a.eop_value = $eop,
                         a.host_mucoid = $mucoid, a.evidence_level = $level, a.qc_status = $qc,
                         a.od_timeseries = $od, a.control_phage_id = $control_phage, 
                         a.replication_n = $replication, a.updated_at = datetime()
-                    WITH a
-                    OPTIONAL MATCH (ph:Phage)-[r1:USED_IN]->(a) DELETE r1
-                    WITH a
+                    WITH a, ph, h, p
+                    OPTIONAL MATCH (old_ph:Phage)-[r1:USED_IN]->(a) DELETE r1
+                    WITH a, ph, h, p
                     OPTIONAL MATCH (a)-[r2:TESTED_AGAINST]->() DELETE r2
-                """, aid=edit_id, atype=atype, result=result, eop=float(eop) if eop else None,
+                    WITH a, ph, h, p
+                    CREATE (ph)-[:USED_IN]->(a)
+                    CREATE (a)-[:TESTED_AGAINST]->(h)
+                    MERGE (h)-[:IS_STRAIN_OF]->(p)
+                """, aid=edit_id, pid=phage_id, hid=host_id, pathid=pathogen_id,
+                     atype=atype, result=result, eop=float(eop) if eop else None,
                      mucoid=is_mucoid, level=evidence, qc=qc, od=od_str,
                      control_phage=control_phage, replication=int(replication) if replication else 3)
                 aid = edit_id
                 msg = f"已更新实验 {aid}"
             else:
-                # ★ 创建语句中新增字段
+                # ★ v0.8 修复：先 MATCH 依赖节点，确保存在后再 CREATE
                 aid = f"ASSAY-{uuid.uuid4().hex[:8].upper()}"
                 s.run("""
+                    MATCH (ph:Phage {phage_id: $pid})
+                    MATCH (h:HostStrain {host_strain_id: $hid})
+                    MATCH (p:Pathogen {pathogen_id: $pathid})
                     CREATE (a:LysisAssay {
                         assay_id: $aid, pathogen_id: $pathid,
                         assay_type: $atype, result: $result, eop_value: $eop,
@@ -390,21 +399,14 @@ def save_la(_, edit_id, phage_id, host_id, pathogen_species, atype, result, cont
                         replication_n: $replication, validation_status: 'unreviewed',
                         created_at: datetime(), updated_at: datetime()
                     })
-                """, aid=aid, pathid=pathogen_id, atype=atype, result=result,
-                     eop=float(eop) if eop else None, mucoid=is_mucoid,
-                     level=evidence, qc=qc, od=od_str,
+                    CREATE (ph)-[:USED_IN]->(a)
+                    CREATE (a)-[:TESTED_AGAINST]->(h)
+                    MERGE (h)-[:IS_STRAIN_OF]->(p)
+                """, aid=aid, pid=phage_id, hid=host_id, pathid=pathogen_id,
+                     atype=atype, result=result, eop=float(eop) if eop else None, 
+                     mucoid=is_mucoid, level=evidence, qc=qc, od=od_str,
                      control_phage=control_phage, replication=int(replication) if replication else 3)
                 msg = f"已创建实验 {aid}"
-
-            # 重建关联
-            s.run("""
-                MATCH (a:LysisAssay {assay_id: $aid})
-                MATCH (ph:Phage {phage_id: $pid}) MERGE (ph)-[:USED_IN]->(a)
-                WITH a
-                MATCH (h:HostStrain {host_strain_id: $hid}) MERGE (a)-[:TESTED_AGAINST]->(h)
-                WITH h
-                MATCH (p:Pathogen {pathogen_id: $pathid}) MERGE (h)-[:IS_STRAIN_OF]->(p)
-            """, aid=aid, pid=phage_id, hid=host_id, pathid=pathogen_id)
 
         audit("CREATE" if not edit_id else "UPDATE", "LysisAssay", aid, reason=f"保存裂解实验: {aid}")
         return dbc.Alert(msg, color="success"), False, 1

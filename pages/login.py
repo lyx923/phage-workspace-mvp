@@ -35,7 +35,7 @@ layout = html.Div(
                 html.Div(className="login-field", children=[
                     html.Label("密码", className="login-label"),
                     dcc.Input(
-                        id="login-password", type="password", value="admin",
+                        id="login-password", type="password", value="", # ★ v0.8 修复：默认密码清空
                         placeholder="请输入密码",
                         className="login-input",
                         autoComplete="current-password",
@@ -76,7 +76,7 @@ def cb_login(n_clicks, username, password):
         className="login-success",
     )
 
-# ★ 使用前端回调硬核跳转
+# ★ v0.8 修复：使用 data 作为触发跳转的 Output，避免修改组件 id
 clientside_callback(
     """
     function(status) {
@@ -86,7 +86,7 @@ clientside_callback(
         return window.dash_clientside.no_update;
     }
     """,
-    Output("store-login-status", "id"),
+    Output("store-login-status", "data", allow_duplicate=True),
     Input("store-login-status", "data"),
     prevent_initial_call=True,
 )
