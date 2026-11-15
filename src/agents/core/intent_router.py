@@ -30,8 +30,18 @@ _I1_KEYWORDS = ["情报简报", "周期简报", "竞争简报", "情报周报", 
 
 _BATCH_ID_PATTERNS = [re.compile(r"\bBATCH[-_][A-Za-z0-9_-]+\b"), re.compile(r"\bTEST[-_]BATCH[-_][A-Za-z0-9_-]+\b")]
 _PATHOGEN_ID_PATTERNS = [re.compile(r"\bPATH-[A-Za-z0-9-]+\b"), re.compile(r"PATH[:\s]+([A-Za-z0-9-]+)")]
-_PHAGE_ID_PATTERNS = [re.compile(r"\bPHG-[A-Za-z0-9-]+\b"), re.compile(r"\bPHAGE[-_][A-Za-z0-9-]+\b")]
-_HOST_ID_PATTERNS = [re.compile(r"\bHS-[A-Za-z0-9-]+\b"), re.compile(r"\bHOST[-_][A-Za-z0-9-]+\b")]
+
+# ★ 优化：支持匹配 PKP005 这种纯大写字母+数字，也支持 PHAGE-PKP005
+_PHAGE_ID_PATTERNS = [
+    re.compile(r"\bPHAGE[-_][A-Za-z0-9-]+\b"), 
+    re.compile(r"\bPHG-[A-Za-z0-9-]+\b"),
+    re.compile(r"\b[A-Z]{2,}\d{3,}\b") 
+]
+# ★ 优化：支持匹配 HS-001 或纯数字/字母组合
+_HOST_ID_PATTERNS = [
+    re.compile(r"\bHS-[A-Za-z0-9-]+\b"), 
+    re.compile(r"\bHOST[-_][A-Za-z0-9-]+\b")
+]
 _DATE_RANGE_PATTERNS = [re.compile(r"(\d{4}-\d{2}-\d{2})\s*(?:至|到|~|-)\s*(\d{4}-\d{2}-\d{2})"), re.compile(r"从\s*(\d{4}-\d{2}-\d{2})\s*到\s*(\d{4}-\d{2}-\d{2})")]
 
 

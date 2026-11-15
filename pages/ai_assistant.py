@@ -9,13 +9,15 @@ import dash_bootstrap_components as dbc
 from flask import session
 
 from config import Config
-from src.agents.core import ApprovalDecision, ApprovalType, IntentRouter, IntentType, TaskStatus, get_agent_runtime
+from src.agents.core import (
+    ApprovalDecision, ApprovalType, IntentRouter, IntentType, TaskStatus, get_agent_runtime,
+)
 
 dash.register_page(__name__, path="/ai-assistant", name="AI 助手")
 
 QUICK_PROMPTS = [
     "帮我检查实验批次 BATCH-20261115-013 的数据完整性",
-    "基于 PHG-001 和 HS-002 生成证据包草稿",
+    "基于 PKP005 和 B-KP1 生成证据包草稿",
     "生成 PATH-003 的周期情报简报（2026-01-01 至 2026-11-15）",
     "查询所有噬菌体的裂解谱覆盖情况",
 ]
@@ -89,7 +91,7 @@ def cb_send(_, user_input, history):
     try:
         rt = get_agent_runtime()
         
-        # S1
+        # 1. S1 批次完整性
         if result.intent == IntentType.SCI_S1_BATCH_COMPLETENESS:
             batch_id = (result.params.get("experiment_batch_id") or "").strip()
             if not batch_id:
@@ -107,31 +109,44 @@ def cb_send(_, user_input, history):
             task, plan = rt.s1_service.create_task(experiment_batch_id=batch_id, submitted_by=identity["id"], user_role=identity["role"])
             target_label = "批次"
 
-        # S2 (证据包)
+        # 2. S2 证据包草稿
         elif result.intent == IntentType.SCI_S2_EVIDENCE_PACKAGE:
-            phage_id = (result.params.get("phage_id") or "").strip()
-            host_id = (result.params.get("host_strain_id") or "").strip()
+            raw_phage = (result.params.get("phage_id") or "").strip()
+            raw_host = (result.params.get("host_strain_id") or "").strip()
             missing = []
-            if not phage_id: missing.append("噬菌体 ID (PHG-xxx)")
-            if not host_id: missing.append("宿主菌株 ID (HS-xxx)")
+            if not raw_phage: missing.append("噬菌体 ID 或名称 (如 PKP005)")
+            if not raw_host: missing.append("宿主菌株 ID 或标签 (如 B-KP1)")
             if missing:
                 history.append({"role": "assistant", "content": "识别为 SCI-S2，但缺少：" + "、".join(missing)})
                 return _render_history(history), history, ""
             
             with rt.driver.session() as s:
-                p_exists = s.run("MATCH (p:Phage {phage_id: $id}) RETURN 1", id=phage_id).single()
-                h_exists = s.run("MATCH (h:HostStrain {host_strain_id: $id}) RETURN 1", id=host_id).single()
-                if not p_exists or not h_exists:
+                # 允许用 phage_id 或 name 进行匹配
+                p_rec = s.run("MATCH (p:Phage) WHERE p.phage_id = $val OR p.name = $val RETURN p.phage_id AS id LIMIT 1", val=raw_phage).single()
+                # ★ 核心修复：兼容宿主可能的属性名 strain_name / name / host_strain_id
+                h_rec = s.run("MATCH (h:HostStrain) WHERE h.host_strain_id = $val OR h.name = $val OR h.strain_name = $val RETURN h.host_strain_id AS id LIMIT 1", val=raw_host).single()
+                
+                if not p_rec or not h_rec:
                     msg = "⚠️ 对象不存在："
-                    if not p_exists: msg += f" 未找到噬菌体 {phage_id}；"
-                    if not h_exists: msg += f" 未找到宿主 {host_id}。"
+                    if not p_rec: 
+                        recent = s.run("MATCH (p:Phage) RETURN coalesce(p.name, p.phage_id) AS name, p.phage_id AS id LIMIT 5").data()
+                        msg += f"\n- 未找到噬菌体 **{raw_phage}**（库中参考: " + ", ".join([f"{r['name']}" for r in recent]) + "）"
+                    if not h_rec:
+                        # ★ 核心修复：给出宿主兜底提示
+                        recent_h = s.run("MATCH (h:HostStrain) RETURN coalesce(h.strain_name, h.name, h.host_strain_id) AS name LIMIT 5").data()
+                        ref_str = ", ".join([str(r['name']) for r in recent_h if r['name']])
+                        msg += f"\n- 未找到宿主 **{raw_host}**（库中参考: {ref_str}）"
                     history.append({"role": "assistant", "content": msg})
                     return _render_history(history), history, ""
+                
+                # 使用真实匹配到的 ID
+                real_phage_id = p_rec["id"]
+                real_host_id = h_rec["id"]
                     
-            task, plan = rt.s2_service.create_task(phage_id=phage_id, host_strain_id=host_id, submitted_by=identity["id"], user_role=identity["role"])
+            task, plan = rt.s2_service.create_task(phage_id=real_phage_id, host_strain_id=real_host_id, submitted_by=identity["id"], user_role=identity["role"])
             target_label = "组合"
 
-        # I1
+        # 3. I1 情报简报
         elif result.intent == IntentType.INT_I1_PERIODIC_BRIEF:
             if identity["role"] not in {"analyst", "data_manager", "admin"}:
                 history.append({"role": "assistant", "content": "无权创建情报域任务。"})
@@ -151,30 +166,48 @@ def cb_send(_, user_input, history):
             task, plan = rt.i1_service.create_task(pathogen_id=pathogen_id, date_from=date_from, date_to=date_to, submitted_by=identity["id"], user_role=identity["role"])
             target_label = "病原体"
 
-        # 闲聊 / 检索
+        # 4. 通用智能问答
         else:
             with rt.driver.session() as s:
                 labels = [r["label"] for r in s.run("CALL db.labels()")]
                 rels = [r["relationshipType"] for r in s.run("CALL db.relationshipTypes()")]
             
-            prompt = f"你是一个 Neo4j 专家。图数据库标签: {', '.join(labels)}; 关系: {', '.join(rels)}。\n请将用户的自然语言转化为单条只读的 Cypher 查询语句。\n【注意】：必须输出纯 Cypher 语句，禁止输出解释！如果无需查库，请直接自然语言回答。\n\n用户问题：{query}"
+            prompt = f"""你是一个 Neo4j 专家。
+数据库标签: {', '.join(labels)}
+数据库关系类型: {', '.join(rels)}
+
+请将用户的自然语言转化为单条只读的 Cypher 查询语句。
+【极其重要】：必须输出纯 Cypher，禁止解释！如果不确定关系，尽量用单点查询。
+
+用户问题：{query}
+"""
             llm_res = _ask_llm(prompt)
-            
             cypher_match = re.search(r"(?is)(MATCH|RETURN|OPTIONAL MATCH|CALL|WITH)\s+.*?(?=(?:\n\n|\Z|```))", llm_res)
             cypher = cypher_match.group(0).strip().replace("```", "").strip() if cypher_match else ""
             
+            summary = ""
             if cypher:
                 with rt.driver.session() as s:
                     try:
                         data = s.run(cypher).data()
                         if not data:
-                            summary = "查询成功，无匹配数据。"
+                            fallback_msg = "查询未匹配到直接关系数据。\n\n"
+                            if "Phage" in query or "噬菌体" in query:
+                                recent = s.run("MATCH (p:Phage) RETURN coalesce(p.name, p.phage_id) AS name, p.phage_id AS id LIMIT 5").data()
+                                if recent:
+                                    fallback_msg += "💡 **系统兜底提示**：库中现有部分噬菌体节点，例如：\n" + "\n".join([f"- {r['id']} ({r['name']})" for r in recent])
+                            if "LysisAssay" in query or "裂解" in query:
+                                cnt = s.run("MATCH (l:LysisAssay) RETURN count(l) AS c").single()["c"]
+                                fallback_msg += f"\n\n- 库中另有 **{cnt}** 条裂解实验记录。"
+                            fallback_msg += "\n\n（注：图数据库中可能尚未建立两者之间的物理连线，或大模型生成的查询方向有误。）"
+                            summary = fallback_msg
                         else:
                             summary = _ask_llm(f"用户问题：{query}\n数据：{json.dumps(data[:20], ensure_ascii=False, default=str)}\n请用中文简洁总结。")
                     except Exception as e:
-                        summary = f"生成的图查询语句报错，无法执行。"
+                        summary = "生成的图查询语句报错，无法执行。"
             else:
                 summary = llm_res
+
             history.append({"role": "assistant", "content": summary})
             return _render_history(history), history, ""
 
@@ -185,6 +218,7 @@ def cb_send(_, user_input, history):
     history.append({"role": "plan_card", "data": {"task_id": task.task_id, "plan_id": plan.plan_id, "goal_summary": plan.goal_summary, "steps": [s.to_dict() for s in plan.steps], "batch_id": task.scope.get("experiment_batch_id") or task.scope.get("pathogen_id") or f"{task.scope.get('phage_id')} × {task.scope.get('host_strain_id')}", "target_label": target_label, "status": "pending"}})
     return _render_history(history), history, ""
 
+# ... (cb_plan_action 和 _render_history 保持原样) ...
 @callback(
     Output("ai-messages", "children", allow_duplicate=True),
     Output("store-ai-history", "data", allow_duplicate=True),
