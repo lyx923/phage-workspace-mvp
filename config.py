@@ -54,6 +54,21 @@ class Config:
     SANDBOX_MOCK_DATA = os.getenv("SANDBOX_MOCK_DATA", "true").lower() == "true"
 
     # ============================================================
+    # Agent 验证开关（v0.8-Agent 批次）
+    # ============================================================
+    # 总开关：默认关闭。开启后 get_agent_runtime() 才会装配仓储和执行器。
+    AGENT_VALIDATION_ENABLED = (
+        os.getenv("AGENT_VALIDATION_ENABLED", "false").lower() == "true"
+    )
+    # 测试模型开关：仅当 SANDBOX_MODE 与 AGENT_VALIDATION_ENABLED 同时为 true
+    # 且本开关为 true 时，才允许注册/调用 TEST-ELIGIBILITY-ECHO。
+    AGENT_TEST_MODEL_ENABLED = (
+        os.getenv("AGENT_TEST_MODEL_ENABLED", "false").lower() == "true"
+    )
+    # 失败步骤最大重试次数（第 6 批使用）。测试默认值，不是业务标准。
+    AGENT_MAX_RETRIES = int(os.getenv("AGENT_MAX_RETRIES", "1"))
+
+    # ============================================================
     # 文件存储预置（v0.8 仍预留，不实现）
     # ============================================================
     FILE_STORAGE_BACKEND = os.getenv("FILE_STORAGE_BACKEND", "local")
@@ -64,7 +79,6 @@ class Config:
     DEBUG_MODE = os.getenv("DEBUG", "false").lower() == "true"
     PORT = int(os.getenv("PORT", "8501"))
     HOST = os.getenv("HOST", "0.0.0.0")
-
 
 # ============================================================
 # 全局单例：Neo4j 驱动

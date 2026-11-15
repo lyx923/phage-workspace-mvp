@@ -1,26 +1,24 @@
 # src/shared/audit_service.py
-"""
-审计日志服务（PRD 6.1.1）。
+"""不可变审计事件写入与查询。
 
-职责：
-    - write_audit_event：写入不可变审计日志（只 CREATE，永不 UPDATE/DELETE）
-    - get_audit_trail：查询某对象的完整审计历史
-
-约定：
-    - AuditEvent 节点只有 CREATE 操作
-    - action_type 受 VALID_ACTION_TYPES 受控
-    - delta 自动序列化为 JSON 字符串
+变更说明（Agent v0.8 批次）：
+- 扩展 write_audit_event 支持 correlation_id / domain / task_id / step_id；
+- 追加 4 个可选参数，现有调用不变；
+- AuditEvent 节点新增对应字段与索引。
 """
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, List
-from neo4j import Driver
-import json
+from typing import Dict, List, Optional
 
-# ── 受控词表（PRD 6.1.1） ────────────────────────────────────────────────
+from neo4j import Driver
+
+
+# ── 受控词表 ─────────────────────────────────────────────────────
 VALID_ACTION_TYPES = {
     "CREATE",
     "UPDATE",
+    "DELETE",
     "STATUS_CHANGE",
     "LINK_CREATE",
     "LINK_DELETE",
@@ -28,7 +26,56 @@ VALID_ACTION_TYPES = {
     "REVIEW_REJECT",
     "DATA_CORRECTION",
     "MIGRATION",
+
+    # Agent 核心生命周期动作
+    "AGENT_TASK_CREATE",
+    "AGENT_TASK_STATUS_CHANGE",
+    "AGENT_PLAN_CREATE",
+    "AGENT_PLAN_REVISE",
+    "AGENT_PLAN_APPROVE",
+    "AGENT_PLAN_REJECT",
+    "AGENT_RUN_START",
+    "AGENT_STEP_START",
+    "AGENT_STEP_COMPLETE",
+    "AGENT_STEP_FAIL",
+    "AGENT_STEP_RETRY",
+    "AGENT_TOOL_CALL",
+    "AGENT_PAUSE",
+    "AGENT_RESUME",
+    "AGENT_CANCEL",
+    "AGENT_INTERVENTION",
+    "AGENT_APPROVAL_REQUEST",
+    "AGENT_APPROVAL_APPROVE",
+    "AGENT_APPROVAL_REJECT",
+    "AGENT_APPROVAL_WITHDRAW",
+    "AGENT_APPROVAL_EXPIRE",
+    "AGENT_APPROVAL_SUPERSEDE",
+    "AGENT_APPROVAL_CONSUME",
+    "AGENT_ARTIFACT_CREATE",
+    "AGENT_ARTIFACT_SUPERSEDE",
+    "AGENT_RESULT_SUBMIT",
+    "AGENT_RESULT_APPROVE",
+    "AGENT_RESULT_REJECT",
+    "AGENT_RESULT_REVISION_START",
+    "AGENT_PUBLISH",
+    "CONTEXT_SNAPSHOT_INVALIDATE",
+
+    # 模型准入与执行动作
+    "MODEL_ELIGIBILITY_ASSESS",
+    "MODEL_INPUT_SNAPSHOT_CREATE",
+    "MODEL_CALL_START",
+    "MODEL_CALL_COMPLETE",
+    "MODEL_CALL_FAIL",
+    "MODEL_CONTRACT_CREATE",
+
+    # 数据校验
+    "VALIDATION_RUN_COMPLETE",
+    "VALIDATION_RUN_FAIL",
 }
+
+
+class AuditWriteError(Exception):
+    """关键审计写入失败时抛出，用于阻断后续操作。"""
 
 
 def write_audit_event(
@@ -40,79 +87,68 @@ def write_audit_event(
     delta: Optional[Dict] = None,
     reason: Optional[str] = None,
     session_id: Optional[str] = None,
+    # ── v0.8 Agent 批次新增（全部可选，向后兼容） ──
+    correlation_id: Optional[str] = None,
+    domain: Optional[str] = None,
+    task_id: Optional[str] = None,
+    step_id: Optional[str] = None,
 ) -> str:
-    """
-    写入不可变审计日志节点（PRD 6.1.1）。
-
-    约束：
-      - AuditEvent 节点只有 CREATE，永远不 UPDATE 或 DELETE
-      - action_type 必须是受控词表中的值
-      - delta 自动转为 JSON 字符串存储
-
-    Args:
-        action_type: 受控动作类型
-        object_type: 被操作对象类型
-        object_id: 被操作对象 ID
-        actor_id: 操作者
-        delta: 变更内容（dict，会被序列化）
-        reason: 变更原因
-        session_id: 会话 ID（可选）
-
-    Returns:
-        str: audit_id（格式：AUDIT:XXXXXXXX）
-
-    Raises:
-        ValueError: action_type 非法
-    """
+    """写入不可变审计日志节点（PRD 6.1.1 / 15）。"""
     if action_type not in VALID_ACTION_TYPES:
         raise ValueError(
-            f"非法 action_type: {action_type}。"
-            f"合法值: {VALID_ACTION_TYPES}"
+            f"非法 action_type: {action_type}。合法值: {sorted(VALID_ACTION_TYPES)}"
         )
 
     audit_id = f"AUDIT:{uuid.uuid4().hex[:8].upper()}"
     timestamp = datetime.now(timezone.utc).isoformat()
-    delta_json = json.dumps(delta, ensure_ascii=False, default=str) if delta else None
+    delta_json = (
+        json.dumps(delta, ensure_ascii=False, default=str) if delta else None
+    )
 
-    with driver.session() as session:
-        session.run(
-            """
-            CREATE (a:AuditEvent {
-                audit_id: $audit_id,
-                action_type: $action_type,
-                object_type: $object_type,
-                object_id: $object_id,
-                actor_id: $actor_id,
-                delta: $delta,
-                reason: $reason,
-                session_id: $session_id,
-                timestamp: $timestamp
-            })
-            """,
-            audit_id=audit_id,
-            action_type=action_type,
-            object_type=object_type,
-            object_id=object_id,
-            actor_id=actor_id,
-            delta=delta_json,
-            reason=reason,
-            session_id=session_id,
-            timestamp=timestamp,
-        )
+    try:
+        with driver.session() as session:
+            session.run(
+                """
+                CREATE (a:AuditEvent {
+                    audit_id: $audit_id,
+                    action_type: $action_type,
+                    object_type: $object_type,
+                    object_id: $object_id,
+                    actor_id: $actor_id,
+                    delta: $delta,
+                    reason: $reason,
+                    session_id: $session_id,
+                    correlation_id: $correlation_id,
+                    domain: $domain,
+                    task_id: $task_id,
+                    step_id: $step_id,
+                    timestamp: $timestamp
+                })
+                """,
+                audit_id=audit_id,
+                action_type=action_type,
+                object_type=object_type,
+                object_id=object_id,
+                actor_id=actor_id,
+                delta=delta_json,
+                reason=reason,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                domain=domain,
+                task_id=task_id,
+                step_id=step_id,
+                timestamp=timestamp,
+            )
+    except Exception as exc:
+        raise AuditWriteError(
+            f"审计写入失败，系统已阻断后续操作: {exc}"
+        ) from exc
 
     return audit_id
 
 
 def get_audit_trail(driver: Driver, object_id: str) -> List[Dict]:
-    """
-    查询指定对象的完整审计历史，按时间升序返回。
-
-    Args:
-        object_id: 被操作对象 ID
-
-    Returns:
-        List[Dict]: 每条含 audit_id / action_type / actor_id / delta / reason / timestamp
-    """
+    """查询指定对象的完整审计历史。"""
     with driver.session() as session:
         result = session.run(
             """
@@ -122,6 +158,10 @@ def get_audit_trail(driver: Driver, object_id: str) -> List[Dict]:
                    a.actor_id AS actor_id,
                    a.delta AS delta,
                    a.reason AS reason,
+                   a.correlation_id AS correlation_id,
+                   a.domain AS domain,
+                   a.task_id AS task_id,
+                   a.step_id AS step_id,
                    a.timestamp AS timestamp
             ORDER BY a.timestamp ASC
             """,

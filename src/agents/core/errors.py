@@ -1,0 +1,92 @@
+# src/agents/core/errors.py
+"""Agent 统一错误代码。
+
+前端和服务层按错误代码处理，不依赖异常文本实现业务逻辑。
+"""
+from enum import Enum
+from typing import Optional
+
+
+class AgentErrorCode(str, Enum):
+    # 任务 / 计划
+    TASK_NOT_FOUND = "AGENT_TASK_NOT_FOUND"
+    PLAN_NOT_FOUND = "AGENT_PLAN_NOT_FOUND"
+    STEP_NOT_FOUND = "AGENT_STEP_NOT_FOUND"
+    INVALID_STATE_TRANSITION = "AGENT_INVALID_STATE_TRANSITION"
+    PLAN_NOT_APPROVED = "AGENT_PLAN_NOT_APPROVED"
+    PLAN_VERSION_MISMATCH = "AGENT_PLAN_VERSION_MISMATCH"
+
+    # 上下文
+    CONTEXT_INVALID = "AGENT_CONTEXT_INVALID"
+    CONTEXT_EXPIRED = "AGENT_CONTEXT_EXPIRED"
+    CONTEXT_HASH_MISMATCH = "AGENT_CONTEXT_HASH_MISMATCH"
+    CONTEXT_DOMAIN_MISMATCH = "AGENT_CONTEXT_DOMAIN_MISMATCH"
+
+    # 权限 / 审批
+    PERMISSION_DENIED = "AGENT_PERMISSION_DENIED"
+    APPROVAL_REQUIRED = "AGENT_APPROVAL_REQUIRED"
+    APPROVAL_EXPIRED = "AGENT_APPROVAL_EXPIRED"
+
+    # 工具
+    TOOL_NOT_REGISTERED = "AGENT_TOOL_NOT_REGISTERED"
+    TOOL_DISABLED = "AGENT_TOOL_DISABLED"
+    TOOL_DOMAIN_MISMATCH = "AGENT_TOOL_DOMAIN_MISMATCH"
+    TOOL_INPUT_INVALID = "AGENT_TOOL_INPUT_INVALID"
+    TOOL_OUTPUT_INVALID = "AGENT_TOOL_OUTPUT_INVALID"
+    TOOL_TIMEOUT = "AGENT_TOOL_TIMEOUT"
+
+    # 数据 / 模型
+    SOURCE_MISSING = "AGENT_SOURCE_MISSING"
+    VALIDATION_BLOCKED = "AGENT_VALIDATION_BLOCKED"
+    MODEL_CONTRACT_MISSING = "AGENT_MODEL_CONTRACT_MISSING"
+    MODEL_INELIGIBLE = "AGENT_MODEL_INELIGIBLE"
+    INPUT_SNAPSHOT_FAILED = "AGENT_INPUT_SNAPSHOT_FAILED"
+    MODEL_OUTPUT_INVALID = "AGENT_MODEL_OUTPUT_INVALID"
+
+    # 任务生命周期
+    TASK_PAUSED = "AGENT_TASK_PAUSED"
+    TASK_CANCELLED = "AGENT_TASK_CANCELLED"
+    AUDIT_WRITE_FAILED = "AGENT_AUDIT_WRITE_FAILED"
+
+    # 并发 / 重复
+    CONCURRENT_UPDATE = "AGENT_CONCURRENT_UPDATE"
+    DUPLICATE_OPERATION = "AGENT_DUPLICATE_OPERATION"
+
+    # ── 第 4 批新增 ──
+    PLAN_REVIEW_COMMENT_REQUIRED = "AGENT_PLAN_REVIEW_COMMENT_REQUIRED"
+    REPLAN_REQUIRED = "AGENT_REPLAN_REQUIRED"
+    RETRY_NOT_AUTHORIZED = "AGENT_RETRY_NOT_AUTHORIZED"
+    TRANSACTION_FAILED = "AGENT_TRANSACTION_FAILED"
+
+    # ── 第 5-6 批预留（关系生命周期 + 事务） ──
+    RELATION_EXECUTION_FAILED = "AGENT_RELATION_EXECUTION_FAILED"
+    RELATION_ALREADY_EXISTS = "AGENT_RELATION_ALREADY_EXISTS"
+    RELATION_REQUEST_NOT_APPROVED = "AGENT_RELATION_REQUEST_NOT_APPROVED"
+    RELATION_REQUEST_VERSION_CONFLICT = "AGENT_RELATION_REQUEST_VERSION_CONFLICT"
+
+
+class AgentError(RuntimeError):
+    """Agent 服务统一异常。"""
+
+    def __init__(
+        self,
+        code: AgentErrorCode,
+        message: str,
+        *,
+        correlation_id: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.correlation_id = correlation_id
+        self.details = details or {}
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": False,
+            "code": self.code.value,
+            "message": self.message,
+            "correlation_id": self.correlation_id,
+            "details": self.details,
+        }

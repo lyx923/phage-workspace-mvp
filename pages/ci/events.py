@@ -20,6 +20,9 @@ from config import get_driver, Config
 from src.ci.organization_service import create_organization
 from src.shared.evidence_source import create_source_artifact
 
+# ★ 引入权限校验
+from auth import check_permission
+
 dash.register_page(__name__, path="/ci/events", name="情报事件")
 
 EVENT_TYPE_OPTIONS = [
@@ -95,7 +98,12 @@ def _fetch_events(keyword="", etype=""):
             st = str(d.get("review_status") or "pending").strip().lower()
             d["status_cn"] = STATUS_MAP.get(st, st)
             d["type_cn"] = EVENT_TYPE_MAP.get(d.get("event_type", ""), d.get("event_type", ""))
-            d["actions"] = "👉 确认事实" if (st == "pending" or not d.get("review_status")) else "已确认"
+            
+            # ★ 核心控制：只有拥有 review 权限的人才能看到“确认事实”操作
+            if st == "pending" and check_permission("IntelligenceEvent", "review"):
+                d["actions"] = "👉 确认事实"
+            else:
+                d["actions"] = "已处理" if st != "pending" else "无权限审核"
             rows.append(d)
         return rows
     except Exception as e:
@@ -103,6 +111,9 @@ def _fetch_events(keyword="", etype=""):
         return []
 
 
+# ============================================================
+# 布局 (Layout) - 动态按钮显隐
+# ============================================================
 layout = html.Div([
     html.Div(id="ie-error-banner"),
     html.Div(className="page-header", children=[
@@ -111,9 +122,10 @@ layout = html.Div([
             html.Div("管理所有 IntelligenceEvent · 归因组织 · SourceArtifact 溯源", className="page-subtitle"),
         ]),
         html.Div(className="page-actions", children=[
-            html.Button([html.I(className="bi bi-gear me-1"), "监控中心"], id="btn-ie-monitor", className="btn-outline-custom"),
-            html.Button([html.I(className="bi bi-globe me-1"), "URL 智能抓取"], id="btn-ie-fetch", className="btn-primary-custom"),
-            html.Button([html.I(className="bi bi-plus-lg me-1"), "手动新增"], id="btn-ie-new", className="btn-outline-custom"),
+            # ★ 核心控制：只有拥有 create 权限的人才能看到创建类按钮
+            html.Button([html.I(className="bi bi-gear me-1"), "监控中心"], id="btn-ie-monitor", className="btn-outline-custom", style={"display": "inline-block" if check_permission("IntelligenceEvent", "create") else "none"}),
+            html.Button([html.I(className="bi bi-globe me-1"), "URL 智能抓取"], id="btn-ie-fetch", className="btn-primary-custom", style={"display": "inline-block" if check_permission("IntelligenceEvent", "create") else "none"}),
+            html.Button([html.I(className="bi bi-plus-lg me-1"), "手动新增"], id="btn-ie-new", className="btn-outline-custom", style={"display": "inline-block" if check_permission("IntelligenceEvent", "create") else "none"}),
         ]),
     ]),
     html.Div(className="filter-bar", children=[
@@ -264,6 +276,9 @@ def cb_offcanvas(new_n, cancel_n):
     prevent_initial_call=True,
 )
 def cb_save(_, title, etype, org_id, event_date, src_url, summary):
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "create"):
+        return dbc.Alert("无权限：您没有创建情报事件的权限", color="danger"), no_update, no_update
     if not title or not (org_id or "").strip():
         return dbc.Alert("标题和组织 ID 不能为空", color="danger"), no_update, no_update
     try:
@@ -306,6 +321,11 @@ def cb_do_review(approve_n, cancel_n, evt_id):
     trigger = ctx.triggered_id
     if trigger == "btn-ie-modal-cancel" or not evt_id:
         return False, no_update, no_update
+    
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "review"):
+        return False, no_update, dbc.Alert("无权限：您没有审核情报事件的权限", color="danger", dismissable=True)
+        
     try:
         with get_driver().session() as s:
             s.run("MATCH (e:IntelligenceEvent {event_id: $eid}) SET e.review_status = 'reviewed', e.updated_at = datetime()", eid=evt_id)
@@ -406,6 +426,9 @@ def del_monitor_url(n_clicks_list):
     prevent_initial_call=True,
 )
 def run_monitor(n):
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "create"):
+        return dbc.Alert("无权限", color="danger"), [], False
     try:
         result = collect_for_review(time_filter="week")
         events = result.get("events", [])
@@ -445,19 +468,10 @@ def toggle_fetch_modal(n):
     return True
 
 def _extract_date_from_html(html_text):
-    """
-    从 HTML 源码中提取日期。
-    针对微信公众号等动态渲染页面增加了时间戳解析。
-    """
-    if not html_text:
-        return ""
-    
-    # 1. 微信特有的 JS 变量时间戳匹配 (10 位秒级时间戳)
+    if not html_text: return ""
     wechat_ts_patterns = [
-        r'var\s+ct\s*=\s*"(\d{10})"',
-        r'var\s+create_time\s*=\s*"(\d{10})"',
-        r'create_time\s*[:=]\s*["\']?(\d{10})',
-        r'msg_publish_time\s*[:=]\s*["\']?(\d{10})',
+        r'var\s+ct\s*=\s*"(\d{10})"', r'var\s+create_time\s*=\s*"(\d{10})"',
+        r'create_time\s*[:=]\s*["\']?(\d{10})', r'msg_publish_time\s*[:=]\s*["\']?(\d{10})',
     ]
     for p in wechat_ts_patterns:
         m = re.search(p, html_text)
@@ -465,7 +479,6 @@ def _extract_date_from_html(html_text):
             ts = int(m.group(1))
             return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
-    # 2. 标准 Meta 标签
     meta_patterns = [
         r'<meta[^>]+property="article:published_time"[^>]+content="([^"]+)"',
         r'<meta[^>]+name="publish_date"[^>]+content="([^"]+)"',
@@ -473,15 +486,11 @@ def _extract_date_from_html(html_text):
     ]
     for p in meta_patterns:
         m = re.search(p, html_text, re.IGNORECASE)
-        if m:
-            return m.group(1).strip()[:10]
+        if m: return m.group(1).strip()[:10]
 
-    # 3. 普通文本正则匹配兜底
     m = re.search(r'(\d{4}[-/年]\d{1,2}[-/月]\d{1,2})', html_text)
     if m:
-        date_str = m.group(1).replace("年", "-").replace("月", "-").replace("日", "")
-        return date_str.strip()[:10]
-        
+        return m.group(1).replace("年", "-").replace("月", "-").replace("日", "").strip()[:10]
     return ""
 
 @callback(
@@ -497,11 +506,13 @@ def _extract_date_from_html(html_text):
     prevent_initial_call=True,
 )
 def cb_fetch_url(n, url):
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "create"):
+        return dbc.Alert("无权限执行抓取", color="danger"), {"display": "none"}, no_update, no_update, no_update, no_update, no_update
     if not url or not url.startswith("http"):
         return dbc.Alert("请输入合法的 URL", color="warning"), {"display": "none"}, no_update, no_update, no_update, no_update, no_update
 
     session = make_session()
-    # ★ 增加伪装浏览器 headers，防止被微信拦截
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -541,20 +552,15 @@ def cb_fetch_url(n, url):
     except Exception as e:
         return dbc.Alert(f"大模型提取失败：{e}", color="danger"), {"display": "none"}, no_update, no_update, no_update, no_update, no_update
 
-    # ★ 日期智能判断逻辑
     llm_date = (data.get("event_date") or "").strip()
     
-    # 如果模型提取出了合法日期，且不是明显错误的 1月1号（通常是模型瞎猜的）
     if re.match(r'^\d{4}-\d{2}-\d{2}$', llm_date) and not llm_date.endswith("-01-01"):
         real_date = llm_date
     elif html_date:  
-        # 否则优先使用 HTML 解析出的真实时间戳
         real_date = html_date
     elif re.match(r'^\d{4}-\d{2}-\d{2}$', llm_date):
-        # 兜底用模型的
         real_date = llm_date
     else:
-        # 最后兜底用今天
         real_date = datetime.date.today().strftime("%Y-%m-%d")
 
     return (
@@ -581,6 +587,9 @@ def cb_fetch_url(n, url):
     prevent_initial_call=True,
 )
 def cb_save_fetched(n, title, org_name, etype, date, summary, url):
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "create"):
+        return no_update, no_update, dbc.Alert("无权限", color="danger")
     if not n: return no_update, no_update, no_update
     if not title or not org_name:
         return no_update, no_update, dbc.Alert("标题和组织名称不能为空", color="danger")
@@ -593,7 +602,7 @@ def cb_save_fetched(n, title, org_name, etype, date, summary, url):
 
 
 # ============================================================
-# 监控结果批量入库 (带拦截校验)
+# 监控结果批量入库
 # ============================================================
 @callback(
     Output("modal-monitor-results", "is_open", allow_duplicate=True),
@@ -604,11 +613,13 @@ def cb_save_fetched(n, title, org_name, etype, date, summary, url):
     prevent_initial_call=True,
 )
 def cb_save_monitor_results(n, selected_rows):
+    # ★ 后端防越权拦截
+    if not check_permission("IntelligenceEvent", "create"):
+        return no_update, no_update, dbc.Alert("无权限", color="danger")
     if not n: return no_update, no_update, no_update
     if not selected_rows:
         return no_update, no_update, dbc.Alert("请先在表格中勾选需要入库的事件", color="warning")
     
-    # ★ 入库前拦截检查：如果有未识别组织，阻止入库
     missing_orgs = [r for r in selected_rows if not r.get("org_name") or r.get("org_name") == "⚠️ 未识别组织"]
     if missing_orgs:
         return no_update, no_update, dbc.Alert(

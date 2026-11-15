@@ -217,6 +217,31 @@ def create_schema(driver):
         session.run("CREATE INDEX watchlist_status_idx IF NOT EXISTS FOR (wi:WatchlistItem) ON (wi.status);")
         session.run("CREATE INDEX watchlist_priority_idx IF NOT EXISTS FOR (wi:WatchlistItem) ON (wi.priority);")
 
+        # ========================================================
+        # ★ Agent 域新增约束与索引 (PRD 第 6 章)
+        # ========================================================
+        # AgentTask
+        session.run("CREATE CONSTRAINT agent_task_id_unique IF NOT EXISTS FOR (t:AgentTask) REQUIRE t.task_id IS UNIQUE;")
+        session.run("CREATE INDEX agent_task_status_idx IF NOT EXISTS FOR (t:AgentTask) ON (t.status);")
+        session.run("CREATE INDEX agent_task_domain_idx IF NOT EXISTS FOR (t:AgentTask) ON (t.domain);")
+        session.run("CREATE INDEX agent_task_user_idx IF NOT EXISTS FOR (t:AgentTask) ON (t.submitted_by);")
+
+        # AgentPlan
+        session.run("CREATE CONSTRAINT agent_plan_id_unique IF NOT EXISTS FOR (p:AgentPlan) REQUIRE p.plan_id IS UNIQUE;")
+        session.run("CREATE INDEX agent_plan_task_idx IF NOT EXISTS FOR (p:AgentPlan) ON (p.task_id);")
+
+        # AgentStep
+        session.run("CREATE CONSTRAINT agent_step_id_unique IF NOT EXISTS FOR (s:AgentStep) REQUIRE s.step_id IS UNIQUE;")
+        
+        # AgentToolCall
+        session.run("CREATE CONSTRAINT agent_tool_call_id_unique IF NOT EXISTS FOR (c:AgentToolCall) REQUIRE c.tool_call_id IS UNIQUE;")
+
+        # AgentApproval
+        session.run("CREATE CONSTRAINT agent_approval_id_unique IF NOT EXISTS FOR (a:AgentApproval) REQUIRE a.approval_id IS UNIQUE;")
+        
+        # AgentIntervention
+        session.run("CREATE CONSTRAINT agent_intervention_id_unique IF NOT EXISTS FOR (i:AgentIntervention) REQUIRE i.intervention_id IS UNIQUE;")
+
         # -------- 新增索引（提升查询性能） --------
         session.run("CREATE INDEX indication_name_idx IF NOT EXISTS FOR (ci:ClinicalIndication) ON (ci.name);")
         session.run("CREATE INDEX construct_name_idx IF NOT EXISTS FOR (ec:EngineeredPhageConstruct) ON (ec.public_name);")
@@ -272,6 +297,10 @@ def create_schema(driver):
         
         # 仅保留 Phage 的普通索引
         session.run("CREATE INDEX phage_engineered_idx IF NOT EXISTS FOR (p:Phage) ON (p.is_engineered)")
+        
+        # ★ 模型准入与快照约束 (PRD 第 12 章)
+        session.run("CREATE CONSTRAINT model_eligibility_id_unique IF NOT EXISTS FOR (m:ModelEligibilityAssessment) REQUIRE m.assessment_id IS UNIQUE;")
+        session.run("CREATE CONSTRAINT model_snapshot_id_unique IF NOT EXISTS FOR (s:ModelInputSnapshot) REQUIRE s.snapshot_id IS UNIQUE;")
 
         # P1 关系属性索引
         try:
@@ -302,6 +331,46 @@ def create_schema(driver):
                 p.engineering_status = null,
                 p.regulatory_status = 'research_only'
         """)
+        
+        # ========================================================
+        # ★ Agent 域约束与索引（v0.8-Agent 批次）
+        # ========================================================
+        # 约束
+        session.run("CREATE CONSTRAINT agent_task_id_unique IF NOT EXISTS FOR (n:AgentTask) REQUIRE n.task_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT agent_plan_id_unique IF NOT EXISTS FOR (n:AgentPlan) REQUIRE n.plan_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT agent_step_id_unique IF NOT EXISTS FOR (n:AgentStep) REQUIRE n.step_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT agent_artifact_id_unique IF NOT EXISTS FOR (n:AgentArtifact) REQUIRE n.artifact_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT agent_approval_id_unique IF NOT EXISTS FOR (n:AgentApproval) REQUIRE n.approval_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT context_snapshot_id_unique IF NOT EXISTS FOR (n:ContextSnapshot) REQUIRE n.context_snapshot_id IS UNIQUE")
+
+        # Agent 主表索引
+        session.run("CREATE INDEX agent_task_status_idx IF NOT EXISTS FOR (n:AgentTask) ON (n.status)")
+        session.run("CREATE INDEX agent_task_domain_idx IF NOT EXISTS FOR (n:AgentTask) ON (n.domain)")
+        session.run("CREATE INDEX agent_task_correlation_idx IF NOT EXISTS FOR (n:AgentTask) ON (n.correlation_id)")
+        session.run("CREATE INDEX agent_task_submitted_by_idx IF NOT EXISTS FOR (n:AgentTask) ON (n.submitted_by)")
+
+        # 计划 / 步骤
+        session.run("CREATE INDEX agent_plan_task_idx IF NOT EXISTS FOR (n:AgentPlan) ON (n.task_id)")
+        session.run("CREATE INDEX agent_step_plan_idx IF NOT EXISTS FOR (n:AgentStep) ON (n.plan_id)")
+
+        # Artifact
+        session.run("CREATE INDEX agent_artifact_task_idx IF NOT EXISTS FOR (n:AgentArtifact) ON (n.task_id)")
+        session.run("CREATE INDEX agent_artifact_family_idx IF NOT EXISTS FOR (n:AgentArtifact) ON (n.artifact_family_id)")
+        session.run("CREATE INDEX agent_artifact_status_idx IF NOT EXISTS FOR (n:AgentArtifact) ON (n.status)")
+
+        # 审批
+        session.run("CREATE INDEX agent_approval_task_idx IF NOT EXISTS FOR (n:AgentApproval) ON (n.task_id)")
+        session.run("CREATE INDEX agent_approval_status_idx IF NOT EXISTS FOR (n:AgentApproval) ON (n.status)")
+
+        # Context
+        session.run("CREATE INDEX context_snapshot_task_idx IF NOT EXISTS FOR (n:ContextSnapshot) ON (n.task_id)")
+        session.run("CREATE INDEX context_snapshot_status_idx IF NOT EXISTS FOR (n:ContextSnapshot) ON (n.status)")
+        session.run("CREATE INDEX context_snapshot_hash_idx IF NOT EXISTS FOR (n:ContextSnapshot) ON (n.context_hash)")
+
+        # AuditEvent 关联 Agent 追踪
+        session.run("CREATE INDEX audit_event_correlation_idx IF NOT EXISTS FOR (n:AuditEvent) ON (n.correlation_id)")
+        session.run("CREATE INDEX audit_event_task_idx IF NOT EXISTS FOR (n:AuditEvent) ON (n.task_id)")
+        session.run("CREATE INDEX audit_event_step_idx IF NOT EXISTS FOR (n:AuditEvent) ON (n.step_id)")
 
         print("✅ 所有数据库约束与索引创建完成（v0.8 基线）")
 

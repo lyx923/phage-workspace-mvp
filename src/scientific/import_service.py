@@ -880,8 +880,8 @@ def initialize_all_data(driver, progress_callback=None):
         with driver.session() as s:
             # 创建演示用批次
             s.run("""
-                MERGE (batch:ExperimentBatch {id: 'BATCH-DEMO-001'})
-                SET batch.name = '演示实验批次', batch.experiment_type = 'enzyme_screening', batch.status = 'completed', batch.created_at = datetime()
+                MERGE (batch:ExperimentBatch {id: 'BATCH-001'})
+                SET batch.name = '实验批次', batch.experiment_type = 'enzyme_screening', batch.status = 'completed', batch.created_at = datetime()
             """)
             # 创建演示用酶基因
             s.run("""
@@ -941,7 +941,7 @@ def initialize_all_data(driver, progress_callback=None):
                 MATCH (ep:Phage {phage_id: 'PHAGE-EP-001'})
                 MATCH (wt:Phage {phage_id: 'PHAGE-WT-001'})
                 MATCH (eg:EnzymeGene {id: 'EG-DEMO-001'})
-                MATCH (batch:ExperimentBatch {id: 'BATCH-DEMO-001'})
+                MATCH (batch:ExperimentBatch {id: 'BATCH-001'})
                 MATCH (bf:BiofilmAssay {id: 'BF-DEMO-001'})
                 MATCH (kre:KnowledgeReuseEvent {reuse_event_id: 'REUSE-DEMO-001'})
                 MATCH (pkg:ScientificEvidencePackage {package_id: 'PKG-DEMO-001'})

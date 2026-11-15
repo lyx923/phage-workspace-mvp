@@ -24,7 +24,7 @@ from src.scientific.import_service import get_driver
 from src.scientific.retriever_service import find_matching_phages, find_similar_cases
 from config import Config
 import uuid
-
+from datetime import datetime, timezone, timedelta
 
 # ==================== 系统提示词（对齐规范 P2、P4 及文案约束） ====================
 SYSTEM_PROMPT = """你是一个精准抗感染领域的循证助手。
@@ -55,7 +55,6 @@ def _retrieve_golden_rules(species: str, strain_type: Optional[str] = None) -> D
     """
     从 Neo4j 检索指定病原菌关联的黄金规则及其推荐的噬菌体。
     """
-    # ★ 修复：去掉 with，避免关闭连接池
     driver = get_driver()
     with driver.session() as session:
         # 如果缺少 strain_type，返回提示，不应用规则
@@ -294,7 +293,6 @@ def build_evidence_package_from_db(
     """
     一站式入口：检索互作路径 + 黄金规则路径 → 合并 → 构建 Evidence Package（LLM）→ 持久化。
     """
-    # ★ 修复：去掉 with
     driver = get_driver()
     raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
     raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
@@ -331,7 +329,6 @@ def verify_llm_effectiveness(case_id: str = "CASE-001") -> Dict:
     """
     验证 LLM 推荐效果 vs 真实临床方案。
     """
-    # ★ 修复：去掉 with
     driver = get_driver()
     with driver.session() as session:
         result = session.run("""
@@ -387,7 +384,6 @@ def rule_based_evidence_package(
     """
     纯规则引擎：同时检索互作路径和黄金规则路径，不调用 LLM。
     """
-    # ★ 修复：去掉 with
     driver = get_driver()
     raw_phages = find_matching_phages(driver, species, resistance, limit=phage_limit)
     raw_cases = find_similar_cases(driver, species, infection_type, limit=case_limit)
@@ -471,9 +467,11 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
     将 Evidence Package 持久化为 ScientificEvidencePackage 节点，并建立所有必要关系。
     """
     package_id = f"EP-{uuid.uuid4().hex[:8].upper()}"
-
-    # ★ 修复：去掉 with
     driver = get_driver()
+    
+    # ★ 核心修复：使用东八区时间，彻底解决前端显示偏差 6 小时的问题
+    local_now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+
     with driver.session() as session:
         # 1. 创建 ScientificEvidencePackage 节点（完整字段）
         session.run("""
@@ -485,8 +483,8 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
                 generated_by: $generated_by,
                 model_used: $model_used,
                 prompt_version: $prompt_version,
-                created_at: datetime(),
-                updated_at: datetime(),
+                created_at: $now,
+                updated_at: $now,
                 review_status: 'pending',
                 summary: $summary,
                 limitations: $limitations,
@@ -499,7 +497,8 @@ def persist_evidence_package(package_dict: Dict, query_context: Dict) -> str:
         model_used=query_context.get('model_used', 'deepseek-v3'),
         prompt_version=query_context.get('prompt_version', 'v1.0'),
         summary=package_dict.get('explanation', ''),
-        limitations='需人工进一步确认')
+        limitations='需人工进一步确认',
+        now=local_now)
 
         # 2. INCLUDES_CANDIDATE → Phage
         for item in package_dict.get('matching_evidence', []):

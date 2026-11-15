@@ -35,7 +35,7 @@ layout = html.Div(
                 html.Div(className="login-field", children=[
                     html.Label("密码", className="login-label"),
                     dcc.Input(
-                        id="login-password", type="password", value="", # ★ v0.8 修复：默认密码清空
+                        id="login-password", type="password", value="",
                         placeholder="请输入密码",
                         className="login-input",
                         autoComplete="current-password",
@@ -65,18 +65,24 @@ def cb_login(n_clicks, username, password):
     if not username or not password:
         return no_update, html.Div("请输入用户名和密码", className="login-error")
     
-    user = verify_user(username, password)
-    if not user:
-        return no_update, html.Div("用户名或密码错误", className="login-error")
-    
-    login_user(user)
-    # 返回 success 信号，交给前端 JS 进行跳转
-    return "success", html.Div(
-        [html.I(className="bi bi-check-circle-fill me-2"), "登录成功，正在进入系统…"],
-        className="login-success",
-    )
+    try:
+        # ★ 核心修复：捕获底层抛出的停用异常
+        user = verify_user(username, password)
+        if not user:
+            return no_update, html.Div("用户名或密码错误", className="login-error")
+        
+        login_user(user)
+        return "success", html.Div(
+            [html.I(className="bi bi-check-circle-fill me-2"), "登录成功，正在进入系统…"],
+            className="login-success",
+        )
+    except ValueError as ve:
+        # 捕获类似"该账号已被停用"的提示
+        return no_update, html.Div(str(ve), className="login-error")
+    except Exception as e:
+        return no_update, html.Div(f"登录异常: {e}", className="login-error")
 
-# ★ v0.8 修复：使用 data 作为触发跳转的 Output，避免修改组件 id
+# 使用 data 作为触发跳转的 Output，避免修改组件 id
 clientside_callback(
     """
     function(status) {

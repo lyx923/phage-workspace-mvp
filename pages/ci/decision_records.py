@@ -42,12 +42,10 @@ OUTCOME_MAP = {
 }
 
 COLUMNS = [
-    {"field": "id", "headerName": "决策 ID", "width": 160,
-     "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
+    {"field": "id", "headerName": "决策 ID", "width": 160, "cellStyle": {"fontFamily": "monospace", "fontSize": "11px"}},
     {"field": "type_cn", "headerName": "类型", "width": 120},
     {"field": "summary", "headerName": "决策摘要", "flex": 2},
     {"field": "owner", "headerName": "负责人", "width": 120},
-    # 这列现在可以点击了
     {"field": "brief_id", "headerName": "基于简报", "width": 200,
      "cellStyle": {"fontFamily": "monospace", "fontSize": "11px", "color": "var(--c-primary)", "cursor": "pointer", "textDecoration": "underline"}},
     {"field": "outcome_cn", "headerName": "结果", "width": 120},
@@ -70,25 +68,17 @@ layout = html.Div([
     html.Div(className="page-header", children=[
         html.Div([
             html.Div("决策记录", className="page-title"),
-            html.Div("管理所有 DecisionRecord · 基于情报简报的决策闭环",
-                     className="page-subtitle"),
+            html.Div("管理所有 DecisionRecord · 基于情报简报的决策闭环", className="page-subtitle"),
         ]),
         html.Div(className="page-actions", children=[
-            html.Button([html.I(className="bi bi-arrow-clockwise me-1"), "刷新"],
-                        id="btn-dr-refresh", className="btn-outline-custom"),
-            html.Button([html.I(className="bi bi-magic me-1"), "生成简报并决策"],
-                        id="btn-dr-new", className="btn-primary-custom"),
+            html.Button([html.I(className="bi bi-arrow-clockwise me-1"), "刷新"], id="btn-dr-refresh", className="btn-outline-custom"),
+            html.Button([html.I(className="bi bi-magic me-1"), "生成简报并决策"], id="btn-dr-new", className="btn-primary-custom"),
         ]),
     ]),
     html.Div(className="filter-bar", children=[
-        dcc.Input(id="dr-search", type="text", debounce=True, value="",
-                  placeholder="搜索决策摘要…", className="filter-search"),
-        dcc.Dropdown(id="dr-type-filter",
-                     options=[{"label": "全部类型", "value": ""}] + DECISION_TYPE_OPTIONS,
-                     value="", clearable=False, style={"width": "160px"}),
-        html.Div(id="dr-count-label",
-                 style={"marginLeft": "auto", "fontSize": "12px",
-                        "color": "var(--c-text-muted)"}),
+        dcc.Input(id="dr-search", type="text", debounce=True, value="", placeholder="搜索决策摘要…", className="filter-search"),
+        dcc.Dropdown(id="dr-type-filter", options=[{"label": "全部类型", "value": ""}] + DECISION_TYPE_OPTIONS, value="", clearable=False, style={"width": "160px"}),
+        html.Div(id="dr-count-label", style={"marginLeft": "auto", "fontSize": "12px", "color": "var(--c-text-muted)"}),
     ]),
     html.Div(className="surface-card", children=[
         dag.AgGrid(id="dr-grid", columnDefs=COLUMNS, rowData=[],
@@ -98,8 +88,7 @@ layout = html.Div([
 
     # 智能录入表单
     dbc.Offcanvas(
-        id="dr-offcanvas", title="生成简报并记录决策",
-        placement="end", is_open=False, style={"width": "650px"},
+        id="dr-offcanvas", title="生成简报并记录决策", placement="end", is_open=False, style={"width": "650px"},
         children=[
             html.Div(id="dr-step-1", children=[
                 html.H6("第一步：选择竞争对手生成简报", style={"fontWeight": "600", "marginBottom": "16px"}),
@@ -138,10 +127,21 @@ layout = html.Div([
         ]
     ),
 
-    # 查看简报抽屉
+    # ★ 核心改造：查看简报抽屉（加入审核按钮）
+    dcc.Store(id="store-view-brief-id"),
     dbc.Offcanvas(
-        id="dr-view-brief", title="原始简报内容", placement="end", is_open=False, style={"width": "600px"},
-        children=[html.Div(id="dr-view-brief-content")]
+        id="dr-view-brief", title="原始简报内容与审核", placement="end", is_open=False, style={"width": "600px"},
+        children=[
+            html.Div(id="dr-view-brief-content"),
+            html.Hr(),
+            html.Div(id="dr-brief-review-actions", style={"display": "none"}, children=[
+                html.H6("人工审核操作", style={"fontWeight": "600", "marginBottom": "12px"}),
+                html.Div([
+                    html.Button("❌ 拒绝", id="btn-dr-brief-reject", className="btn-danger-custom me-2"),
+                    html.Button("✅ 通过审核", id="btn-dr-brief-approve", className="btn-primary-custom"),
+                ], style={"display": "flex", "justifyContent": "flex-end"})
+            ])
+        ]
     )
 ])
 
@@ -155,8 +155,10 @@ layout = html.Div([
     Input("dr-type-filter", "value"),
     Input("btn-dr-save", "n_clicks"),
     Input("btn-dr-review-save", "n_clicks"),
+    Input("btn-dr-brief-approve", "n_clicks"),
+    Input("btn-dr-brief-reject", "n_clicks"),
 )
-def cb_load(_, search, dtype, __, ___):
+def cb_load(_, search, dtype, __, ___, ____, _____):
     try:
         rows = list_decision_records(keyword=search or "", decision_type=dtype or "")
         for r in rows:
@@ -257,12 +259,9 @@ def cb_save(_, brief_id, dtype, summary, rationale, owner):
     prevent_initial_call=True,
 )
 def cb_open_review(cell, row_data):
-    if not cell or cell.get("colId") != "actions":
-        return no_update, no_update, no_update, no_update
-
+    if not cell or cell.get("colId") != "actions": return no_update, no_update, no_update, no_update
     rowIndex = cell.get("rowIndex")
-    if rowIndex is None or not row_data or len(row_data) <= rowIndex:
-        return no_update, no_update, no_update, no_update
+    if rowIndex is None or not row_data or len(row_data) <= rowIndex: return no_update, no_update, no_update, no_update
 
     row = row_data[rowIndex]
     dec_id = row["id"]
@@ -287,8 +286,7 @@ def cb_open_review(cell, row_data):
     prevent_initial_call=True,
 )
 def cb_save_review(n, dec_id, new_outcome):
-    if not dec_id or not new_outcome:
-        return no_update, no_update, dbc.Alert("数据缺失", color="danger")
+    if not dec_id or not new_outcome: return no_update, no_update, dbc.Alert("数据缺失", color="danger")
     try:
         with get_driver().session() as s:
             s.run("MATCH (dr:DecisionRecord {decision_id: $did}) SET dr.outcome_status = $status, dr.updated_at = datetime()", did=dec_id, status=new_outcome)
@@ -297,25 +295,27 @@ def cb_save_review(n, dec_id, new_outcome):
         return no_update, no_update, dbc.Alert(f"修改失败：{e}", color="danger")
 
 
-# ★ 新增：点击 brief_id 查看原始简报
+# ★ 核心改造：点击 brief_id 查看原始简报，并判断是否需要展示审核按钮
 @callback(
     Output("dr-view-brief", "is_open"),
     Output("dr-view-brief-content", "children"),
+    Output("store-view-brief-id", "data"),
+    Output("dr-brief-review-actions", "style"),
     Input("dr-grid", "cellClicked"),
     State("dr-grid", "rowData"),
     prevent_initial_call=True,
 )
 def cb_view_brief(cell, row_data):
     if not cell or cell.get("colId") != "brief_id":
-        return no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     rowIndex = cell.get("rowIndex")
     if rowIndex is None or not row_data or len(row_data) <= rowIndex:
-        return no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     brief_id = row_data[rowIndex].get("brief_id")
     if not brief_id:
-        return False, "无关联简报"
+        return False, "无关联简报", None, {"display": "none"}
 
     try:
         with get_driver().session() as s:
@@ -324,11 +324,12 @@ def cb_view_brief(cell, row_data):
                 OPTIONAL MATCH (b)-[:COVERS]->(o:Organization)
                 RETURN b.executive_summary AS summary, 
                        b.competitive_assessment AS ca, 
+                       b.review_status AS status,
                        o.canonical_name AS org_name
             """, bid=brief_id).single()
             
         if not row:
-            return True, dbc.Alert("数据库中未找到该简报。", color="warning")
+            return True, dbc.Alert("数据库中未找到该简报。", color="warning"), None, {"display": "none"}
 
         ca = {}
         if row.get("ca"):
@@ -339,9 +340,15 @@ def cb_view_brief(cell, row_data):
 
         threats = [t.get("signal_text") for t in ca.get("threats", [])]
         opps = [o.get("signal_text") for o in ca.get("opportunities", [])]
+        
+        status = row.get("status", "pending")
+        status_cn = "待审核" if status == "pending" else "已通过" if status == "approved" else "已拒绝"
 
         ui = [
             html.H5(f"简报: {brief_id}", style={"fontFamily": "monospace", "color": "var(--c-primary)"}),
+            html.Div([
+                dbc.Badge(f"当前状态: {status_cn}", color="warning" if status=="pending" else "success" if status=="approved" else "danger", className="mb-3")
+            ]),
             html.H6(f"关联组织: {row.get('org_name') or '未知'}", style={"marginBottom": "20px"}),
             html.H6([html.I(className="bi bi-stars me-2"), "执行摘要"]),
             html.Div(row.get("summary") or "无摘要", style={"background": "#F8FAFC", "padding": "12px", "borderRadius": "6px", "marginBottom": "20px", "fontSize": "13px"}),
@@ -350,6 +357,33 @@ def cb_view_brief(cell, row_data):
             html.H6([html.I(className="bi bi-lightbulb me-2 text-success"), "机会"]),
             html.Ul([html.Li(o) for o in opps] if opps else [html.Li("无")], style={"fontSize": "13px"}),
         ]
-        return True, ui
+        
+        # 只有 pending 状态才显示审核按钮
+        action_style = {"display": "block"} if status == "pending" else {"display": "none"}
+        
+        return True, ui, brief_id, action_style
     except Exception as e:
-        return True, dbc.Alert(f"读取简报失败：{e}", color="danger")
+        return True, dbc.Alert(f"读取简报失败：{e}", color="danger"), None, {"display": "none"}
+
+# ★ 执行审核动作
+@callback(
+    Output("dr-view-brief", "is_open", allow_duplicate=True),
+    Output("btn-dr-refresh", "n_clicks", allow_duplicate=True),
+    Input("btn-dr-brief-approve", "n_clicks"),
+    Input("btn-dr-brief-reject", "n_clicks"),
+    State("store-view-brief-id", "data"),
+    prevent_initial_call=True,
+)
+def cb_do_brief_review(approve_n, reject_n, brief_id):
+    trigger = ctx.triggered_id
+    if not brief_id or trigger not in ["btn-dr-brief-approve", "btn-dr-brief-reject"]:
+        return no_update, no_update
+    
+    new_status = "approved" if trigger == "btn-dr-brief-approve" else "rejected"
+    try:
+        from src.ci.competitor_brief import update_intelligence_product_review_status
+        update_intelligence_product_review_status(get_driver(), brief_id, new_status, actor_id="dash_user")
+        return False, 1
+    except Exception as e:
+        print(f"Review error: {e}")
+        return no_update, no_update

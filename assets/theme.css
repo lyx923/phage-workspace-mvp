@@ -31,7 +31,7 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: var(--font-base); font-size: 14px;
-       color: var(--c-text-primary); background: var(--c-bg); }
+       color: var(--c-text-primary); background: var(--c-bg); overflow: hidden; }
 
 /* Top Navbar */
 .top-navbar {
@@ -85,21 +85,52 @@ body { font-family: var(--font-base); font-size: 14px;
 }
 .icon-btn:hover { background: var(--c-primary-light); color: var(--c-primary); }
 
-/* Shell */
+/* ============================================================ */
+/* Shell (核心布局锁定) */
+/* ============================================================ */
 .shell-wrapper {
-    display: flex; margin-top: var(--nav-h);
+    display: flex; 
+    margin-top: var(--nav-h);
     margin-bottom: var(--status-h);
-    min-height: calc(100vh - var(--nav-h) - var(--status-h));
+    /* 高度锁定，不再让子元素撑破 */
+    height: calc(100vh - var(--nav-h) - var(--status-h));
+    overflow: hidden;
 }
+
+/* 侧边栏 */
 .sidebar-panel {
-    flex-shrink: 0; width: var(--sidebar-w-expanded);
+    flex-shrink: 0; 
     background: var(--c-surface);
     border-right: 1px solid var(--c-border);
-    overflow: hidden; transition: width var(--transition);
+    height: 100%;
+    overflow-y: auto; 
+    overflow-x: hidden; /* ★ 强制干掉左右滚动条 */
+    transition: width var(--transition);
 }
 .sidebar-panel.collapsed { width: 0; border-right: none; }
 .sidebar-panel.expanded  { width: var(--sidebar-w-expanded); }
-.sidebar-inner { width: var(--sidebar-w-expanded); padding: 16px 0; overflow-y: auto; }
+
+/* ★ 核心修复：自适应宽度，不再写死 240px，防止出现水平滚动条 */
+.sidebar-inner { 
+    width: 100%; 
+    padding: 16px 0; 
+}
+
+/* ★ 美化侧边栏滚动条（让它变细变淡，不再难看） */
+.sidebar-panel::-webkit-scrollbar {
+    width: 6px;
+}
+.sidebar-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+.sidebar-panel::-webkit-scrollbar-thumb {
+    background: var(--c-border);
+    border-radius: 3px;
+}
+.sidebar-panel::-webkit-scrollbar-thumb:hover {
+    background: var(--c-text-muted);
+}
+
 .sidebar-section-title {
     font-size: 11px; font-weight: 700; color: var(--c-text-muted);
     text-transform: uppercase; padding: 8px 20px; letter-spacing: 0.8px;
@@ -109,6 +140,7 @@ body { font-family: var(--font-base); font-size: 14px;
     padding: 9px 20px; text-decoration: none;
     color: var(--c-text-secondary); font-size: 13px; font-weight: 500;
     transition: background var(--transition);
+    white-space: nowrap; /* 防止文本换行撑破布局 */
 }
 .sidebar-item:hover, .sidebar-item.active {
     background: var(--c-primary-light); color: var(--c-primary);
@@ -119,17 +151,28 @@ body { font-family: var(--font-base); font-size: 14px;
     margin: 8px 16px;
 }
 
+/* 主内容区 */
 .main-area {
-    flex: 1; display: flex; flex-direction: column;
-    overflow: hidden; transition: all var(--transition);
+    flex: 1; 
+    display: flex; 
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden; 
+    transition: all var(--transition);
 }
 .breadcrumb-bar {
     background: var(--c-surface);
     border-bottom: 1px solid var(--c-border);
     padding: 0 24px; height: 44px;
     display: flex; align-items: center;
+    flex-shrink: 0; /* 防止被压缩 */
 }
-.page-outlet { flex: 1; padding: 24px; overflow-y: auto; }
+.page-outlet { 
+    flex: 1; 
+    padding: 24px; 
+    overflow-y: auto; 
+    min-height: 0; 
+}
 
 /* Status bar */
 .status-bar {
@@ -262,33 +305,27 @@ body { font-family: var(--font-base); font-size: 14px;
 ._dash-loading-callback {
     z-index: 2000 !important;
 }
-/* ============================================================
-   AG Grid 高度兜底
-   ------------------------------------------------------------
-   Dash AG Grid 必须有明确高度才能渲染行。这里给默认主题设置
-   一个合理高度，避免每个页面都要手写 style。
-   ============================================================ */
+
+/* ============================================================ */
+/* AG Grid 高度兜底 */
+/* ============================================================ */
 .ag-theme-alpine {
     min-height: 500px;
     width: 100%;
 }
-
-/* 让 Dash AG Grid 的 wrapper 不塌陷 */
 .dash-ag-grid,
 .ag-theme-alpine,
 .ag-theme-alpine-dark {
     display: block;
 }
-
-/* 分页控件样式统一 */
 .ag-theme-alpine .ag-paging-panel {
     border-top: 1px solid var(--c-border);
     padding: 8px 16px;
 }
 
-/* ============================================================
-   Mega Menu
-   ============================================================ */
+/* ============================================================ */
+/* Mega Menu */
+/* ============================================================ */
 .mega-menu {
     position: absolute;
     top: calc(var(--nav-h) - 8px);
@@ -340,9 +377,9 @@ button.nav-item-btn.active {
     background: var(--c-primary-light); color: var(--c-primary);
 }
 
-/* ============================================================
-   Breadcrumb
-   ============================================================ */
+/* ============================================================ */
+/* Breadcrumb */
+/* ============================================================ */
 .breadcrumb-nav { padding: 0; }
 .breadcrumb {
     display: flex; list-style: none; padding: 0; margin: 0;
@@ -357,9 +394,9 @@ button.nav-item-btn.active {
 .bc-link { color: var(--c-text-secondary); text-decoration: none; }
 .bc-link:hover { color: var(--c-primary); }
 
-/* ============================================================
-   Badge 计数 / 圆点
-   ============================================================ */
+/* ============================================================ */
+/* Badge 计数 / 圆点 */
+/* ============================================================ */
 .badge-dot {
     position: absolute; top: 5px; right: 5px;
     width: 8px; height: 8px;
@@ -374,9 +411,9 @@ button.nav-item-btn.active {
     min-width: 16px; line-height: 16px; text-align: center;
 }
 
-/* ============================================================
-   Learning Engine 横幅
-   ============================================================ */
+/* ============================================================ */
+/* Learning Engine 横幅 */
+/* ============================================================ */
 .le-banner {
     background: linear-gradient(135deg,
         var(--c-primary-light),
@@ -398,135 +435,88 @@ button.nav-item-btn.active {
 .le-verified { background: #D1FAE5; color: #065F46; }
 .le-progress { background: var(--c-warning-light); color: #92400E; }
 .le-pending  { background: #F1F5F9; color: #475569; }
-/* ============================================================
-   顶部跑马灯进度条
-   ============================================================ */
+
+/* ============================================================ */
+/* 顶部跑马灯进度条 */
+/* ============================================================ */
 #top-progress {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background: transparent;
-    z-index: 9999;
-    pointer-events: none;      /* 不拦截鼠标事件 */
-    overflow: hidden;
-    opacity: 0;
+    top: 0; left: 0; right: 0; height: 3px;
+    background: transparent; z-index: 9999;
+    pointer-events: none;
+    overflow: hidden; opacity: 0;
     transition: opacity 0.15s ease-in-out;
 }
 #top-progress::before {
     content: "";
     position: absolute;
-    top: 0;
-    left: -40%;
-    width: 40%;
-    height: 100%;
-    background: linear-gradient(
-        90deg,
-        transparent 0%,
-        var(--c-primary, #1B6CA8) 50%,
-        transparent 100%
-    );
+    top: 0; left: -40%; width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent 0%, var(--c-primary, #1B6CA8) 50%, transparent 100%);
     animation: top-progress-move 1.2s linear infinite;
 }
-#top-progress.loading {
-    opacity: 1;
-}
+#top-progress.loading { opacity: 1; }
 @keyframes top-progress-move {
     0%   { left: -40%; }
     100% { left: 100%; }
 }
-/* ============================================================
-   KPI 卡片可点击样式
-   ============================================================ */
+
+/* ============================================================ */
+/* KPI 卡片可点击样式 */
+/* ============================================================ */
 a.kpi-card-link {
-    display: block;
-    text-decoration: none;
-    color: inherit;
-    cursor: pointer;
-    transition: transform 0.18s ease, box-shadow 0.18s ease,
-                border-color 0.18s ease;
+    display: block; text-decoration: none; color: inherit; cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 a.kpi-card-link:hover {
-    text-decoration: none;
-    color: inherit;
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
-    border-color: var(--c-primary);
+    text-decoration: none; color: inherit; transform: translateY(-2px);
+    box-shadow: var(--shadow-md); border-color: var(--c-primary);
 }
-a.kpi-card-link:active {
-    transform: translateY(0);
+a.kpi-card-link:active { transform: translateY(0); }
+a.kpi-card-link:focus, a.kpi-card-link:focus-visible {
+    outline: 2px solid var(--c-primary); outline-offset: 2px;
 }
-a.kpi-card-link:focus,
-a.kpi-card-link:focus-visible {
-    outline: 2px solid var(--c-primary);
-    outline-offset: 2px;
-}
-/* ============================================================
-   Dashboard 活动流滚动容器
-   ============================================================ */
+
+/* ============================================================ */
+/* Dashboard 活动流滚动容器 */
+/* ============================================================ */
 .dash-scroll-body {
-    max-height: 322px;
-    overflow-y: auto;
-    scroll-behavior: smooth;
-    padding-right: 6px;
+    max-height: 322px; overflow-y: auto;
+    scroll-behavior: smooth; padding-right: 6px;
 }
-.dash-scroll-body::-webkit-scrollbar {
-    width: 6px;
-}
-.dash-scroll-body::-webkit-scrollbar-track {
-    background: transparent;
-}
+.dash-scroll-body::-webkit-scrollbar { width: 6px; }
+.dash-scroll-body::-webkit-scrollbar-track { background: transparent; }
 .dash-scroll-body::-webkit-scrollbar-thumb {
-    background: var(--c-border);
-    border-radius: 3px;
+    background: var(--c-border); border-radius: 3px;
 }
 .dash-scroll-body::-webkit-scrollbar-thumb:hover {
     background: var(--c-text-muted);
 }
-/* 活动流行 */
 .audit-row {
-    padding: 10px 0;
-    border-bottom: 1px solid var(--c-border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    padding: 10px 0; border-bottom: 1px solid var(--c-border);
+    display: flex; align-items: center; gap: 8px;
 }
-.audit-row:last-child {
-    border-bottom: none;
-}
-/* 底部"已经到底"提示 */
+.audit-row:last-child { border-bottom: none; }
 .audit-end-hint {
-    text-align: center;
-    font-size: 11px;
-    color: var(--c-text-muted);
-    padding: 14px 0;
-    user-select: none;
+    text-align: center; font-size: 11px;
+    color: var(--c-text-muted); padding: 14px 0; user-select: none;
 }
-/* 滚动加载中 */
 .audit-loading {
-    text-align: center;
-    font-size: 11px;
-    color: var(--c-primary);
-    padding: 10px 0;
+    text-align: center; font-size: 11px;
+    color: var(--c-primary); padding: 10px 0;
 }
-/* ============================================================
-   登录页
-   ============================================================ */
+
+/* ============================================================ */
+/* 登录页 */
+/* ============================================================ */
 .login-page {
-    position: fixed;
-    inset: 0;
-    z-index: 2000;
+    position: fixed; inset: 0; z-index: 2000;
     background: linear-gradient(135deg, #1B6CA8 0%, #0D9373 100%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: flex; align-items: center; justify-content: center;
     overflow: hidden;
 }
 .login-bg-shapes { position: absolute; inset: 0; pointer-events: none; }
 .login-shape {
-    position: absolute;
-    border-radius: 50%;
+    position: absolute; border-radius: 50%;
     background: rgba(255, 255, 255, 0.08);
 }
 .login-shape-1 { width: 400px; height: 400px; top: -100px; left: -100px; }
@@ -534,15 +524,10 @@ a.kpi-card-link:focus-visible {
 .login-shape-3 { width: 200px; height: 200px; top: 40%; left: 55%; background: rgba(255,255,255,0.06); }
 
 .login-card {
-    position: relative;
-    z-index: 1;
-    width: 420px;
-    max-width: calc(100% - 40px);
-    background: #fff;
-    border-radius: 16px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
-    padding: 40px 32px;
-    animation: loginFadeIn 0.4s ease-out;
+    position: relative; z-index: 1; width: 420px;
+    max-width: calc(100% - 40px); background: #fff;
+    border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+    padding: 40px 32px; animation: loginFadeIn 0.4s ease-out;
 }
 @keyframes loginFadeIn {
     from { opacity: 0; transform: translateY(20px); }
@@ -551,45 +536,23 @@ a.kpi-card-link:focus-visible {
 
 .login-header { text-align: center; margin-bottom: 28px; }
 .login-logo {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 56px; height: 56px;
-    border-radius: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 56px; height: 56px; border-radius: 14px;
     background: linear-gradient(135deg, var(--c-primary), var(--c-secondary));
-    color: #fff;
-    font-weight: 800;
-    font-size: 22px;
-    margin-bottom: 16px;
+    color: #fff; font-weight: 800; font-size: 22px; margin-bottom: 16px;
     box-shadow: 0 8px 20px rgba(27, 108, 168, 0.35);
 }
-.login-title {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--c-text-primary);
-    margin: 0 0 6px;
-}
-.login-subtitle {
-    font-size: 13px;
-    color: var(--c-text-secondary);
-    margin: 0;
-}
+.login-title { font-size: 20px; font-weight: 700; color: var(--c-text-primary); margin: 0 0 6px; }
+.login-subtitle { font-size: 13px; color: var(--c-text-secondary); margin: 0; }
 
 .login-field { margin-bottom: 16px; }
 .login-label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--c-text-secondary);
-    margin-bottom: 6px;
+    display: block; font-size: 12px; font-weight: 600;
+    color: var(--c-text-secondary); margin-bottom: 6px;
 }
 .login-input {
-    width: 100%;
-    padding: 10px 14px;
-    border: 1px solid var(--c-border);
-    border-radius: 8px;
-    font-size: 14px;
-    outline: none;
+    width: 100%; padding: 10px 14px; border: 1px solid var(--c-border);
+    border-radius: 8px; font-size: 14px; outline: none;
     transition: border-color 0.15s, box-shadow 0.15s;
 }
 .login-input:focus {
@@ -598,118 +561,87 @@ a.kpi-card-link:focus-visible {
 }
 
 .login-submit {
-    width: 100%;
-    padding: 12px;
-    background: var(--c-primary);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 8px;
-    transition: background 0.15s;
+    width: 100%; padding: 12px; background: var(--c-primary); color: #fff;
+    border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+    cursor: pointer; margin-top: 8px; transition: background 0.15s;
 }
 .login-submit:hover { background: var(--c-primary-dark); }
 
 .login-feedback { margin-top: 12px; min-height: 20px; }
 .login-error {
-    color: var(--c-danger);
-    font-size: 13px;
-    text-align: center;
-    padding: 6px;
-    background: var(--c-danger-light);
-    border-radius: 6px;
+    color: var(--c-danger); font-size: 13px; text-align: center;
+    padding: 6px; background: var(--c-danger-light); border-radius: 6px;
 }
 .login-success {
-    color: var(--c-secondary);
-    font-size: 13px;
-    text-align: center;
-    padding: 6px;
-    background: var(--c-secondary-light);
-    border-radius: 6px;
+    color: var(--c-secondary); font-size: 13px; text-align: center;
+    padding: 6px; background: var(--c-secondary-light); border-radius: 6px;
 }
 
 .login-footer {
-    margin-top: 24px;
-    padding-top: 16px;
+    margin-top: 24px; padding-top: 16px;
     border-top: 1px solid var(--c-border);
-    text-align: center;
-    font-size: 11px;
+    text-align: center; font-size: 11px;
 }
 .login-code {
-    background: #F1F5F9;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 11px;
-    color: var(--c-text-primary);
-    font-family: monospace;
+    background: #F1F5F9; padding: 2px 6px; border-radius: 4px;
+    font-size: 11px; color: var(--c-text-primary); font-family: monospace;
 }
 
-/* ============================================================
-   用户菜单
-   ============================================================ */
+/* ============================================================ */
+/* 用户菜单 */
+/* ============================================================ */
 .user-menu-wrap { position: relative; }
 .user-menu-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 10px;
-    height: 36px;
-    background: none;
-    border: 1px solid var(--c-border);
-    border-radius: var(--radius-sm);
-    color: var(--c-text-secondary);
-    font-size: 13px;
-    cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; height: 36px; background: none;
+    border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+    color: var(--c-text-secondary); font-size: 13px; cursor: pointer;
     transition: all 0.15s;
 }
 .user-menu-btn:hover {
-    background: var(--c-primary-light);
-    color: var(--c-primary);
-    border-color: var(--c-primary);
+    background: var(--c-primary-light); color: var(--c-primary); border-color: var(--c-primary);
 }
 .user-menu-btn i { font-size: 16px; }
 
 .user-menu-dropdown {
-    display: none;
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    min-width: 220px;
-    background: var(--c-surface);
-    border: 1px solid var(--c-border);
-    border-radius: 10px;
-    box-shadow: var(--shadow-lg);
-    padding: 8px;
-    z-index: 2000;
+    display: none; position: absolute; top: calc(100% + 6px); right: 0;
+    min-width: 220px; background: var(--c-surface);
+    border: 1px solid var(--c-border); border-radius: 10px;
+    box-shadow: var(--shadow-lg); padding: 8px; z-index: 2000;
 }
 .user-menu-dropdown.show { display: block; }
 .user-menu-info { padding: 10px 12px; }
 .user-menu-info > div:first-child {
-    display: flex;
-    align-items: center;
-    font-size: 13px;
-    margin-bottom: 2px;
+    display: flex; align-items: center; font-size: 13px; margin-bottom: 2px;
 }
-.user-menu-divider {
-    height: 1px;
-    background: var(--c-border);
-    margin: 6px 0;
-}
+.user-menu-divider { height: 1px; background: var(--c-border); margin: 6px 0; }
 .user-menu-item {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    padding: 8px 12px;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    color: var(--c-text-secondary);
-    cursor: pointer;
-    text-align: left;
+    display: flex; align-items: center; width: 100%;
+    padding: 8px 12px; background: none; border: none;
+    border-radius: 6px; font-size: 13px; color: var(--c-text-secondary);
+    cursor: pointer; text-align: left;
 }
 .user-menu-item:hover { background: var(--c-bg); }
 .user-menu-item.logout { color: var(--c-danger); }
 .user-menu-item.logout:hover { background: var(--c-danger-light); }
+/* 修复 AG Grid 操作列表头多余的分割线 */
+.no-border-right {
+    border-right: none !important;
+}
+.ag-header-cell.no-border-right {
+    border-right: none !important;
+}
+/* ============================================================ */
+/* 强制合并 AG Grid 操作列的视觉缝隙 */
+/* ============================================================ */
+.ag-header-cell[col-id="btn_edit"],
+.ag-header-cell[col-id="btn_assign"],
+.ag-header-cell[col-id="btn_delete"] {
+    border-right: none !important;
+}
+
+.ag-cell[col-id="btn_edit"],
+.ag-cell[col-id="btn_assign"],
+.ag-cell[col-id="btn_delete"] {
+    border-right: none !important;
+}
