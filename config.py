@@ -26,6 +26,10 @@ class Config:
     DS_MAX_TOKENS = int(os.getenv("DS_MAX_TOKENS", "4096"))
     DS_BASE_URL = os.getenv("DS_BASE_URL", "https://api.deepseek.com/v1")
 
+    # ★ 模型能力判断：deepseek-chat（V3 非思考模式）不支持 thinking 参数；
+    #   deepseek-flash / deepseek-reasoner 等支持。统一在 Config 层判断，避免散落各处。
+    DS_MODEL_SUPPORTS_THINKING = "chat" not in (os.getenv("DS_MODEL", "deepseek-chat") or "").lower()
+
     # Redis 配置（v0.8 修正：host 不再叫 REDIS_URL，端口与 README 的 6379 对齐）
     REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -56,16 +60,12 @@ class Config:
     # ============================================================
     # Agent 验证开关（v0.8-Agent 批次）
     # ============================================================
-    # 总开关：默认关闭。开启后 get_agent_runtime() 才会装配仓储和执行器。
     AGENT_VALIDATION_ENABLED = (
         os.getenv("AGENT_VALIDATION_ENABLED", "false").lower() == "true"
     )
-    # 测试模型开关：仅当 SANDBOX_MODE 与 AGENT_VALIDATION_ENABLED 同时为 true
-    # 且本开关为 true 时，才允许注册/调用 TEST-ELIGIBILITY-ECHO。
     AGENT_TEST_MODEL_ENABLED = (
         os.getenv("AGENT_TEST_MODEL_ENABLED", "false").lower() == "true"
     )
-    # 失败步骤最大重试次数（第 6 批使用）。测试默认值，不是业务标准。
     AGENT_MAX_RETRIES = int(os.getenv("AGENT_MAX_RETRIES", "1"))
 
     # ============================================================
@@ -73,12 +73,12 @@ class Config:
     # ============================================================
     FILE_STORAGE_BACKEND = os.getenv("FILE_STORAGE_BACKEND", "local")
     FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "./uploads")
-    # Enum: local / s3 / oss
 
     # 应用设置
     DEBUG_MODE = os.getenv("DEBUG", "false").lower() == "true"
     PORT = int(os.getenv("PORT", "8501"))
     HOST = os.getenv("HOST", "0.0.0.0")
+
 
 # ============================================================
 # 全局单例：Neo4j 驱动

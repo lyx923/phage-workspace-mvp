@@ -9,6 +9,9 @@ DeepSeek 客户端封装。
 
 设计：
     - repair_json 使用启发式方法：去 markdown 标记、逐字符截断、补全括号、补全字符串引号
+    - chat_json 根据 Config.DS_MODEL_SUPPORTS_THINKING 自动适配：
+        * 支持 thinking 的模型（deepseek-flash 等）：通过 extra_body 控制思考开关；
+        * 不支持 thinking 的模型（deepseek-chat）：不传 thinking，temperature 正常生效。
 """
 import json
 import re
@@ -24,44 +27,25 @@ def get_deepseek_client() -> OpenAI:
 
 
 def repair_json(s: str) -> Optional[dict]:
-    """
-    尝试修复 LLM 返回的不完整 JSON。
-
-    策略：
-        1. 去掉 markdown 代码块标记
-        2. 直接尝试解析
-        3. 循环截断尾部字符，同时处理未闭合字符串、补齐括号
-        4. 全部失败返回 None
-
-    Args:
-        s: 原始字符串
-
-    Returns:
-        Optional[dict]: 修复后的 dict，或 None
-    """
+    """尝试修复 LLM 返回的不完整 JSON。"""
     if not s or not s.strip():
         return None
     s = s.strip()
-    # 去掉 markdown 代码块
     s = re.sub(r"^```(?:json)?\s*", "", s)
     s = re.sub(r"\s*```\s*$", "", s)
 
-    # 直接尝试
     try:
         return json.loads(s)
     except json.JSONDecodeError:
         pass
 
-    # 逐字符截断尝试修复
     max_trim = min(2000, len(s) - 10)
     for trim in range(max_trim):
         cand = s if trim == 0 else s[:-trim]
         cand = cand.rstrip()
-        # 去掉尾部孤立的逗号 / 冒号
         while cand and cand[-1] in ",:":
             cand = cand[:-1].rstrip()
 
-        # 检测是否有未闭合的字符串
         in_str = False
         esc = False
         for ch in cand:
@@ -76,7 +60,6 @@ def repair_json(s: str) -> Optional[dict]:
         if in_str:
             cand += '"'
 
-        # 补齐括号
         ob = cand.count("[") - cand.count("]")
         oc = cand.count("{") - cand.count("}")
         if ob < 0 or oc < 0:
@@ -96,6 +79,7 @@ def chat_json(
     model: Optional[str] = None,
     temperature: float = 0.1,
     max_tokens: int = 8000,
+    enable_thinking: bool = False,
 ) -> Dict:
     """
     调用 DeepSeek 并以 JSON 形式返回。
@@ -103,6 +87,9 @@ def chat_json(
     - 使用 response_format={"type": "json_object"} 强制 JSON 输出
     - 解析失败时尝试 repair_json
     - 全部失败返回 {"_parse_error": ...}
+    - 根据 Config.DS_MODEL_SUPPORTS_THINKING 自动适配：
+        * 支持 thinking：enable_thinking=True 时开启，False 时关闭；
+        * 不支持 thinking（deepseek-chat）：忽略 enable_thinking，不传 thinking，temperature 正常生效。
 
     Args:
         system_prompt: 系统提示词
@@ -110,21 +97,38 @@ def chat_json(
         model: 模型名（默认 Config.DS_MODEL）
         temperature: 温度（默认 0.1）
         max_tokens: 最大 token 数
+        enable_thinking: 是否期望开启思考模式（仅对支持 thinking 的模型有效）
 
     Returns:
         Dict: 解析后的 JSON 或错误信息
     """
     client = get_deepseek_client()
-    resp = client.chat.completions.create(
-        model=model or Config.DS_MODEL,
-        messages=[
+
+    kwargs = {
+        "model": model or Config.DS_MODEL,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-    )
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+
+    # ★ 根据模型能力决定是否传 thinking
+    if Config.DS_MODEL_SUPPORTS_THINKING:
+        if enable_thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            # 思考模式下 temperature 会被服务端忽略，刻意不传
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            kwargs["temperature"] = temperature
+    else:
+        # deepseek-chat：不支持 thinking，正常传 temperature
+        kwargs["temperature"] = temperature
+        if enable_thinking:
+            print(f"   ⚠️ 模型 {kwargs['model']} 不支持 thinking 参数，enable_thinking 已忽略")
+
+    resp = client.chat.completions.create(**kwargs)
     raw = resp.choices[0].message.content or ""
     try:
         return json.loads(raw)

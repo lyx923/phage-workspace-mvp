@@ -53,12 +53,51 @@ layout = html.Div(
     ],
 )
 
-def _ask_llm(prompt: str) -> str:
-    if not Config.DS_API_KEY: return "未配置大模型 Key。"
+def _ask_llm(prompt: str, enable_thinking: bool = False) -> str:
+    """调用 DeepSeek API（HTTP 直连）。
+
+    根据 Config.DS_MODEL_SUPPORTS_THINKING 自动适配：
+    - 支持 thinking（deepseek-flash 等）：enable_thinking=True 时开启，False 时关闭；
+    - 不支持 thinking（deepseek-chat）：忽略 enable_thinking，不传 thinking，temperature 正常生效。
+    返回最终答案 content；若 content 为空则回退到 reasoning_content。
+    """
+    if not Config.DS_API_KEY:
+        return "未配置大模型 Key。"
+
+    payload = {
+        "model": Config.DS_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": Config.DS_MAX_TOKENS,
+    }
+
+    if Config.DS_MODEL_SUPPORTS_THINKING:
+        if enable_thinking:
+            payload["thinking"] = {"type": "enabled"}
+        else:
+            payload["thinking"] = {"type": "disabled"}
+            payload["temperature"] = 0.0
+    else:
+        # deepseek-chat：不支持 thinking
+        payload["temperature"] = 0.0
+        if enable_thinking:
+            print(f"   ⚠️ 模型 {Config.DS_MODEL} 不支持 thinking 参数，enable_thinking 已忽略")
+
     try:
-        resp = requests.post(f"{Config.DS_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {Config.DS_API_KEY}"}, json={"model": Config.DS_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}, timeout=30)
-        return resp.json()["choices"][0]["message"]["content"] if resp.status_code == 200 else f"错误: {resp.text}"
-    except Exception as e: return f"异常: {e}"
+        resp = requests.post(
+            f"{Config.DS_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {Config.DS_API_KEY}"},
+            json=payload,
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return f"错误: {resp.text}"
+
+        message = resp.json()["choices"][0]["message"]
+        content = message.get("content") or ""
+        reasoning = message.get("reasoning_content") or ""
+        return content if content.strip() else reasoning
+    except Exception as e:
+        return f"异常: {e}"
 
 @callback(Output("ai-input", "value", allow_duplicate=True), Input({"type": "ai-quick", "index": dash.ALL}, "n_clicks"), prevent_initial_call=True)
 def cb_fill_quick(_):
@@ -121,9 +160,7 @@ def cb_send(_, user_input, history):
                 return _render_history(history), history, ""
             
             with rt.driver.session() as s:
-                # 允许用 phage_id 或 name 进行匹配
                 p_rec = s.run("MATCH (p:Phage) WHERE p.phage_id = $val OR p.name = $val RETURN p.phage_id AS id LIMIT 1", val=raw_phage).single()
-                # ★ 核心修复：兼容宿主可能的属性名 strain_name / name / host_strain_id
                 h_rec = s.run("MATCH (h:HostStrain) WHERE h.host_strain_id = $val OR h.name = $val OR h.strain_name = $val RETURN h.host_strain_id AS id LIMIT 1", val=raw_host).single()
                 
                 if not p_rec or not h_rec:
@@ -132,14 +169,12 @@ def cb_send(_, user_input, history):
                         recent = s.run("MATCH (p:Phage) RETURN coalesce(p.name, p.phage_id) AS name, p.phage_id AS id LIMIT 5").data()
                         msg += f"\n- 未找到噬菌体 **{raw_phage}**（库中参考: " + ", ".join([f"{r['name']}" for r in recent]) + "）"
                     if not h_rec:
-                        # ★ 核心修复：给出宿主兜底提示
                         recent_h = s.run("MATCH (h:HostStrain) RETURN coalesce(h.strain_name, h.name, h.host_strain_id) AS name LIMIT 5").data()
                         ref_str = ", ".join([str(r['name']) for r in recent_h if r['name']])
                         msg += f"\n- 未找到宿主 **{raw_host}**（库中参考: {ref_str}）"
                     history.append({"role": "assistant", "content": msg})
                     return _render_history(history), history, ""
                 
-                # 使用真实匹配到的 ID
                 real_phage_id = p_rec["id"]
                 real_host_id = h_rec["id"]
                     
@@ -181,7 +216,7 @@ def cb_send(_, user_input, history):
 
 用户问题：{query}
 """
-            llm_res = _ask_llm(prompt)
+            llm_res = _ask_llm(prompt, enable_thinking=True)
             cypher_match = re.search(r"(?is)(MATCH|RETURN|OPTIONAL MATCH|CALL|WITH)\s+.*?(?=(?:\n\n|\Z|```))", llm_res)
             cypher = cypher_match.group(0).strip().replace("```", "").strip() if cypher_match else ""
             
@@ -202,7 +237,7 @@ def cb_send(_, user_input, history):
                             fallback_msg += "\n\n（注：图数据库中可能尚未建立两者之间的物理连线，或大模型生成的查询方向有误。）"
                             summary = fallback_msg
                         else:
-                            summary = _ask_llm(f"用户问题：{query}\n数据：{json.dumps(data[:20], ensure_ascii=False, default=str)}\n请用中文简洁总结。")
+                            summary = _ask_llm(f"用户问题：{query}\n数据：{json.dumps(data[:20], ensure_ascii=False, default=str)}\n请用中文简洁总结。", enable_thinking=False)
                     except Exception as e:
                         summary = "生成的图查询语句报错，无法执行。"
             else:
@@ -218,7 +253,6 @@ def cb_send(_, user_input, history):
     history.append({"role": "plan_card", "data": {"task_id": task.task_id, "plan_id": plan.plan_id, "goal_summary": plan.goal_summary, "steps": [s.to_dict() for s in plan.steps], "batch_id": task.scope.get("experiment_batch_id") or task.scope.get("pathogen_id") or f"{task.scope.get('phage_id')} × {task.scope.get('host_strain_id')}", "target_label": target_label, "status": "pending"}})
     return _render_history(history), history, ""
 
-# ... (cb_plan_action 和 _render_history 保持原样) ...
 @callback(
     Output("ai-messages", "children", allow_duplicate=True),
     Output("store-ai-history", "data", allow_duplicate=True),
